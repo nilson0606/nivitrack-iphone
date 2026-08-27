@@ -241,13 +241,16 @@ export default function Home() {
     setNotice('3 秒測試將從 ' + next.toFixed(1) + ' 秒開始');
   }
 
-  async function getPersonEffectRenderer() {
+  async function getPersonEffectRenderer(
+    onLoadProgress?: (step: number, total: number, label: string) => void,
+  ) {
     if (!personEffectRendererRef.current) {
       const wasmBase = new URL('litert/', document.baseURI).href;
       const modelBase = new URL('models/edgetam-video/', document.baseURI).href;
       personEffectRendererRef.current = await PersonEffectRenderer.create(
         wasmBase,
         modelBase,
+        onLoadProgress,
       );
     }
     return personEffectRendererRef.current;
@@ -878,7 +881,10 @@ export default function Home() {
     const totalFrames = Math.max(1, Math.ceil((testEnd - testStart) / interval));
 
     try {
-      const renderer = await getPersonEffectRenderer();
+      const renderer = await getPersonEffectRenderer((step, total, label) => {
+        setProgress(((step - 1) / total) * 0.08);
+        setNotice(`載入 WebGPU 主角記憶 ${step}/${total} · ${label}`);
+      });
       configureOutputCanvas(previewCanvas, aspect);
       const smoothedPath = smoothTrackPath(trackPath, smoothness);
       video.pause();
@@ -890,7 +896,7 @@ export default function Home() {
         subjectSelection: sourceModeRef.current === 'direct' ? selection : undefined,
         retainSourceForCorrections: true,
         onProgress: (next) => {
-          setProgress(next * 0.9);
+          setProgress(0.08 + next * 0.82);
           setNotice('延續指定主角的影片記憶 · ' + Math.round(next * 100) + '%');
         },
         isCancelled: () => cancelRef.current,

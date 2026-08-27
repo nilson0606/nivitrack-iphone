@@ -49,6 +49,8 @@ type EdgeTamModels = {
   memorize: CompiledModel;
 };
 
+export type EdgeTamLoadProgress = (step: number, total: number, label: string) => void;
+
 function assetUrl(base: string, file: string) {
   return new URL(file, base.endsWith('/') ? base : base + '/').href;
 }
@@ -122,9 +124,21 @@ async function readFloats(url: string, expectedLength: number) {
   return new Float32Array(values);
 }
 
-async function compileModels(baseUrl: string, accelerator: Accelerator): Promise<EdgeTamModels> {
+async function compileModels(
+  baseUrl: string,
+  accelerator: Accelerator,
+  onLoadProgress?: EdgeTamLoadProgress,
+): Promise<EdgeTamModels> {
   const loaded: CompiledModel[] = [];
-  const compile = async (file: string) => {
+  const stages = [
+    ['encode.tflite', '影像編碼'],
+    ['memcond.tflite', '時序記憶'],
+    ['decode_box.tflite', '主角方框'],
+    ['decode.tflite', '逐幀遮罩'],
+    ['memorize.tflite', '記憶更新'],
+  ] as const;
+  const compile = async (file: string, label: string, step: number) => {
+    onLoadProgress?.(step, stages.length, label);
     const model = await loadAndCompile(assetUrl(baseUrl, file), { accelerator });
     if (
       accelerator === 'webgpu'
@@ -137,11 +151,11 @@ async function compileModels(baseUrl: string, accelerator: Accelerator): Promise
     return model;
   };
   try {
-    const encode = await compile('encode.tflite');
-    const memcond = await compile('memcond.tflite');
-    const decodeBox = await compile('decode_box.tflite');
-    const decode = await compile('decode.tflite');
-    const memorize = await compile('memorize.tflite');
+    const encode = await compile(...stages[0], 1);
+    const memcond = await compile(...stages[1], 2);
+    const decodeBox = await compile(...stages[2], 3);
+    const decode = await compile(...stages[3], 4);
+    const memorize = await compile(...stages[4], 5);
     return { encode, memcond, decodeBox, decode, memorize };
   } catch (error) {
     for (const model of loaded) model.delete();
@@ -197,13 +211,17 @@ export class EdgeTamVideoSegmenter {
     this.inputContext = context;
   }
 
-  static async create(wasmBaseUrl: string, modelBaseUrl: string) {
+  static async create(
+    wasmBaseUrl: string,
+    modelBaseUrl: string,
+    onLoadProgress?: EdgeTamLoadProgress,
+  ) {
     if (!isWebGPUSupported()) {
       throw new Error('Stage 1 需要 Safari 26 WebGPU；請更新 iOS 並用 Safari 重新開啟');
     }
     await loadLiteRt(wasmBaseUrl, { threads: false, jspi: false });
     const accelerator: Accelerator = 'webgpu';
-    const models = await compileModels(modelBaseUrl, accelerator);
+    const models = await compileModels(modelBaseUrl, accelerator, onLoadProgress);
 
     const [noMemory, temporalPositions, noObjectPointer, trackSparse, prompt] = await Promise.all([
       readFloats(assetUrl(modelBaseUrl, 'no_memory.bin'), 256),

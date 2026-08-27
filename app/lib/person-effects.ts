@@ -1,4 +1,8 @@
-import { EdgeTamVideoSegmenter, type EdgeTamMask } from './edgetam-video-segmenter';
+import {
+  EdgeTamVideoSegmenter,
+  type EdgeTamLoadProgress,
+  type EdgeTamMask,
+} from './edgetam-video-segmenter';
 import type { Box } from './vit-tracker';
 import type { TrackPoint } from './video-export';
 
@@ -221,8 +225,16 @@ export class PersonEffectRenderer {
     this.segmenter = segmenter;
   }
 
-  static async create(wasmBaseUrl: string, modelBaseUrl: string) {
-    const segmenter = await EdgeTamVideoSegmenter.create(wasmBaseUrl, modelBaseUrl);
+  static async create(
+    wasmBaseUrl: string,
+    modelBaseUrl: string,
+    onLoadProgress?: EdgeTamLoadProgress,
+  ) {
+    const segmenter = await EdgeTamVideoSegmenter.create(
+      wasmBaseUrl,
+      modelBaseUrl,
+      onLoadProgress,
+    );
     return new PersonEffectRenderer(segmenter);
   }
 
