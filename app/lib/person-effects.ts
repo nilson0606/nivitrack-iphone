@@ -1,6 +1,7 @@
 import { MagicPoseMatte } from './magic-pose-matte';
 import type { Box } from './vit-tracker';
 import type { TrackPoint } from './video-export';
+import { excludePersistentBackground } from './temporal-background';
 import { FLOW_HEIGHT, FLOW_WIDTH, stabilizeAlpha } from './temporal-mask';
 
 export type BackgroundEffect = 'original' | 'black' | 'blur';
@@ -43,6 +44,7 @@ type PreparedMask = {
   width: number;
   height: number;
   flowLuma: Uint8Array;
+  bodyCore: Uint8Array | null;
   baseAlpha: Uint8ClampedArray | null;
   alpha: Uint8ClampedArray;
 };
@@ -308,9 +310,10 @@ export class PersonEffectRenderer {
         prepared.height,
         previousWeight,
       );
-      this.applyCorrections(prepared);
       previous = prepared;
     }
+    excludePersistentBackground(this.preparedMasks);
+    for (const prepared of this.preparedMasks) this.applyCorrections(prepared);
     this.resetPlayback();
   }
 
@@ -409,12 +412,34 @@ export class PersonEffectRenderer {
         pixels[pixel] * 0.299 + pixels[pixel + 1] * 0.587 + pixels[pixel + 2] * 0.114,
       );
     }
+    let bodyCore: Uint8Array | null = null;
+    if (result.bodySupport?.length === result.width * result.height) {
+      bodyCore = new Uint8Array(FLOW_WIDTH * FLOW_HEIGHT);
+      for (let y = 0; y < result.height; y += 1) {
+        const targetY = Math.min(
+          FLOW_HEIGHT - 1,
+          Math.floor(((y + 0.5) / result.height) * FLOW_HEIGHT),
+        );
+        for (let x = 0; x < result.width; x += 1) {
+          const targetX = Math.min(
+            FLOW_WIDTH - 1,
+            Math.floor(((x + 0.5) / result.width) * FLOW_WIDTH),
+          );
+          const targetIndex = targetY * FLOW_WIDTH + targetX;
+          bodyCore[targetIndex] = Math.max(
+            bodyCore[targetIndex],
+            result.bodySupport[y * result.width + x],
+          );
+        }
+      }
+    }
     return {
       time: video.currentTime,
       region: { ...region },
       width: result.width,
       height: result.height,
       flowLuma,
+      bodyCore,
       baseAlpha: null,
       alpha: result.alpha,
     };
@@ -509,12 +534,13 @@ export class PersonEffectRenderer {
           prepared.height,
           previousWeight,
         );
-        this.applyCorrections(prepared);
         this.preparedMasks.push(prepared);
         previousPrepared = prepared;
         options.onProgress(frame / totalFrames);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
+      excludePersistentBackground(this.preparedMasks);
+      for (const prepared of this.preparedMasks) this.applyCorrections(prepared);
       options.onProgress(1);
     } catch (error) {
       this.clearPrepared();

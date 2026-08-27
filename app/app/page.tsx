@@ -1102,7 +1102,7 @@ export default function Home() {
                 <section className={'mask-correction-panel ' + (editingMask ? 'is-editing' : '')}>
                   <div className="mask-correction-heading">
                     <div>
-                      <span>光流防閃已套用</span>
+                      <span>光流防閃＋移動背景排除已套用</span>
                       <strong>智慧去背完成</strong>
                     </div>
                     {!editingMask ? (
@@ -1222,7 +1222,7 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟' : '開啟特效'}
                       </button>
                     </div>
-                    <p className="effect-note">{sourceMode === 'direct' ? '依使用者選擇保留輸入影片構圖，以 MagicTouch＋Pose 去背，再用光流對齊前後影格；不執行 ViT 追蹤。' : 'ViT 追蹤維持原樣；框內使用 MagicTouch＋Pose 去背，再以光流對齊前後遮罩，降低動作邊緣閃爍。'} 所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">{sourceMode === 'direct' ? '依使用者選擇保留輸入影片構圖，以 MagicTouch＋Pose 去背；骨架保護人體核心，光流會延續前後遮罩與移動中的背景記憶。不執行 ViT 追蹤。' : 'ViT 追蹤維持原樣；框內使用 MagicTouch＋Pose 去背，骨架保護人體核心，再以光流延續前後遮罩與移動中的背景記憶。'} 所有影像仍在這台 iPhone 本機處理。</p>
 
                     {personEffects.enabled && (
                       <>
