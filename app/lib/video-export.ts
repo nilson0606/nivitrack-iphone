@@ -230,7 +230,7 @@ export class RealtimeVideoExporter {
 
     const { width, height } = configureOutputCanvas(canvas, options.aspect);
     const smoothedPath = smoothTrackPath(path, options.smoothness);
-    options.effectRenderer?.reset();
+    options.effectRenderer?.resetPlayback();
     const originalTime = this.video.currentTime;
     const originalRate = this.video.playbackRate;
     const audioTracks = await this.prepareAudio();

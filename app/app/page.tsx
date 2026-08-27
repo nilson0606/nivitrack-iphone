@@ -21,6 +21,7 @@ import {
 } from '../lib/video-export';
 import {
   BackgroundEffect,
+  CloneLayout,
   DEFAULT_PERSON_EFFECTS,
   OutlineEffect,
   PersonEffectOptions,
@@ -132,7 +133,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MagicTouch 指定物件', available: typeof WebAssembly !== 'undefined' },
+        { label: '人物去背', detail: '指定主角 × 人體雙遮罩', available: typeof WebAssembly !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -178,6 +179,7 @@ export default function Home() {
   );
 
   function clearRenderedOutput() {
+    personEffectRendererRef.current?.clearPrepared();
     setShowEffectPreview(false);
     setEffectTestPassed(false);
     setExportUrl('');
@@ -193,8 +195,13 @@ export default function Home() {
   async function getPersonEffectRenderer() {
     if (!personEffectRendererRef.current) {
       const wasmBase = new URL('mediapipe/', document.baseURI).href;
-      const modelUrl = new URL('models/magic_touch.tflite', document.baseURI).href;
-      personEffectRendererRef.current = await PersonEffectRenderer.create(wasmBase, modelUrl);
+      const subjectModelUrl = new URL('models/magic_touch.tflite', document.baseURI).href;
+      const personModelUrl = new URL('models/selfie_segmenter.tflite', document.baseURI).href;
+      personEffectRendererRef.current = await PersonEffectRenderer.create(
+        wasmBase,
+        subjectModelUrl,
+        personModelUrl,
+      );
     }
     return personEffectRendererRef.current;
   }
@@ -629,10 +636,20 @@ export default function Home() {
 
     try {
       const renderer = await getPersonEffectRenderer();
-      renderer.reset();
       configureOutputCanvas(previewCanvas, aspect);
       const smoothedPath = smoothTrackPath(trackPath, smoothness);
       video.pause();
+
+      await renderer.prepare(video, smoothedPath, {
+        startTime: testStart,
+        endTime: testEnd,
+        onProgress: (next) => {
+          setProgress(next * 0.9);
+          setNotice('先逐格鎖定主角並去背 · ' + Math.round(next * 100) + '%');
+        },
+        isCancelled: () => cancelRef.current,
+      });
+      renderer.resetPlayback();
 
       for (let frame = 0; frame <= totalFrames; frame += 1) {
         if (cancelRef.current) throw new Error('使用者已取消特效測試');
@@ -641,8 +658,8 @@ export default function Home() {
         renderer.render(video, previewCanvas, smoothedPath, at, subjectScale, personEffects);
         setShowEffectPreview(true);
         const next = frame / Math.max(1, totalFrames);
-        setProgress(next);
-        setNotice('3 秒人物特效測試 · ' + Math.round(next * 100) + '%');
+        setProgress(0.9 + next * 0.1);
+        setNotice('套用特效測試 · ' + Math.round(next * 100) + '%');
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
 
@@ -679,6 +696,19 @@ export default function Home() {
 
     try {
       const effectRenderer = personEffects.enabled ? await getPersonEffectRenderer() : undefined;
+      if (effectRenderer) {
+        await effectRenderer.prepare(video, smoothTrackPath(trackPath, smoothness), {
+          startTime: 0,
+          endTime: video.duration,
+          onProgress: (next) => {
+            setProgress(next * 0.8);
+            setNotice('先完成整支影片的主角去背 · ' + Math.round(next * 100) + '%');
+          },
+          isCancelled: () => cancelRef.current,
+        });
+        effectRenderer.resetPlayback();
+        setNotice('主角去背完成，正在套用特效與編碼…');
+      }
       if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         aspect,
@@ -688,7 +718,7 @@ export default function Home() {
         effects: personEffects,
         effectRenderer,
         onProgress: (next) => {
-          setProgress(next);
+          setProgress(personEffects.enabled ? 0.8 + next * 0.2 : next);
           setNotice('本機編碼中 · ' + Math.round(next * 100) + '%');
         },
         isCancelled: () => cancelRef.current,
@@ -903,7 +933,7 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟' : '開啟特效'}
                       </button>
                     </div>
-                    <p className="effect-note">MagicTouch 以 ViT 追蹤中心指定主角，遮罩可隨手腳動作延伸；所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">先逐格用 ViT＋MagicTouch 鎖定原主角，再以人體遮罩排除風扇與家具；去背全部完成後才套特效。所有影像仍在這台 iPhone 本機處理。</p>
 
                     {personEffects.enabled && (
                       <>
@@ -953,6 +983,21 @@ export default function Home() {
                         </div>
 
                         <div className="effect-group">
+                          <span>分身排列</span>
+                          <div className="effect-options two">
+                            {([['trail', '前後殘影'], ['lineup', '左右並排']] as Array<[CloneLayout, string]>).map(([value, label]) => (
+                              <button
+                                className={personEffects.cloneLayout === value ? 'selected' : ''}
+                                type="button"
+                                key={value}
+                                disabled={phase !== 'path-ready'}
+                                onClick={() => updatePersonEffects({ cloneLayout: value })}
+                              >{label}</button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="effect-group">
                           <span>分身數量</span>
                           <div className="effect-options five">
                             {[0, 1, 2, 3, 4].map((count) => (
@@ -971,7 +1016,7 @@ export default function Home() {
                           <span><b>分身延遲</b><em>{personEffects.cloneDelay.toFixed(1)} 秒</em></span>
                           <input
                             type="range"
-                            min="10"
+                            min="0"
                             max="100"
                             step="5"
                             value={Math.round(personEffects.cloneDelay * 100)}
