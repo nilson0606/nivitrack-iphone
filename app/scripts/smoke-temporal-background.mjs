@@ -33,7 +33,7 @@ function paintCircle(values, width, height, centerX, centerY, radius, value) {
   }
 }
 
-function createScenario(trackedOutput) {
+function createScenario(trackedOutput, intermittentObject = false) {
   const frames = [];
   const fanPositions = [];
   const subjectPositions = [];
@@ -46,7 +46,11 @@ function createScenario(trackedOutput) {
     const flowLuma = new Uint8Array(FLOW_WIDTH * FLOW_HEIGHT);
 
     paintRectangle(alpha, WIDTH, subjectX, 24, subjectX + 28, 108, 255);
-    paintCircle(alpha, WIDTH, HEIGHT, fanX, 56, 17, 235);
+    // Simulate a generic background object that the person model only includes
+    // intermittently. Its exclusion history should survive those dropouts.
+    if (!intermittentObject || frame % 5 !== 2) {
+      paintCircle(alpha, WIDTH, HEIGHT, fanX, 56, 17, 235);
+    }
     paintRectangle(
       bodyCore,
       FLOW_WIDTH,
@@ -111,12 +115,15 @@ function averageArea(frames, positions, kind) {
 }
 
 for (const trackedOutput of [false, true]) {
-  const scenario = createScenario(trackedOutput);
-  const removed = excludePersistentBackground(scenario.frames);
-  const subject = averageArea(scenario.frames, scenario.subjectPositions, 'subject');
-  const fan = averageArea(scenario.frames, scenario.fanPositions, 'fan');
-  const label = trackedOutput ? 'moving-background' : 'fixed-background';
-  console.log(label, 'subject', subject.toFixed(3), 'background-object', fan.toFixed(3), 'removed', removed);
-  assert.ok(subject > 0.9, label + ' must preserve the protected subject core');
-  assert.ok(fan < 0.25, label + ' must suppress a persistent object outside the body core');
+  for (const intermittentObject of [false, true]) {
+    const scenario = createScenario(trackedOutput, intermittentObject);
+    const removed = excludePersistentBackground(scenario.frames);
+    const subject = averageArea(scenario.frames, scenario.subjectPositions, 'subject');
+    const backgroundObject = averageArea(scenario.frames, scenario.fanPositions, 'fan');
+    const label = (trackedOutput ? 'moving-background' : 'fixed-background')
+      + (intermittentObject ? '-intermittent-object' : '');
+    console.log(label, 'subject', subject.toFixed(3), 'background-object', backgroundObject.toFixed(3), 'removed', removed);
+    assert.ok(subject > 0.9, label + ' must preserve the protected subject core');
+    assert.ok(backgroundObject < 0.18, label + ' must suppress a persistent object outside the body core');
+  }
 }

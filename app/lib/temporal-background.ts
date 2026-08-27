@@ -101,11 +101,14 @@ function scanEvidence(frames: TemporalBackgroundFrame[], order: number[]) {
           * alphaEvidence
           * outsideCore;
 
-        let evidence = carried * (0.91 + flow.confidence * 0.06);
-        if (candidate > 0.08) {
-          evidence += 0.09 * candidate;
+        // Background evidence must outlive brief segmentation dropouts. Otherwise
+        // a persistent prop can disappear from the matte for a frame, lose its
+        // history, then visibly stick to the subject when it is detected again.
+        let evidence = carried * (0.94 + flow.confidence * 0.045);
+        if (candidate > 0.06) {
+          evidence += 0.11 * candidate;
         } else {
-          evidence -= core > 0.2 ? 0.2 : 0.055;
+          evidence -= core > 0.2 ? 0.2 : 0.025;
         }
         if (core > 0.58) evidence *= 0.32;
         currentEvidence[index] = clamp(evidence, 0, 1);
@@ -199,7 +202,7 @@ export function excludePersistentBackground(frames: TemporalBackgroundFrame[]) {
           + Math.min(forwardScore, backwardScore) * 0.28;
         const core = bodyCore[index] / 255;
         const outsideCore = 1 - smoothStep(core, 0.1, 0.68);
-        const amount = smoothStep(persistence, 0.42, 0.84) * outsideCore * 0.92;
+        const amount = smoothStep(persistence, 0.34, 0.76) * outsideCore * 0.97;
         suppression[index] = Math.round(amount * 255);
     }
     const mapKey = frame.width + 'x' + frame.height;
