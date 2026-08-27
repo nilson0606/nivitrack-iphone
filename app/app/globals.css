@@ -120,6 +120,12 @@ button { color: inherit; }
   box-shadow: 0 22px 80px rgba(32,49,39,.06);
 }
 .video-panel { min-height: 430px; border-radius: 26px; padding: 12px; }
+.picker-options {
+  min-height: 404px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
 .picker {
   width: 100%;
   min-height: 404px;
@@ -132,6 +138,12 @@ button { color: inherit; }
   background: linear-gradient(rgba(255,255,255,.68),rgba(255,255,255,.68)), repeating-linear-gradient(45deg,transparent 0,transparent 13px,rgba(20,122,76,.045) 13px,rgba(20,122,76,.045) 14px);
   cursor: pointer;
 }
+.picker.direct {
+  border-style: solid;
+  border-color: #9eaf7d;
+  background: linear-gradient(145deg, rgba(217,240,111,.28), rgba(255,255,255,.82));
+}
+.picker.direct .picker-icon { background: var(--green); color: white; font-size: 24px; font-weight: 800; }
 .picker-icon {
   width: 58px;
   height: 58px;
@@ -496,6 +508,7 @@ footer p span { margin-right: 7px; color: #20a866; }
   pointer-events: none;
 }
 @media (max-width: 760px) {
+  .picker-options { grid-template-columns: 1fr; }
   .app-shell { padding-inline: max(15px,env(safe-area-inset-right)); }
   .topbar { height: 70px; }
   .local-pill { padding: 8px 10px; }
@@ -508,7 +521,7 @@ footer p span { margin-right: 7px; color: #20a866; }
   .video-panel { min-height: 380px; border-radius: 22px; }
   .video-actions button { flex: 1 1 auto; }
   .export-buttons { grid-template-columns: 1fr; }
-  .picker { min-height: 354px; }
+  .picker { min-height: 270px; }
   .video-stage { min-height: 310px; }
   .side-panel { display: grid; grid-template-columns: 1fr; }
   footer { align-items: flex-start; flex-direction: column; gap: 5px; padding-bottom: 24px; }

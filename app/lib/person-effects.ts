@@ -9,6 +9,7 @@ export type CloneLayout = 'trail' | 'lineup';
 
 export type PersonEffectOptions = {
   enabled: boolean;
+  preserveFraming: boolean;
   background: BackgroundEffect;
   subject: SubjectEffect;
   outline: OutlineEffect;
@@ -21,6 +22,7 @@ export type PersonEffectOptions = {
 
 export const DEFAULT_PERSON_EFFECTS: PersonEffectOptions = {
   enabled: false,
+  preserveFraming: false,
   background: 'black',
   subject: 'original',
   outline: 'white',
@@ -44,6 +46,7 @@ type PreparedMask = {
 export type PersonMaskPreparationOptions = {
   startTime: number;
   endTime: number;
+  preserveFraming: boolean;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -133,6 +136,19 @@ function cameraCrop(
   };
 }
 
+function framingCrop(video: HTMLVideoElement, canvas: HTMLCanvasElement): Rect {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  const sourceAspect = sourceWidth / sourceHeight;
+  const outputAspect = canvas.width / canvas.height;
+  if (sourceAspect > outputAspect) {
+    const width = sourceHeight * outputAspect;
+    return { x: (sourceWidth - width) / 2, y: 0, width, height: sourceHeight };
+  }
+  const height = sourceWidth / outputAspect;
+  return { x: 0, y: (sourceHeight - height) / 2, width: sourceWidth, height };
+}
+
 function subjectRegion(box: Box, sourceWidth: number, sourceHeight: number): Rect {
   const [x, y, width, height] = box;
   const size = Math.min(
@@ -206,6 +222,13 @@ export class PersonEffectRenderer {
   private segmentMask(video: HTMLVideoElement, region: Rect): PreparedMask {
     const input = this.inputCanvas.getContext('2d', { alpha: false });
     if (!input) throw new Error('Safari 無法建立人物去背 Canvas');
+    const inputScale = SPRITE_SIZE / Math.max(region.width, region.height);
+    const inputWidth = Math.max(1, Math.round(region.width * inputScale));
+    const inputHeight = Math.max(1, Math.round(region.height * inputScale));
+    if (this.inputCanvas.width !== inputWidth || this.inputCanvas.height !== inputHeight) {
+      this.inputCanvas.width = inputWidth;
+      this.inputCanvas.height = inputHeight;
+    }
     input.drawImage(
       video,
       region.x,
@@ -214,8 +237,8 @@ export class PersonEffectRenderer {
       region.height,
       0,
       0,
-      SPRITE_SIZE,
-      SPRITE_SIZE,
+      inputWidth,
+      inputHeight,
     );
     const result = this.segmenter.segment(this.inputCanvas);
     return {
@@ -230,6 +253,12 @@ export class PersonEffectRenderer {
   private applyMask(prepared: PreparedMask) {
     this.maskCanvas.width = prepared.width;
     this.maskCanvas.height = prepared.height;
+    if (this.spriteCanvas.width !== prepared.width || this.spriteCanvas.height !== prepared.height) {
+      this.spriteCanvas.width = prepared.width;
+      this.spriteCanvas.height = prepared.height;
+      this.tintCanvas.width = prepared.width;
+      this.tintCanvas.height = prepared.height;
+    }
     const mask = this.maskCanvas.getContext('2d');
     if (!mask) throw new Error('Safari 無法建立人物遮罩 Canvas');
     const image = mask.createImageData(prepared.width, prepared.height);
@@ -289,7 +318,9 @@ export class PersonEffectRenderer {
         );
         await seekVideo(video, at);
         const trackedBox = interpolateBox(path, at);
-        const region = subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
+        const region = options.preserveFraming
+          ? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
+          : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
         const prepared = this.segmentMask(video, region);
         prepared.time = at;
         this.preparedMasks.push(prepared);
@@ -311,7 +342,7 @@ export class PersonEffectRenderer {
     const region = this.lastRegion;
     const context = this.spriteCanvas.getContext('2d');
     if (!region || !context || !this.maskReady) return;
-    context.clearRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    context.clearRect(0, 0, this.spriteCanvas.width, this.spriteCanvas.height);
     context.globalCompositeOperation = 'source-over';
     context.drawImage(
       video,
@@ -321,29 +352,33 @@ export class PersonEffectRenderer {
       region.height,
       0,
       0,
-      SPRITE_SIZE,
-      SPRITE_SIZE,
+      this.spriteCanvas.width,
+      this.spriteCanvas.height,
     );
     context.globalCompositeOperation = 'destination-in';
-    context.drawImage(this.maskCanvas, 0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    context.drawImage(this.maskCanvas, 0, 0, this.spriteCanvas.width, this.spriteCanvas.height);
     context.globalCompositeOperation = 'source-over';
   }
 
   private snapshot(time: number) {
     if (!this.lastRegion) return;
-    const canvas = createCanvas();
+    const canvas = createCanvas(this.spriteCanvas.width, this.spriteCanvas.height);
     canvas.getContext('2d')!.drawImage(this.spriteCanvas, 0, 0);
     this.history.push({ time, region: { ...this.lastRegion }, canvas });
   }
 
-  private tint(source: CanvasImageSource, color: string) {
+  private tint(source: HTMLCanvasElement, color: string) {
     const context = this.tintCanvas.getContext('2d')!;
-    context.clearRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    if (this.tintCanvas.width !== source.width || this.tintCanvas.height !== source.height) {
+      this.tintCanvas.width = source.width;
+      this.tintCanvas.height = source.height;
+    }
+    context.clearRect(0, 0, source.width, source.height);
     context.globalCompositeOperation = 'source-over';
-    context.drawImage(source, 0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    context.drawImage(source, 0, 0, source.width, source.height);
     context.globalCompositeOperation = 'source-in';
     context.fillStyle = color;
-    context.fillRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    context.fillRect(0, 0, source.width, source.height);
     context.globalCompositeOperation = 'source-over';
     return this.tintCanvas;
   }
@@ -435,14 +470,18 @@ export class PersonEffectRenderer {
     this.lastMediaTime = time;
 
     const trackedBox = interpolateBox(path, time);
-    const crop = cameraCrop(video, canvas, path, time, subjectScale);
+    const crop = options.preserveFraming
+      ? framingCrop(video, canvas)
+      : cameraCrop(video, canvas, path, time, subjectScale);
     this.drawBackground(context, video, canvas, crop, options.background);
 
     const prepared = this.preparedMaskAt(time);
     if (prepared) {
       this.applyMask(prepared);
     } else {
-      const region = subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
+      const region = options.preserveFraming
+        ? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
+        : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
       this.applyMask(this.segmentMask(video, region));
     }
     this.updateSprite(video);

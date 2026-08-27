@@ -43,6 +43,7 @@ type VideoInfo = {
 };
 
 type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'effect-testing' | 'exporting';
+type SourceMode = 'track' | 'direct';
 
 type TrackingStats = {
   frames: number;
@@ -99,6 +100,7 @@ export default function Home() {
   const effectPreviewCanvasRef = useRef<HTMLCanvasElement>(null);
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
   const personEffectRendererRef = useRef<PersonEffectRenderer | null>(null);
+  const sourceModeRef = useRef<SourceMode>('track');
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -126,6 +128,7 @@ export default function Home() {
   const [personEffects, setPersonEffects] = useState<PersonEffectOptions>(DEFAULT_PERSON_EFFECTS);
   const [showEffectPreview, setShowEffectPreview] = useState(false);
   const [effectTestPassed, setEffectTestPassed] = useState(false);
+  const [sourceMode, setSourceMode] = useState<SourceMode>('track');
 
   useEffect(() => {
     const support = getRecorderSupport();
@@ -206,9 +209,11 @@ export default function Home() {
     return personEffectRendererRef.current;
   }
 
-  function openVideoPicker() {
+  function openVideoPicker(mode: SourceMode = sourceModeRef.current) {
     const input = inputRef.current;
     if (!input) return;
+    sourceModeRef.current = mode;
+    setSourceMode(mode);
     input.value = '';
     input.click();
   }
@@ -230,10 +235,11 @@ export default function Home() {
     setExportInfo(null);
     setShowEffectPreview(false);
     setEffectTestPassed(false);
+    setPersonEffects(DEFAULT_PERSON_EFFECTS);
     personEffectRendererRef.current?.reset();
     setProgress(0);
     setPhase('choose');
-    setNotice('正在直接讀取原始影片…');
+    setNotice(sourceModeRef.current === 'direct' ? '正在讀取不追蹤影片…' : '正在讀取追蹤影片…');
   }
 
   function readMetadata() {
@@ -245,6 +251,29 @@ export default function Home() {
       duration: formatDuration(video.duration),
       resolution: video.videoWidth + ' × ' + video.videoHeight,
     });
+    if (sourceModeRef.current === 'direct') {
+      const fullBox: Box = [0, 0, video.videoWidth, video.videoHeight];
+      const endTime = Number.isFinite(video.duration) ? Math.max(0.001, video.duration) : 0.001;
+      const directPath: TrackPoint[] = [
+        { time: 0, box: [...fullBox] as Box, score: 1, accepted: true },
+        { time: endTime, box: [...fullBox] as Box, score: 1, accepted: true },
+      ];
+      selectionRef.current = { time: 0, box: fullBox };
+      setTrackPath(directPath);
+      setAspect(video.videoWidth / video.videoHeight < 0.8 ? '9:16' : video.videoWidth > video.videoHeight ? '16:9' : '1:1');
+      setPersonEffects({
+        ...DEFAULT_PERSON_EFFECTS,
+        enabled: true,
+        preserveFraming: true,
+        background: 'black',
+        outline: 'none',
+        cloneCount: 0,
+        cloneDelay: 0,
+      });
+      setPhase('path-ready');
+      setNotice('不追蹤模式：保留輸入構圖，可直接測試去背');
+      return;
+    }
     setNotice('影片已在本機載入，沒有上傳或預先轉檔');
   }
 
@@ -643,6 +672,7 @@ export default function Home() {
       await renderer.prepare(video, smoothedPath, {
         startTime: testStart,
         endTime: testEnd,
+        preserveFraming: personEffects.preserveFraming,
         onProgress: (next) => {
           setProgress(next * 0.9);
           setNotice('先逐格鎖定主角並去背 · ' + Math.round(next * 100) + '%');
@@ -703,6 +733,7 @@ export default function Home() {
         await effectRenderer.prepare(video, smoothTrackPath(trackPath, smoothness), {
           startTime: 0,
           endTime: video.duration,
+          preserveFraming: personEffects.preserveFraming,
           onProgress: (next) => {
             setProgress(next * 0.8);
             setNotice('先完成整支影片的主角去背 · ' + Math.round(next * 100) + '%');
@@ -783,23 +814,31 @@ export default function Home() {
       <section className="hero">
         <div className="eyebrow">IPHONE WEB APP · 技術原型</div>
         <h1>讓主角一直留在<span>畫面正中央。</span></h1>
-        <p>選擇 iPhone 原始 MOV／HEVC，直接在手機裡辨識、追蹤與輸出。影片不會離開這台裝置。</p>
+        <p>每支 MOV／HEVC／MP4 都可自行選擇追蹤或不追蹤，再於手機本機去背與輸出。影片不會離開這台裝置。</p>
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
-          <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>指定主角</span></div>
-          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤與輸出</span></div>
+          <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>{sourceMode === 'direct' ? '直接去背' : '指定主角'}</span></div>
+          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>{sourceMode === 'direct' ? '特效與輸出' : '追蹤與輸出'}</span></div>
         </div>
       </section>
 
       <section className="workspace">
         <div className="video-panel">
           {!videoUrl ? (
-            <button className="picker" type="button" onClick={openVideoPicker}>
-              <span className="picker-icon" aria-hidden="true">+</span>
-              <strong>選擇一支影片</strong>
-              <small>支援「照片」與「檔案」中的 MOV、HEVC、MP4</small>
-              <em>選擇影片</em>
-            </button>
+            <div className="picker-options">
+              <button className="picker" type="button" onClick={() => openVideoPicker('track')}>
+                <span className="picker-icon" aria-hidden="true">+</span>
+                <strong>追蹤模式</strong>
+                <small>框選主角、追蹤並可重新構圖</small>
+                <em>選片並追蹤</em>
+              </button>
+              <button className="picker direct" type="button" onClick={() => openVideoPicker('direct')}>
+                <span className="picker-icon" aria-hidden="true">✓</span>
+                <strong>不追蹤模式</strong>
+                <small>保留輸入影片構圖，跳過所有 ViT 追蹤</small>
+                <em>選片並直接去背</em>
+              </button>
+            </div>
           ) : (
             <>
               <div className="video-stage">
@@ -827,7 +866,7 @@ export default function Home() {
                   aria-label="3 秒人物特效預覽"
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒人物特效測試' : showEffectPreview ? 'Stage 1 特效預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '影片本機解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒人物特效測試' : showEffectPreview ? 'Stage 1 特效預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? (sourceMode === 'direct' ? '不追蹤 · 直接去背' : '構圖與輸出') : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
                   <div className="progress-overlay">
@@ -838,7 +877,7 @@ export default function Home() {
               </div>
               <div className="video-actions">
                 {phase !== 'tracking' && phase !== 'effect-testing' && phase !== 'exporting' && (
-                  <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
+                  <button type="button" onClick={() => openVideoPicker()}>重新選擇影片</button>
                 )}
                 {phase === 'choose' && (
                   <button className="primary" type="button" disabled={!videoInfo} onClick={enterSelection}>
@@ -868,7 +907,7 @@ export default function Home() {
                     <button className="primary" type="button" onClick={runFullTracking}>追蹤完整影片</button>
                   </>
                 )}
-                {phase === 'path-ready' && (
+                {phase === 'path-ready' && sourceMode !== 'direct' && (
                   <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
                 )}
               </div>
@@ -876,13 +915,13 @@ export default function Home() {
                 <section className="export-panel">
                   <div className="export-heading">
                     <div>
-                      <span>完整路徑已就緒</span>
-                      <strong>選擇輸出構圖</strong>
+                      <span>{sourceMode === 'direct' ? '使用者選擇不追蹤' : '完整路徑已就緒'}</span>
+                      <strong>{sourceMode === 'direct' ? '保留輸入構圖，直接去背' : '選擇輸出構圖'}</strong>
                     </div>
                     <b>{trackPath.length} 點</b>
                   </div>
 
-                  <div className="aspect-options" aria-label="輸出比例">
+                  {sourceMode !== 'direct' && <div className="aspect-options" aria-label="輸出比例">
                     {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
                       <button
                         className={aspect === preset ? 'selected' : ''}
@@ -894,9 +933,9 @@ export default function Home() {
                         {preset}
                       </button>
                     ))}
-                  </div>
+                  </div>}
 
-                  <label className="range-control">
+                  {sourceMode !== 'direct' && <label className="range-control">
                     <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
                     <input
                       type="range"
@@ -906,9 +945,9 @@ export default function Home() {
                       disabled={phase === 'exporting'}
                       onChange={(event) => { setSubjectScale(Number(event.target.value) / 100); clearRenderedOutput(); }}
                     />
-                  </label>
+                  </label>}
 
-                  <label className="range-control">
+                  {sourceMode !== 'direct' && <label className="range-control">
                     <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
                     <input
                       type="range"
@@ -918,7 +957,7 @@ export default function Home() {
                       disabled={phase === 'exporting'}
                       onChange={(event) => { setSmoothness(Number(event.target.value) / 100); clearRenderedOutput(); }}
                     />
-                  </label>
+                  </label>}
 
                   <div className="effect-lab">
                     <div className="effect-heading">
@@ -935,7 +974,7 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟' : '開啟特效'}
                       </button>
                     </div>
-                    <p className="effect-note">先逐格用 ViT＋MagicTouch 鎖定原主角，再以 Pose 人體遮罩排除風扇與家具；去背全部完成後才套特效。所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">{sourceMode === 'direct' ? '依使用者選擇保留輸入影片構圖，直接用 MagicTouch＋Pose 去背，不執行 ViT 追蹤。' : '先逐格用 ViT＋MagicTouch 鎖定原主角，再以 Pose 人體遮罩排除風扇與家具；去背全部完成後才套特效。'} 所有影像仍在這台 iPhone 本機處理。</p>
 
                     {personEffects.enabled && (
                       <>
