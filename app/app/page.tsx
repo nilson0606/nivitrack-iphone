@@ -109,6 +109,8 @@ export default function Home() {
   const personEffectRendererRef = useRef<PersonEffectRenderer | null>(null);
   const sourceModeRef = useRef<SourceMode>('track');
   const correctionDrawingRef = useRef(false);
+  const effectReplayTokenRef = useRef(0);
+  const effectReplayMutedRef = useRef<boolean | null>(null);
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -143,6 +145,7 @@ export default function Home() {
   const [correctionCount, setCorrectionCount] = useState(0);
   const [correctionTime, setCorrectionTime] = useState(0);
   const [effectTestWindow, setEffectTestWindow] = useState<EffectTestWindow | null>(null);
+  const [replayingEffectTest, setReplayingEffectTest] = useState(false);
 
   useEffect(() => {
     const support = getRecorderSupport();
@@ -196,6 +199,7 @@ export default function Home() {
   );
 
   function clearRenderedOutput() {
+    stopEffectReplay();
     personEffectRendererRef.current?.clearPrepared();
     correctionDrawingRef.current = false;
     setEditingMask(false);
@@ -205,6 +209,17 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
+  }
+
+  function stopEffectReplay() {
+    effectReplayTokenRef.current += 1;
+    const video = videoRef.current;
+    video?.pause();
+    if (video && effectReplayMutedRef.current !== null) {
+      video.muted = effectReplayMutedRef.current;
+    }
+    effectReplayMutedRef.current = null;
+    setReplayingEffectTest(false);
   }
 
   function updatePersonEffects(patch: Partial<PersonEffectOptions>) {
@@ -885,6 +900,88 @@ export default function Home() {
       await seekTo(testPreviewTime).catch(() => undefined);
     }
   }
+
+  async function replayEffectTest() {
+    if (replayingEffectTest) {
+      stopEffectReplay();
+      setNotice('已停止重播 3 秒成果');
+      return;
+    }
+    const video = videoRef.current;
+    const previewCanvas = effectPreviewCanvasRef.current;
+    const renderer = personEffectRendererRef.current;
+    const window = effectTestWindow;
+    if (!video || !previewCanvas || !renderer || !window || trackPath.length < 2) {
+      setNotice('請先完成 3 秒特效測試');
+      return;
+    }
+
+    const replayToken = effectReplayTokenRef.current + 1;
+    effectReplayTokenRef.current = replayToken;
+    effectReplayMutedRef.current = video.muted;
+    video.muted = true;
+    setReplayingEffectTest(true);
+    setShowEffectPreview(true);
+    setNotice('正在重播 3 秒成果（不需重新計算）');
+
+    try {
+      const smoothedPath = smoothTrackPath(trackPath, smoothness);
+      video.pause();
+      await seekTo(window.start);
+      if (effectReplayTokenRef.current !== replayToken) return;
+      renderer.resetPlayback();
+      renderer.render(
+        video,
+        previewCanvas,
+        smoothedPath,
+        window.start,
+        subjectScale,
+        personEffects,
+      );
+      await video.play();
+
+      while (
+        effectReplayTokenRef.current === replayToken
+        && !video.paused
+        && video.currentTime < window.end
+      ) {
+        renderer.render(
+          video,
+          previewCanvas,
+          smoothedPath,
+          video.currentTime,
+          subjectScale,
+          personEffects,
+        );
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+
+      if (effectReplayTokenRef.current !== replayToken) return;
+      video.pause();
+      const midpoint = window.start + (window.end - window.start) * 0.5;
+      await seekTo(midpoint);
+      renderer.resetPlayback();
+      renderer.render(
+        video,
+        previewCanvas,
+        smoothedPath,
+        midpoint,
+        subjectScale,
+        personEffects,
+      );
+      setNotice('3 秒成果重播完成');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (effectReplayTokenRef.current === replayToken) {
+        if (effectReplayMutedRef.current !== null) {
+          video.muted = effectReplayMutedRef.current;
+        }
+        effectReplayMutedRef.current = null;
+        setReplayingEffectTest(false);
+      }
+    }
+  }
   async function exportVideo(codec: 'h264' | 'hevc') {
     const video = videoRef.current;
     const renderCanvas = renderCanvasRef.current;
@@ -1113,7 +1210,14 @@ export default function Home() {
                     )}
                   </div>
                   {!editingMask ? (
-                    <p>正常情況直接輸出，不需要手修；只有仍看見明顯誤入物或主角缺角時才開啟修正。</p>
+                    <>
+                      <p>正常情況直接輸出，不需要手修；只有仍看見明顯誤入物或主角缺角時才開啟修正。</p>
+                      <div className="correction-actions">
+                        <button className="primary" type="button" onClick={() => void replayEffectTest()}>
+                          {replayingEffectTest ? '停止重播' : '▶ 重播 3 秒成果'}
+                        </button>
+                      </div>
+                    </>
                   ) : (
                     <>
                       <label className="correction-timeline">
