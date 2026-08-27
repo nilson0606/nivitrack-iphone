@@ -117,9 +117,9 @@ export function createBodyCoreSupport(
     minimumEdge * 0.052,
   );
   const torsoRadius = clamp(
-    Math.max(shoulderWidth, hipWidth) * 0.52,
-    minimumEdge * 0.055,
-    minimumEdge * 0.19,
+    Math.max(shoulderWidth, hipWidth) * 0.42,
+    minimumEdge * 0.05,
+    minimumEdge * 0.15,
   );
 
   paintCapsule(support, width, height, shoulderMiddle, hipMiddle, torsoRadius);
@@ -163,9 +163,91 @@ function createGpuCanvas() {
   return canvas;
 }
 
-function smoothGate(value: number) {
-  const normalized = Math.max(0, Math.min(1, (value - 0.05) / 0.45));
+function smoothRange(value: number, minimum: number, maximum: number) {
+  const normalized = clamp(
+    (value - minimum) / Math.max(0.000001, maximum - minimum),
+    0,
+    1,
+  );
   return normalized * normalized * (3 - 2 * normalized);
+}
+
+function samplePoseMaximum(
+  poseValues: Float32Array,
+  poseWidth: number,
+  poseHeight: number,
+  sourceX: number,
+  sourceY: number,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  const centerX = Math.min(
+    poseWidth - 1,
+    Math.max(0, Math.floor(((sourceX + 0.5) / sourceWidth) * poseWidth)),
+  );
+  const centerY = Math.min(
+    poseHeight - 1,
+    Math.max(0, Math.floor(((sourceY + 0.5) / sourceHeight) * poseHeight)),
+  );
+  let maximum = 0;
+  for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+    const y = Math.min(poseHeight - 1, Math.max(0, centerY + offsetY));
+    for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      const x = Math.min(poseWidth - 1, Math.max(0, centerX + offsetX));
+      maximum = Math.max(maximum, poseValues[y * poseWidth + x] ?? 0);
+    }
+  }
+  return maximum;
+}
+
+export function fuseSubjectPoseAlpha(
+  subjectValues: Float32Array,
+  subjectWidth: number,
+  subjectHeight: number,
+  poseValues: Float32Array | null,
+  poseWidth: number,
+  poseHeight: number,
+  bodySupport: Uint8ClampedArray | null,
+) {
+  const alpha = new Uint8ClampedArray(subjectValues.length);
+  const hasPose = Boolean(
+    poseValues
+    && poseWidth > 0
+    && poseHeight > 0
+    && poseValues.length === poseWidth * poseHeight,
+  );
+  const hasBodySupport = Boolean(
+    bodySupport
+    && bodySupport.length === subjectWidth * subjectHeight,
+  );
+
+  for (let y = 0; y < subjectHeight; y += 1) {
+    for (let x = 0; x < subjectWidth; x += 1) {
+      const index = y * subjectWidth + x;
+      let gate = 1;
+      if (hasPose && poseValues) {
+        const poseConfidence = samplePoseMaximum(
+          poseValues,
+          poseWidth,
+          poseHeight,
+          x,
+          y,
+          subjectWidth,
+          subjectHeight,
+        );
+        const poseGate = smoothRange(poseConfidence, 0.12, 0.62);
+        const bodyConfidence = hasBodySupport && bodySupport
+          ? bodySupport[index] / 255
+          : 0;
+        const bodyGate = smoothRange(bodyConfidence, 0.34, 0.84) * 0.94;
+        gate = Math.max(poseGate, bodyGate);
+      }
+      alpha[index] = Math.round(
+        clamp(subjectValues[index] ?? 0, 0, 1) * gate * 255,
+      );
+    }
+  }
+  return alpha;
 }
 
 export class MagicPoseMatte {
@@ -277,31 +359,6 @@ export class MagicPoseMatte {
         this.previousPoseHeight = poseMask.height;
       }
 
-      const alpha = new Uint8ClampedArray(subjectValues.length);
-      for (let y = 0; y < subjectMask.height; y += 1) {
-        const poseY = this.previousPose
-          ? Math.min(
-              this.previousPoseHeight - 1,
-              Math.floor(((y + 0.5) / subjectMask.height) * this.previousPoseHeight),
-            )
-          : 0;
-        for (let x = 0; x < subjectMask.width; x += 1) {
-          const index = y * subjectMask.width + x;
-          let poseGate = this.previousPose ? 0 : 1;
-          if (this.previousPose) {
-            const poseX = Math.min(
-              this.previousPoseWidth - 1,
-              Math.floor(((x + 0.5) / subjectMask.width) * this.previousPoseWidth),
-            );
-            poseGate = smoothGate(
-              this.previousPose[poseY * this.previousPoseWidth + poseX],
-            );
-          }
-          alpha[index] = Math.round(
-            Math.max(0, Math.min(1, subjectValues[index])) * poseGate * 255,
-          );
-        }
-      }
       let bodySupport = createBodyCoreSupport(
         poseResult.landmarks?.[0],
         subjectMask.width,
@@ -323,6 +380,15 @@ export class MagicPoseMatte {
       } else {
         this.missingBodySupportFrames += 1;
       }
+      const alpha = fuseSubjectPoseAlpha(
+        subjectValues,
+        subjectMask.width,
+        subjectMask.height,
+        this.previousPose,
+        this.previousPoseWidth,
+        this.previousPoseHeight,
+        bodySupport,
+      );
       return {
         alpha,
         bodySupport,
