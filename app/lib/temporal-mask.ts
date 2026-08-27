@@ -99,6 +99,14 @@ function sampleField(values: Float32Array, field: MotionField, x: number, y: num
   return topValue * (1 - mixY) + bottomValue * mixY;
 }
 
+export function sampleMotion(field: MotionField, x: number, y: number) {
+  return {
+    dx: sampleField(field.dx, field, x, y),
+    dy: sampleField(field.dy, field, x, y),
+    confidence: sampleField(field.confidence, field, x, y),
+  };
+}
+
 function sampleAlpha(alpha: Uint8ClampedArray, width: number, height: number, x: number, y: number) {
   const atX = clamp(x, 0, width - 1);
   const atY = clamp(y, 0, height - 1);
