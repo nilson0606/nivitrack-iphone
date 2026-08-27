@@ -844,7 +844,7 @@ export default function Home() {
               <div className="video-stage">
                 <video
                   ref={videoRef}
-                  className={phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? '' : 'is-hidden'}
+                  className={sourceMode === 'direct' || phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? '' : 'is-hidden'}
                   src={videoUrl}
                   controls
                   playsInline
@@ -854,7 +854,7 @@ export default function Home() {
                 />
                 <canvas
                   ref={canvasRef}
-                  className={phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
+                  className={sourceMode === 'direct' || phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
                   onPointerDown={startBox}
                   onPointerMove={moveBox}
                   onPointerUp={finishBox}
