@@ -1,0 +1,12 @@
+{
+  "name": "NiviTrack iPhone 本機影片追蹤",
+  "short_name": "NiviTrack",
+  "description": "在 iPhone 本機直接處理 MOV／HEVC，指定主角並完成 ViT 追蹤與影片輸出。",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3f5ef",
+  "theme_color": "#102018"
+}
