@@ -1,4 +1,5 @@
 import type { Box } from './vit-tracker';
+import type { PersonEffectOptions, PersonEffectRenderer } from './person-effects';
 
 export type AspectPreset = '9:16' | '1:1' | '16:9';
 
@@ -19,6 +20,8 @@ export type ExportOptions = {
   subjectScale: number;
   smoothness: number;
   codec: 'h264' | 'hevc';
+  effects?: PersonEffectOptions;
+  effectRenderer?: PersonEffectRenderer;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -48,6 +51,13 @@ const OUTPUT_SIZES: Record<AspectPreset, [number, number]> = {
   '1:1': [720, 720],
   '16:9': [1280, 720],
 };
+
+export function configureOutputCanvas(canvas: HTMLCanvasElement, aspect: AspectPreset) {
+  const [width, height] = OUTPUT_SIZES[aspect];
+  canvas.width = width;
+  canvas.height = height;
+  return { width, height };
+}
 
 function firstSupported(types: string[]) {
   if (typeof MediaRecorder === 'undefined') return null;
@@ -115,7 +125,14 @@ function drawOutputFrame(
   path: TrackPoint[],
   time: number,
   subjectScale: number,
+  effects?: PersonEffectOptions,
+  effectRenderer?: PersonEffectRenderer,
 ) {
+  if (effects?.enabled) {
+    if (!effectRenderer) throw new Error('人物特效模型尚未載入');
+    effectRenderer.render(video, canvas, path, time, subjectScale, effects);
+    return;
+  }
   const context = canvas.getContext('2d', { alpha: false });
   if (!context || !video.videoWidth || !video.videoHeight) return;
   const [x, y, width, height] = interpolateBox(path, time);
@@ -211,10 +228,9 @@ export class RealtimeVideoExporter {
       throw new Error(options.codec === 'hevc' ? '這台 iPhone 的 Safari 不支援 HEVC 網頁輸出' : '這台 iPhone 的 Safari 不支援 H.264 MP4 網頁輸出');
     }
 
-    const [width, height] = OUTPUT_SIZES[options.aspect];
-    canvas.width = width;
-    canvas.height = height;
+    const { width, height } = configureOutputCanvas(canvas, options.aspect);
     const smoothedPath = smoothTrackPath(path, options.smoothness);
+    options.effectRenderer?.reset();
     const originalTime = this.video.currentTime;
     const originalRate = this.video.playbackRate;
     const audioTracks = await this.prepareAudio();
@@ -245,7 +261,15 @@ export class RealtimeVideoExporter {
       this.video.pause();
       await seek(this.video, 0);
       this.video.playbackRate = 1;
-      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.subjectScale);
+      drawOutputFrame(
+        this.video,
+        canvas,
+        smoothedPath,
+        0,
+        options.subjectScale,
+        options.effects,
+        options.effectRenderer,
+      );
       recorder.start(1000);
       recorderStarted = true;
 
@@ -272,9 +296,23 @@ export class RealtimeVideoExporter {
             settle(new Error('使用者已取消輸出'));
             return false;
           }
-          drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.subjectScale);
-          options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
-          return true;
+          try {
+            drawOutputFrame(
+              this.video,
+              canvas,
+              smoothedPath,
+              mediaTime,
+              options.subjectScale,
+              options.effects,
+              options.effectRenderer,
+            );
+            options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
+            return true;
+          } catch (error) {
+            this.video.pause();
+            settle(error instanceof Error ? error : new Error(String(error)));
+            return false;
+          }
         };
         const videoFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
           if (!render(metadata.mediaTime)) return;

@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-no-effects-stable-v2';
+const VERSION = 'nivitrack-usable-matte-integration';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -8,9 +8,13 @@ const APP_SHELL = [
   APP_ENTRY,
   appAsset('manifest.webmanifest'),
   appAsset('og.png'),
+  appAsset('manual.html'),
 ];
 const MODEL_ASSETS = [
   appAsset('models/vittrack.onnx'),
+  appAsset('models/selfie_segmenter.tflite'),
+  appAsset('mediapipe/vision_wasm_module_internal.js'),
+  appAsset('mediapipe/vision_wasm_module_internal.wasm'),
   appAsset('models/ssdlite_mobilenet_v2/model.json'),
   appAsset('models/ssdlite_mobilenet_v2/group1-shard1of5'),
   appAsset('models/ssdlite_mobilenet_v2/group1-shard2of5'),

@@ -12,11 +12,21 @@ import type { ObjectDetection } from '@tensorflow-models/coco-ssd';
 import { Box, TrackResult, VitTracker } from '../lib/vit-tracker';
 import {
   AspectPreset,
+  configureOutputCanvas,
   getRecorderSupport,
   RealtimeVideoExporter,
   RecorderSupport,
+  smoothTrackPath,
   TrackPoint,
 } from '../lib/video-export';
+import {
+  BackgroundEffect,
+  DEFAULT_PERSON_EFFECTS,
+  OutlineEffect,
+  PersonEffectOptions,
+  PersonEffectRenderer,
+  SubjectEffect,
+} from '../lib/person-effects';
 
 type Capability = {
   label: string;
@@ -31,7 +41,7 @@ type VideoInfo = {
   resolution: string;
 };
 
-type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
+type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'effect-testing' | 'exporting';
 
 type TrackingStats = {
   frames: number;
@@ -85,7 +95,9 @@ export default function Home() {
   const detectorRef = useRef<ObjectDetection | null>(null);
   const selectionRef = useRef<{ time: number; box: Box } | null>(null);
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
+  const effectPreviewCanvasRef = useRef<HTMLCanvasElement>(null);
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
+  const personEffectRendererRef = useRef<PersonEffectRenderer | null>(null);
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -110,6 +122,9 @@ export default function Home() {
   const [exportUrl, setExportUrl] = useState('');
   const [exportBlob, setExportBlob] = useState<Blob | null>(null);
   const [exportInfo, setExportInfo] = useState<ExportInfo | null>(null);
+  const [personEffects, setPersonEffects] = useState<PersonEffectOptions>(DEFAULT_PERSON_EFFECTS);
+  const [showEffectPreview, setShowEffectPreview] = useState(false);
+  const [effectTestPassed, setEffectTestPassed] = useState(false);
 
   useEffect(() => {
     const support = getRecorderSupport();
@@ -117,6 +132,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
+        { label: '人物去背', detail: 'MediaPipe', available: typeof WebAssembly !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -152,6 +168,7 @@ export default function Home() {
   useEffect(() => {
     return () => {
       void exporterRef.current?.dispose();
+      personEffectRendererRef.current?.close();
     };
   }, []);
 
@@ -159,6 +176,28 @@ export default function Home() {
     () => capabilities.filter((item) => item.available).length,
     [capabilities],
   );
+
+  function clearRenderedOutput() {
+    setShowEffectPreview(false);
+    setEffectTestPassed(false);
+    setExportUrl('');
+    setExportBlob(null);
+    setExportInfo(null);
+  }
+
+  function updatePersonEffects(patch: Partial<PersonEffectOptions>) {
+    setPersonEffects((current) => ({ ...current, ...patch }));
+    clearRenderedOutput();
+  }
+
+  async function getPersonEffectRenderer() {
+    if (!personEffectRendererRef.current) {
+      const wasmBase = new URL('mediapipe/', document.baseURI).href;
+      const modelUrl = new URL('models/selfie_segmenter.tflite', document.baseURI).href;
+      personEffectRendererRef.current = await PersonEffectRenderer.create(wasmBase, modelUrl);
+    }
+    return personEffectRendererRef.current;
+  }
 
   function openVideoPicker() {
     const input = inputRef.current;
@@ -182,6 +221,9 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
+    setShowEffectPreview(false);
+    setEffectTestPassed(false);
+    personEffectRendererRef.current?.reset();
     setProgress(0);
     setPhase('choose');
     setNotice('正在直接讀取原始影片…');
@@ -259,6 +301,9 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
+    setShowEffectPreview(false);
+    setEffectTestPassed(false);
+    personEffectRendererRef.current?.reset();
     setNotice('用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawFrame(null));
   }
@@ -470,6 +515,9 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
+    setShowEffectPreview(false);
+    setEffectTestPassed(false);
+    personEffectRendererRef.current?.reset();
     setProgress(0);
     setCurrentScore(null);
 
@@ -555,6 +603,63 @@ export default function Home() {
     }
   }
 
+  async function runEffectTest() {
+    const video = videoRef.current;
+    const previewCanvas = effectPreviewCanvasRef.current;
+    const selection = selectionRef.current;
+    if (!video || !previewCanvas || !selection || trackPath.length < 2) {
+      setNotice('請先完成整支影片的 ViT 追蹤');
+      return;
+    }
+    if (!personEffects.enabled) {
+      setNotice('請先開啟 Stage 1 人物特效');
+      return;
+    }
+
+    clearRenderedOutput();
+    cancelRef.current = false;
+    setPhase('effect-testing');
+    setProgress(0);
+    setCurrentScore(null);
+    setNotice('正在載入本機人物去背模型…');
+    const testStart = Math.min(selection.time, Math.max(0, video.duration - 3));
+    const testEnd = Math.min(video.duration, testStart + 3);
+    const interval = 1 / 10;
+    const totalFrames = Math.max(1, Math.ceil((testEnd - testStart) / interval));
+
+    try {
+      const renderer = await getPersonEffectRenderer();
+      renderer.reset();
+      configureOutputCanvas(previewCanvas, aspect);
+      const smoothedPath = smoothTrackPath(trackPath, smoothness);
+      video.pause();
+
+      for (let frame = 0; frame <= totalFrames; frame += 1) {
+        if (cancelRef.current) throw new Error('使用者已取消特效測試');
+        const at = Math.min(testEnd, testStart + frame * interval);
+        await seekTo(at);
+        renderer.render(video, previewCanvas, smoothedPath, at, subjectScale, personEffects);
+        setShowEffectPreview(true);
+        const next = frame / Math.max(1, totalFrames);
+        setProgress(next);
+        setNotice('3 秒人物特效測試 · ' + Math.round(next * 100) + '%');
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+
+      setProgress(1);
+      setEffectTestPassed(true);
+      setPhase('path-ready');
+      setNotice('3 秒特效測試完成；滿意後可輸出完整影片');
+    } catch (error) {
+      setShowEffectPreview(false);
+      setEffectTestPassed(false);
+      setPhase('path-ready');
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      video.pause();
+      await seekTo(testStart).catch(() => undefined);
+    }
+  }
   async function exportVideo(codec: 'h264' | 'hevc') {
     const video = videoRef.current;
     const renderCanvas = renderCanvasRef.current;
@@ -562,18 +667,26 @@ export default function Home() {
       setNotice('請先完成整支影片的 ViT 追蹤');
       return;
     }
+    if (personEffects.enabled && !effectTestPassed) {
+      setNotice('請先完成 3 秒特效測試，再輸出完整影片');
+      return;
+    }
     cancelRef.current = false;
+    setShowEffectPreview(false);
     setPhase('exporting');
     setProgress(0);
     setNotice(codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
 
     try {
+      const effectRenderer = personEffects.enabled ? await getPersonEffectRenderer() : undefined;
       if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         aspect,
         subjectScale,
         smoothness,
         codec,
+        effects: personEffects,
+        effectRenderer,
         onProgress: (next) => {
           setProgress(next);
           setNotice('本機編碼中 · ' + Math.round(next * 100) + '%');
@@ -581,7 +694,7 @@ export default function Home() {
         isCancelled: () => cancelRef.current,
       });
       const baseName = (sourceFile?.name ?? 'NiviTrack').replace(/\.[^.]+$/, '');
-      const name = baseName + '-NiviTrack-' + aspect.replace(':', 'x') + '.mp4';
+      const name = baseName + '-NiviTrack' + (personEffects.enabled ? '-FX' : '') + '-' + aspect.replace(':', 'x') + '.mp4';
       setExportBlob(result.blob);
       setExportUrl(URL.createObjectURL(result.blob));
       setExportInfo({
@@ -621,7 +734,7 @@ export default function Home() {
 
   function cancelTracking() {
     cancelRef.current = true;
-    setNotice(phase === 'exporting' ? '正在取消輸出…' : '正在取消追蹤…');
+    setNotice(phase === 'exporting' ? '正在取消輸出…' : phase === 'effect-testing' ? '正在取消特效測試…' : '正在取消追蹤…');
   }
 
   const step = phase === 'choose' ? 1 : phase === 'select' ? 2 : 3;
@@ -660,7 +773,7 @@ export default function Home() {
               <div className="video-stage">
                 <video
                   ref={videoRef}
-                  className={phase === 'choose' || phase === 'exporting' ? '' : 'is-hidden'}
+                  className={phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? '' : 'is-hidden'}
                   src={videoUrl}
                   controls
                   playsInline
@@ -670,24 +783,29 @@ export default function Home() {
                 />
                 <canvas
                   ref={canvasRef}
-                  className={phase === 'choose' || phase === 'exporting' ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
+                  className={phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
                   onPointerDown={startBox}
                   onPointerMove={moveBox}
                   onPointerUp={finishBox}
                   onPointerCancel={finishBox}
                 />
+                <canvas
+                  ref={effectPreviewCanvasRef}
+                  className={showEffectPreview ? 'effect-preview-canvas' : 'effect-preview-canvas is-hidden'}
+                  aria-label="3 秒人物特效預覽"
+                />
                 <span className="source-badge">
-                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒人物特效測試' : showEffectPreview ? 'Stage 1 特效預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
                 </span>
-                {(phase === 'tracking' || phase === 'exporting') && (
+                {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>score {currentScore === null ? '—' : currentScore.toFixed(3)}</span>
+                    <span>{phase === 'effect-testing' ? '人物去背＋延遲分身' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
                   </div>
                 )}
               </div>
               <div className="video-actions">
-                {phase !== 'tracking' && phase !== 'exporting' && (
+                {phase !== 'tracking' && phase !== 'effect-testing' && phase !== 'exporting' && (
                   <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
                 )}
                 {phase === 'choose' && (
@@ -709,8 +827,8 @@ export default function Home() {
                     </button>
                   </>
                 )}
-                {(phase === 'tracking' || phase === 'exporting') && (
-                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : '取消追蹤'}</button>
+                {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
+                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'effect-testing' ? '取消特效測試' : '取消追蹤'}</button>
                 )}
                 {phase === 'complete' && (
                   <>
@@ -722,7 +840,7 @@ export default function Home() {
                   <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
                 )}
               </div>
-              {(phase === 'path-ready' || phase === 'exporting') && trackPath.length > 1 && (
+              {(phase === 'path-ready' || phase === 'effect-testing' || phase === 'exporting') && trackPath.length > 1 && (
                 <section className="export-panel">
                   <div className="export-heading">
                     <div>
@@ -739,7 +857,7 @@ export default function Home() {
                         type="button"
                         key={preset}
                         disabled={phase === 'exporting'}
-                        onClick={() => setAspect(preset)}
+                        onClick={() => { setAspect(preset); clearRenderedOutput(); }}
                       >
                         {preset}
                       </button>
@@ -754,7 +872,7 @@ export default function Home() {
                       max="80"
                       value={Math.round(subjectScale * 100)}
                       disabled={phase === 'exporting'}
-                      onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
+                      onChange={(event) => { setSubjectScale(Number(event.target.value) / 100); clearRenderedOutput(); }}
                     />
                   </label>
 
@@ -766,22 +884,163 @@ export default function Home() {
                       max="100"
                       value={Math.round(smoothness * 100)}
                       disabled={phase === 'exporting'}
-                      onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
+                      onChange={(event) => { setSmoothness(Number(event.target.value) / 100); clearRenderedOutput(); }}
                     />
                   </label>
 
+                  <div className="effect-lab">
+                    <div className="effect-heading">
+                      <div>
+                        <span>STAGE 1</span>
+                        <strong>人物去背與延遲分身</strong>
+                      </div>
+                      <button
+                        className={personEffects.enabled ? 'selected' : ''}
+                        type="button"
+                        disabled={phase !== 'path-ready'}
+                        onClick={() => updatePersonEffects({ enabled: !personEffects.enabled })}
+                      >
+                        {personEffects.enabled ? '已開啟' : '開啟特效'}
+                      </button>
+                    </div>
+                    <p className="effect-note">目前人物去背針對人物主角；所有影像仍在這台 iPhone 本機處理。</p>
+
+                    {personEffects.enabled && (
+                      <>
+                        <div className="effect-group">
+                          <span>背景</span>
+                          <div className="effect-options three">
+                            {([['original', '原始'], ['black', '純黑'], ['blur', '模糊']] as Array<[BackgroundEffect, string]>).map(([value, label]) => (
+                              <button
+                                className={personEffects.background === value ? 'selected' : ''}
+                                type="button"
+                                key={value}
+                                disabled={phase !== 'path-ready'}
+                                onClick={() => updatePersonEffects({ background: value })}
+                              >{label}</button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="effect-group">
+                          <span>主角</span>
+                          <div className="effect-options three">
+                            {([['original', '原色'], ['blue', '藍色剪影'], ['black', '黑色剪影']] as Array<[SubjectEffect, string]>).map(([value, label]) => (
+                              <button
+                                className={personEffects.subject === value ? 'selected' : ''}
+                                type="button"
+                                key={value}
+                                disabled={phase !== 'path-ready'}
+                                onClick={() => updatePersonEffects({ subject: value })}
+                              >{label}</button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="effect-group">
+                          <span>邊框</span>
+                          <div className="effect-options three">
+                            {([['white', '白邊'], ['neon', '霓虹光'], ['none', '無邊框']] as Array<[OutlineEffect, string]>).map(([value, label]) => (
+                              <button
+                                className={personEffects.outline === value ? 'selected' : ''}
+                                type="button"
+                                key={value}
+                                disabled={phase !== 'path-ready'}
+                                onClick={() => updatePersonEffects({ outline: value })}
+                              >{label}</button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="effect-group">
+                          <span>分身數量</span>
+                          <div className="effect-options five">
+                            {[0, 1, 2, 3, 4].map((count) => (
+                              <button
+                                className={personEffects.cloneCount === count ? 'selected' : ''}
+                                type="button"
+                                key={count}
+                                disabled={phase !== 'path-ready'}
+                                onClick={() => updatePersonEffects({ cloneCount: count })}
+                              >{count}</button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <label className="range-control">
+                          <span><b>分身延遲</b><em>{personEffects.cloneDelay.toFixed(1)} 秒</em></span>
+                          <input
+                            type="range"
+                            min="10"
+                            max="100"
+                            step="5"
+                            value={Math.round(personEffects.cloneDelay * 100)}
+                            disabled={phase !== 'path-ready' || personEffects.cloneCount === 0}
+                            onChange={(event) => updatePersonEffects({ cloneDelay: Number(event.target.value) / 100 })}
+                          />
+                        </label>
+
+                        <label className="range-control">
+                          <span><b>分身透明度</b><em>{Math.round(personEffects.cloneOpacity * 100)}%</em></span>
+                          <input
+                            type="range"
+                            min="10"
+                            max="100"
+                            step="5"
+                            value={Math.round(personEffects.cloneOpacity * 100)}
+                            disabled={phase !== 'path-ready' || personEffects.cloneCount === 0}
+                            onChange={(event) => updatePersonEffects({ cloneOpacity: Number(event.target.value) / 100 })}
+                          />
+                        </label>
+
+                        <div className="color-control">
+                          <label>
+                            <span>分身顏色</span>
+                            <input
+                              type="color"
+                              value={personEffects.cloneColor}
+                              disabled={phase !== 'path-ready' || personEffects.cloneCount === 0}
+                              onChange={(event) => updatePersonEffects({ cloneColor: event.target.value })}
+                            />
+                          </label>
+                          <div className="color-swatches" aria-label="快速選擇分身顏色">
+                            {['#165dff', '#ff2d55', '#35d292', '#d9f06f', '#9b5cff'].map((color) => (
+                              <button
+                                className={personEffects.cloneColor === color ? 'selected' : ''}
+                                style={{ backgroundColor: color }}
+                                type="button"
+                                key={color}
+                                disabled={phase !== 'path-ready' || personEffects.cloneCount === 0}
+                                aria-label={'選擇 ' + color}
+                                onClick={() => updatePersonEffects({ cloneColor: color })}
+                              />
+                            ))}
+                          </div>
+                        </div>
+
+                        <button
+                          className={'effect-test-button ' + (effectTestPassed ? 'passed' : '')}
+                          type="button"
+                          disabled={phase !== 'path-ready'}
+                          onClick={() => void runEffectTest()}
+                        >
+                          {effectTestPassed ? '✓ 3 秒特效測試完成' : '測試 3 秒特效'}
+                        </button>
+                      </>
+                    )}
+                  </div>
                   <div className="export-buttons">
                     <button
                       className="primary"
                       type="button"
-                      disabled={phase === 'exporting' || !recorderSupport.h264}
+                      disabled={phase !== 'path-ready' || !recorderSupport.h264 || (personEffects.enabled && !effectTestPassed)}
                       onClick={() => void exportVideo('h264')}
                     >
                       輸出相容 MP4
                     </button>
                     <button
                       type="button"
-                      disabled={phase === 'exporting' || !recorderSupport.hevc}
+                      disabled={phase !== 'path-ready' || !recorderSupport.hevc || (personEffects.enabled && !effectTestPassed)}
                       onClick={() => void exportVideo('hevc')}
                     >
                       輸出 HEVC 母片（MP4）
@@ -816,7 +1075,7 @@ export default function Home() {
 
         <aside className="side-panel">
           <div className="status-card">
-            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 7}</b></div>
+            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 8}</b></div>
             <div className="capability-list">
               {capabilities.length === 0 ? <p className="checking">正在檢查 Safari…</p> : capabilities.map((item) => (
                 <div className="capability" key={item.label}>
