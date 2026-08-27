@@ -22,7 +22,6 @@ export type ExportOptions = {
   codec: 'h264' | 'hevc';
   effects?: PersonEffectOptions;
   effectRenderer?: PersonEffectRenderer;
-  preserveSourceFraming?: boolean;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -128,11 +127,10 @@ function drawOutputFrame(
   subjectScale: number,
   effects?: PersonEffectOptions,
   effectRenderer?: PersonEffectRenderer,
-  preserveSourceFraming = false,
 ) {
   if (effects?.enabled) {
     if (!effectRenderer) throw new Error('人物特效模型尚未載入');
-    effectRenderer.render(video, canvas, path, time, subjectScale, effects, preserveSourceFraming);
+    effectRenderer.render(video, canvas, path, time, subjectScale, effects);
     return;
   }
   const context = canvas.getContext('2d', { alpha: false });
@@ -291,7 +289,6 @@ export class RealtimeVideoExporter {
         options.subjectScale,
         options.effects,
         options.effectRenderer,
-        options.preserveSourceFraming,
       );
       recorder.start(1000);
       recorderStarted = true;
@@ -328,7 +325,6 @@ export class RealtimeVideoExporter {
               options.subjectScale,
               options.effects,
               options.effectRenderer,
-              options.preserveSourceFraming,
             );
             options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
             return true;
