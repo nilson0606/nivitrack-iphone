@@ -10,7 +10,8 @@
     "build": "vinext build",
     "start": "vinext start",
     "lint": "eslint app lib scripts vite.config.ts next.config.ts",
-    "test:vit": "node scripts/smoke-vit.mjs"
+    "test:vit": "node scripts/smoke-vit.mjs",
+    "test:mask": "node --experimental-strip-types scripts/smoke-tracked-mask.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "1.0.1",
