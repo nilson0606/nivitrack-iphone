@@ -52,7 +52,8 @@ export type PersonMaskPreparationOptions = {
 };
 
 const SPRITE_SIZE = 256;
-const DIRECT_MATTE_LONG_EDGE = 640;
+const MATTE_PIXEL_BUDGET = 360 * 640;
+const MATTE_MAX_EDGE = 640;
 const PREPARE_INTERVAL = 1 / 30;
 const SNAPSHOT_INTERVAL = 1 / 15;
 
@@ -220,14 +221,13 @@ export class PersonEffectRenderer {
     this.clearPrepared();
   }
 
-  private segmentMask(
-    video: HTMLVideoElement,
-    region: Rect,
-    inputLongEdge = SPRITE_SIZE,
-  ): PreparedMask {
+  private segmentMask(video: HTMLVideoElement, region: Rect): PreparedMask {
     const input = this.inputCanvas.getContext('2d', { alpha: false });
     if (!input) throw new Error('Safari 無法建立人物去背 Canvas');
-    const inputScale = inputLongEdge / Math.max(region.width, region.height);
+    const inputScale = Math.min(
+      Math.sqrt(MATTE_PIXEL_BUDGET / Math.max(1, region.width * region.height)),
+      MATTE_MAX_EDGE / Math.max(1, region.width, region.height),
+    );
     const inputWidth = Math.max(1, Math.round(region.width * inputScale));
     const inputHeight = Math.max(1, Math.round(region.height * inputScale));
     if (this.inputCanvas.width !== inputWidth || this.inputCanvas.height !== inputHeight) {
@@ -326,11 +326,7 @@ export class PersonEffectRenderer {
         const region = options.preserveFraming
           ? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
           : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
-        const prepared = this.segmentMask(
-          video,
-          region,
-          options.preserveFraming ? DIRECT_MATTE_LONG_EDGE : SPRITE_SIZE,
-        );
+        const prepared = this.segmentMask(video, region);
         prepared.time = at;
         this.preparedMasks.push(prepared);
         options.onProgress(frame / totalFrames);
@@ -491,11 +487,7 @@ export class PersonEffectRenderer {
       const region = options.preserveFraming
         ? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
         : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
-      this.applyMask(this.segmentMask(
-        video,
-        region,
-        options.preserveFraming ? DIRECT_MATTE_LONG_EDGE : SPRITE_SIZE,
-      ));
+      this.applyMask(this.segmentMask(video, region));
     }
     this.updateSprite(video);
     if (time - this.lastSnapshotTime >= SNAPSHOT_INTERVAL) {
