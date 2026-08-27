@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-stage1-effects-v8-1-magic-pose-3';
+const VERSION = 'nivitrack-stage1-effects-v8-1-magic-pose-4';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

@@ -242,6 +242,29 @@ export default function Home() {
     setNotice(sourceModeRef.current === 'direct' ? '正在讀取不追蹤影片…' : '正在讀取追蹤影片…');
   }
 
+  function activateDirectMode(video: HTMLVideoElement) {
+    const fullBox: Box = [0, 0, video.videoWidth, video.videoHeight];
+    const endTime = Number.isFinite(video.duration) ? Math.max(0.001, video.duration) : 0.001;
+    const directPath: TrackPoint[] = [
+      { time: 0, box: [...fullBox] as Box, score: 1, accepted: true },
+      { time: endTime, box: [...fullBox] as Box, score: 1, accepted: true },
+    ];
+    selectionRef.current = { time: 0, box: fullBox };
+    setTrackPath(directPath);
+    setAspect(video.videoWidth / video.videoHeight < 0.8 ? '9:16' : video.videoWidth > video.videoHeight ? '16:9' : '1:1');
+    setPersonEffects({
+      ...DEFAULT_PERSON_EFFECTS,
+      enabled: true,
+      preserveFraming: true,
+      background: 'black',
+      outline: 'none',
+      cloneCount: 0,
+      cloneDelay: 0,
+    });
+    setPhase('path-ready');
+    setNotice('不追蹤模式：保留輸入構圖，可直接測試去背');
+  }
+
   function readMetadata() {
     const video = videoRef.current;
     if (!video || !sourceFile) return;
@@ -252,29 +275,34 @@ export default function Home() {
       resolution: video.videoWidth + ' × ' + video.videoHeight,
     });
     if (sourceModeRef.current === 'direct') {
-      const fullBox: Box = [0, 0, video.videoWidth, video.videoHeight];
-      const endTime = Number.isFinite(video.duration) ? Math.max(0.001, video.duration) : 0.001;
-      const directPath: TrackPoint[] = [
-        { time: 0, box: [...fullBox] as Box, score: 1, accepted: true },
-        { time: endTime, box: [...fullBox] as Box, score: 1, accepted: true },
-      ];
-      selectionRef.current = { time: 0, box: fullBox };
-      setTrackPath(directPath);
-      setAspect(video.videoWidth / video.videoHeight < 0.8 ? '9:16' : video.videoWidth > video.videoHeight ? '16:9' : '1:1');
-      setPersonEffects({
-        ...DEFAULT_PERSON_EFFECTS,
-        enabled: true,
-        preserveFraming: true,
-        background: 'black',
-        outline: 'none',
-        cloneCount: 0,
-        cloneDelay: 0,
-      });
-      setPhase('path-ready');
-      setNotice('不追蹤模式：保留輸入構圖，可直接測試去背');
+      activateDirectMode(video);
       return;
     }
     setNotice('影片已在本機載入，沒有上傳或預先轉檔');
+  }
+
+  function switchSourceMode() {
+    const video = videoRef.current;
+    if (!video || !videoInfo) return;
+    video.pause();
+    const nextMode: SourceMode = sourceModeRef.current === 'track' ? 'direct' : 'track';
+    sourceModeRef.current = nextMode;
+    setSourceMode(nextMode);
+    setBox(null);
+    setStats(null);
+    setCandidates([]);
+    setCurrentScore(null);
+    selectionRef.current = null;
+    setTrackPath([]);
+    setProgress(0);
+    clearRenderedOutput();
+    setPersonEffects(DEFAULT_PERSON_EFFECTS);
+    if (nextMode === 'direct') {
+      activateDirectMode(video);
+    } else {
+      setPhase('choose');
+      setNotice('追蹤模式：播放後暫停，再進入主角選取');
+    }
   }
 
   function drawFrame(
@@ -877,7 +905,12 @@ export default function Home() {
               </div>
               <div className="video-actions">
                 {phase !== 'tracking' && phase !== 'effect-testing' && phase !== 'exporting' && (
-                  <button type="button" onClick={() => openVideoPicker()}>重新選擇影片</button>
+                  <>
+                    <button type="button" disabled={!videoInfo} onClick={switchSourceMode}>
+                      {sourceMode === 'direct' ? '改用追蹤模式' : '改用不追蹤模式'}
+                    </button>
+                    <button type="button" onClick={() => openVideoPicker()}>重新選擇影片</button>
+                  </>
                 )}
                 {phase === 'choose' && (
                   <button className="primary" type="button" disabled={!videoInfo} onClick={enterSelection}>
