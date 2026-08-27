@@ -44,6 +44,15 @@ jobs:
           NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
           NEXT_PUBLIC_SITE_URL: ${{ steps.pages.outputs.base_url }}/
 
+      - name: Prepare GitHub Pages asset paths
+        run: |
+          if [ -n "$BASE_PATH" ]; then
+            cp -R "dist/client${BASE_PATH}/." dist/client/
+          fi
+        working-directory: app
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
