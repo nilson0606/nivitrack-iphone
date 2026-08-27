@@ -29,8 +29,11 @@ function sourceSize(source: CanvasImageSource): [number, number] {
   if (source instanceof HTMLCanvasElement || source instanceof HTMLImageElement) {
     return [source.width, source.height];
   }
-  if (source instanceof ImageBitmap || source instanceof VideoFrame) {
+  if (source instanceof ImageBitmap) {
     return [source.width, source.height];
+  }
+  if (source instanceof VideoFrame) {
+    return [source.displayWidth || source.codedWidth, source.displayHeight || source.codedHeight];
   }
   throw new Error('不支援的影像來源');
 }

@@ -53,15 +53,39 @@
 - 每支 iPhone 從同一 GitHub Pages 網址各自安裝；不搬移影片或本機工作資料。
 - GitHub Pages 只託管靜態程式，沒有影片上傳端點。
 
-## 目前原型限制
+## 2026-08-27 真實 iPhone 里程碑
 
-- 追蹤測試長度：3 秒。
-- 取樣：每秒 10 個時間點，以 HTMLVideoElement seek 取得影格。
-- 推論：ONNX Runtime Web、單執行緒 WASM。
-- 初始目標：SSDLite 人物／狗／貓候選框，或手指任意框選。
-- 輸出：目前只產生畫面上的 bbox、score 與效能數據，尚未輸出影片。
+使用者已在真實 iPhone Safari 完成：
 
-這個 10 FPS seek 原型只用來驗證模型可載入、bbox 不換人及量測 iPhone 推論耗時；它不是最終逐幀處理方式。
+- 從 GitHub Pages 開啟 PWA，修正 base path 後所有 JavaScript 資產可正常載入。
+- 從 iPhone 選取並播放 MOV。
+- 在影片畫面用手指框選主角。
+- 完成 3 秒、10 FPS 的 ViT 路徑測試。
+- 將 NiviTrack 加入主畫面並以獨立 Web App 開啟。
+
+尚未記錄 iPhone 型號、iOS 版本、來源 codec／解析度與量測數值，因此不能把這次結果外推為所有 iPhone 均已驗收。
+
+## 目前完整輸出實作
+
+- 以選角時間點為錨點，向影片結尾追蹤，再反向補齊選角前片段。
+- 追蹤路徑以 10 FPS 取樣；輸出時依影片播放時間插值並做雙向平滑。
+- 支援 9:16、1:1、16:9，主角大小與置中柔順度可調。
+- 以同一條 ViT 路徑重播來源影片，不重新跑追蹤。
+- 以 Canvas 產生 720×1280、720×720 或 1280×720 畫面。
+- 來源音訊經 Web Audio 接入同一 MediaStream。
+- Safari MediaRecorder 以功能探測選擇 H.264／AAC MP4；若實機回報 HEVC MIME 可用，亦提供 HEVC／AAC MP4。
+- 完成 Blob 可透過 iOS Share Sheet 分享或儲存到「檔案」。
+
+## 目前仍未完成的驗收
+
+- 完整影片追蹤、平滑構圖、H.264／AAC MP4 的真機端到端輸出。
+- 輸出影片是否有聲、時長與來源一致、FPS 流暢且音訊同步。
+- HEVC 網頁編碼的實機支援與穩定度。
+- QuickTime MOV 容器輸出。現行純 Web 實作不把 HEVC MP4 假稱為 MOV。
+- 長片記憶體、溫度、鎖屏／切背景及取消後的資源釋放。
+- 10 FPS 路徑對快速運動、交叉與遮擋的品質；必要時再提高追蹤取樣率。
+
+若 MOV／HEVC 母片是硬性驗收條件，而 Safari 實機不能可靠提供 HEVC 編碼與 MOV 封裝，正式替代方案仍是 Swift＋AVFoundation＋Core ML，不使用電腦或雲端後端。
 
 ## 下一個實機測試
 

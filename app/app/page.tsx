@@ -10,6 +10,13 @@ import {
 } from 'react';
 import type { ObjectDetection } from '@tensorflow-models/coco-ssd';
 import { Box, TrackResult, VitTracker } from '../lib/vit-tracker';
+import {
+  AspectPreset,
+  getRecorderSupport,
+  RealtimeVideoExporter,
+  RecorderSupport,
+  TrackPoint,
+} from '../lib/video-export';
 
 type Capability = {
   label: string;
@@ -24,7 +31,7 @@ type VideoInfo = {
   resolution: string;
 };
 
-type Phase = 'choose' | 'select' | 'tracking' | 'complete';
+type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
 
 type TrackingStats = {
   frames: number;
@@ -38,6 +45,13 @@ type Candidate = {
   box: Box;
   label: string;
   score: number;
+};
+
+type ExportInfo = {
+  name: string;
+  size: string;
+  mimeType: string;
+  resolution: string;
 };
 
 function formatBytes(bytes: number) {
@@ -69,6 +83,9 @@ export default function Home() {
   const cancelRef = useRef(false);
   const trackerRef = useRef<VitTracker | null>(null);
   const detectorRef = useRef<ObjectDetection | null>(null);
+  const selectionRef = useRef<{ time: number; box: Box } | null>(null);
+  const renderCanvasRef = useRef<HTMLCanvasElement>(null);
+  const exporterRef = useRef<RealtimeVideoExporter | null>(null);
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -82,21 +99,29 @@ export default function Home() {
   const [stats, setStats] = useState<TrackingStats | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [detecting, setDetecting] = useState(false);
+  const [trackPath, setTrackPath] = useState<TrackPoint[]>([]);
+  const [aspect, setAspect] = useState<AspectPreset>('9:16');
+  const [subjectScale, setSubjectScale] = useState(0.55);
+  const [smoothness, setSmoothness] = useState(0.72);
+  const [recorderSupport, setRecorderSupport] = useState<RecorderSupport>({
+    h264: null,
+    hevc: null,
+  });
+  const [exportUrl, setExportUrl] = useState('');
+  const [exportBlob, setExportBlob] = useState<Blob | null>(null);
+  const [exportInfo, setExportInfo] = useState<ExportInfo | null>(null);
 
   useEffect(() => {
-    const mediaRecorder = typeof MediaRecorder !== 'undefined';
-    const supportsMp4 =
-      mediaRecorder &&
-      ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4'].some((type) =>
-        MediaRecorder.isTypeSupported(type),
-      );
+    const support = getRecorderSupport();
     const capabilityFrame = requestAnimationFrame(() => {
+      setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
-        { label: '相容分享', detail: 'H.264 / AAC MP4', available: supportsMp4 },
+        { label: '相容分享', detail: 'H.264 / AAC MP4', available: Boolean(support.h264) },
+        { label: 'HEVC 母片', detail: 'HEVC / AAC', available: Boolean(support.hevc) },
         { label: '離線安裝', detail: 'Service Worker', available: 'serviceWorker' in navigator },
       ]);
     });
@@ -118,6 +143,18 @@ export default function Home() {
     };
   }, [videoUrl]);
 
+  useEffect(() => {
+    return () => {
+      if (exportUrl) URL.revokeObjectURL(exportUrl);
+    };
+  }, [exportUrl]);
+
+  useEffect(() => {
+    return () => {
+      void exporterRef.current?.dispose();
+    };
+  }, []);
+
   const readyCount = useMemo(
     () => capabilities.filter((item) => item.available).length,
     [capabilities],
@@ -133,6 +170,12 @@ export default function Home() {
     setBox(null);
     setStats(null);
     setCandidates([]);
+    selectionRef.current = null;
+    setTrackPath([]);
+    setExportUrl('');
+    setExportBlob(null);
+    setExportInfo(null);
+    setProgress(0);
     setPhase('choose');
     setNotice('正在直接讀取原始影片…');
   }
@@ -204,6 +247,11 @@ export default function Home() {
     setBox(null);
     setStats(null);
     setCandidates([]);
+    selectionRef.current = null;
+    setTrackPath([]);
+    setExportUrl('');
+    setExportBlob(null);
+    setExportInfo(null);
     setNotice('用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawFrame(null));
   }
@@ -229,6 +277,10 @@ export default function Home() {
       .sort((a, b) => a.box[2] * a.box[3] - b.box[2] * b.box[3])[0];
     if (hit) {
       setBox(hit.box);
+      selectionRef.current = {
+        time: videoRef.current?.currentTime ?? 0,
+        box: [...hit.box] as Box,
+      };
       drawFrame(hit.box);
       setNotice('已選擇 AI 辨識框；也可直接拖曳重新框選');
       return;
@@ -259,6 +311,10 @@ export default function Home() {
       return;
     }
     setBox(next);
+    selectionRef.current = {
+      time: videoRef.current?.currentTime ?? 0,
+      box: [...next] as Box,
+    };
     drawFrame(next);
     setNotice('主角已指定；可開始 3 秒 ViT 追蹤測試');
   }
@@ -392,9 +448,173 @@ export default function Home() {
     }
   }
 
+  async function runFullTracking() {
+    const video = videoRef.current;
+    const selection = selectionRef.current;
+    if (!video || !selection || !Number.isFinite(video.duration)) {
+      setNotice('請先在影片畫面框選主角');
+      return;
+    }
+
+    cancelRef.current = false;
+    setPhase('tracking');
+    setStats(null);
+    setTrackPath([]);
+    setExportUrl('');
+    setExportBlob(null);
+    setExportInfo(null);
+    setProgress(0);
+    setCurrentScore(null);
+
+    const interval = 1 / 10;
+    const forwardCount = Math.ceil((video.duration - selection.time) / interval);
+    const backwardCount = Math.ceil(selection.time / interval);
+    const forwardTimes = Array.from({ length: forwardCount }, (_, index) =>
+      Math.min(video.duration, selection.time + (index + 1) * interval),
+    );
+    const backwardTimes = Array.from({ length: backwardCount }, (_, index) =>
+      Math.max(0, selection.time - (index + 1) * interval),
+    );
+    const totalFrames = forwardTimes.length + backwardTimes.length;
+    const points: TrackPoint[] = [{
+      time: selection.time,
+      box: [...selection.box] as Box,
+      score: 1,
+      accepted: true,
+    }];
+    const measurements: TrackResult[] = [];
+    const started = performance.now();
+    let processed = 0;
+
+    try {
+      setNotice('正在載入本機 ViT 模型…');
+      if (!trackerRef.current) {
+        const modelUrl = new URL('models/vittrack.onnx', document.baseURI).href;
+        trackerRef.current = await VitTracker.create(modelUrl);
+      }
+
+      const trackDirection = async (times: number[], label: string) => {
+        await seekTo(selection.time);
+        trackerRef.current!.initialize(video, selection.box);
+        for (const frameTime of times) {
+          if (cancelRef.current) throw new Error('使用者已取消追蹤');
+          await seekTo(frameTime);
+          const result = await trackerRef.current!.update(video);
+          measurements.push(result);
+          points.push({
+            time: frameTime,
+            box: [...result.box] as Box,
+            score: result.score,
+            accepted: result.accepted,
+          });
+          processed += 1;
+          setBox(result.box);
+          setCurrentScore(result.score);
+          setProgress(processed / Math.max(1, totalFrames));
+          setNotice(label + ' · ' + processed + ' / ' + totalFrames + ' 幀');
+          drawFrame(result.box, result.score);
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+      };
+
+      await trackDirection(forwardTimes, '向後完整追蹤');
+      await trackDirection(backwardTimes, '補齊選角前片段');
+
+      points.sort((left, right) => left.time - right.time);
+      const elapsedMs = performance.now() - started;
+      const inferenceTotal = measurements.reduce((sum, item) => sum + item.inferenceMs, 0);
+      const scoreTotal = measurements.reduce((sum, item) => sum + item.score, 0);
+      setTrackPath(points);
+      setStats({
+        frames: measurements.length,
+        elapsedMs,
+        averageInferenceMs: inferenceTotal / Math.max(1, measurements.length),
+        averageScore: scoreTotal / Math.max(1, measurements.length),
+        acceptedFrames: measurements.filter((item) => item.accepted).length,
+      });
+      setProgress(1);
+      setPhase('path-ready');
+      await seekTo(selection.time);
+      setBox(selection.box);
+      drawFrame(selection.box);
+      setNotice('完整 ViT 路徑已建立；可調整構圖並輸出影片');
+    } catch (error) {
+      setPhase('select');
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice(message);
+      await seekTo(selection.time).catch(() => undefined);
+      setBox(selection.box);
+      drawFrame(selection.box);
+    }
+  }
+
+  async function exportVideo(codec: 'h264' | 'hevc') {
+    const video = videoRef.current;
+    const renderCanvas = renderCanvasRef.current;
+    if (!video || !renderCanvas || trackPath.length < 2) {
+      setNotice('請先完成整支影片的 ViT 追蹤');
+      return;
+    }
+    cancelRef.current = false;
+    setPhase('exporting');
+    setProgress(0);
+    setNotice(codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
+
+    try {
+      if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
+      const result = await exporterRef.current.export(trackPath, renderCanvas, {
+        aspect,
+        subjectScale,
+        smoothness,
+        codec,
+        onProgress: (next) => {
+          setProgress(next);
+          setNotice('本機編碼中 · ' + Math.round(next * 100) + '%');
+        },
+        isCancelled: () => cancelRef.current,
+      });
+      const baseName = (sourceFile?.name ?? 'NiviTrack').replace(/\.[^.]+$/, '');
+      const name = baseName + '-NiviTrack-' + aspect.replace(':', 'x') + '.mp4';
+      setExportBlob(result.blob);
+      setExportUrl(URL.createObjectURL(result.blob));
+      setExportInfo({
+        name,
+        size: formatBytes(result.blob.size),
+        mimeType: result.mimeType,
+        resolution: result.width + ' × ' + result.height,
+      });
+      setPhase('path-ready');
+      setNotice('輸出完成；影片仍在這台 iPhone，可分享或儲存到檔案');
+    } catch (error) {
+      setPhase('path-ready');
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice(message);
+    }
+  }
+
+  async function shareExport() {
+    if (!exportBlob || !exportInfo) return;
+    const file = new File([exportBlob], exportInfo.name, { type: exportInfo.mimeType });
+    try {
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'NiviTrack 輸出影片' });
+        setNotice('已開啟 iPhone 分享選單');
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = exportUrl;
+      link.download = exportInfo.name;
+      link.click();
+      setNotice('已交給 Safari 下載；可從下載項目儲存到檔案');
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      setNotice('分享失敗：' + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
   function cancelTracking() {
     cancelRef.current = true;
-    setNotice('正在取消追蹤…');
+    setNotice(phase === 'exporting' ? '正在取消輸出…' : '正在取消追蹤…');
   }
 
   const step = phase === 'choose' ? 1 : phase === 'select' ? 2 : 3;
@@ -415,7 +635,7 @@ export default function Home() {
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
           <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>指定主角</span></div>
-          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤測試</span></div>
+          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤與輸出</span></div>
         </div>
       </section>
 
@@ -433,7 +653,7 @@ export default function Home() {
               <div className="video-stage">
                 <video
                   ref={videoRef}
-                  className={phase === 'choose' ? '' : 'is-hidden'}
+                  className={phase === 'choose' || phase === 'exporting' ? '' : 'is-hidden'}
                   src={videoUrl}
                   controls
                   playsInline
@@ -443,16 +663,16 @@ export default function Home() {
                 />
                 <canvas
                   ref={canvasRef}
-                  className={phase === 'choose' ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
+                  className={phase === 'choose' || phase === 'exporting' ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
                   onPointerDown={startBox}
                   onPointerMove={moveBox}
                   onPointerUp={finishBox}
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
                 </span>
-                {phase === 'tracking' && (
+                {(phase === 'tracking' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
                     <span>score {currentScore === null ? '—' : currentScore.toFixed(3)}</span>
@@ -474,21 +694,114 @@ export default function Home() {
                     <button type="button" disabled={detecting} onClick={detectSubjects}>
                       {detecting ? 'AI 掃描中…' : 'AI 尋找人物／寵物'}
                     </button>
-                    <button className="primary" type="button" disabled={!box} onClick={runTracking}>
+                    <button type="button" disabled={!box} onClick={runTracking}>
                       測試 3 秒 ViT
+                    </button>
+                    <button className="primary" type="button" disabled={!box} onClick={runFullTracking}>
+                      追蹤完整影片
                     </button>
                   </>
                 )}
-                {phase === 'tracking' && (
-                  <button className="danger" type="button" onClick={cancelTracking}>取消追蹤</button>
+                {(phase === 'tracking' || phase === 'exporting') && (
+                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : '取消追蹤'}</button>
                 )}
                 {phase === 'complete' && (
                   <>
                     <button type="button" onClick={enterSelection}>重新框選</button>
-                    <button className="primary" type="button" onClick={runTracking}>再次測試</button>
+                    <button className="primary" type="button" onClick={runFullTracking}>追蹤完整影片</button>
                   </>
                 )}
+                {phase === 'path-ready' && (
+                  <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
+                )}
               </div>
+              {(phase === 'path-ready' || phase === 'exporting') && trackPath.length > 1 && (
+                <section className="export-panel">
+                  <div className="export-heading">
+                    <div>
+                      <span>完整路徑已就緒</span>
+                      <strong>選擇輸出構圖</strong>
+                    </div>
+                    <b>{trackPath.length} 點</b>
+                  </div>
+
+                  <div className="aspect-options" aria-label="輸出比例">
+                    {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
+                      <button
+                        className={aspect === preset ? 'selected' : ''}
+                        type="button"
+                        key={preset}
+                        disabled={phase === 'exporting'}
+                        onClick={() => setAspect(preset)}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+
+                  <label className="range-control">
+                    <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
+                    <input
+                      type="range"
+                      min="25"
+                      max="80"
+                      value={Math.round(subjectScale * 100)}
+                      disabled={phase === 'exporting'}
+                      onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
+                    />
+                  </label>
+
+                  <label className="range-control">
+                    <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={Math.round(smoothness * 100)}
+                      disabled={phase === 'exporting'}
+                      onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
+                    />
+                  </label>
+
+                  <div className="export-buttons">
+                    <button
+                      className="primary"
+                      type="button"
+                      disabled={phase === 'exporting' || !recorderSupport.h264}
+                      onClick={() => void exportVideo('h264')}
+                    >
+                      輸出相容 MP4
+                    </button>
+                    <button
+                      type="button"
+                      disabled={phase === 'exporting' || !recorderSupport.hevc}
+                      onClick={() => void exportVideo('hevc')}
+                    >
+                      輸出 HEVC 母片（MP4）
+                    </button>
+                  </div>
+
+                  {!recorderSupport.hevc && (
+                    <p className="export-note">
+                      此 Safari 未提供 HEVC 網頁編碼；可先用 H.264 MP4。MOV／HEVC 硬性需求需改用原生 AVFoundation。
+                    </p>
+                  )}
+
+                  {exportUrl && exportInfo && (
+                    <div className="export-result">
+                      <video src={exportUrl} controls playsInline preload="metadata" />
+                      <div>
+                        <strong>{exportInfo.name}</strong>
+                        <span>{exportInfo.resolution} · {exportInfo.size}</span>
+                      </div>
+                      <button className="primary" type="button" onClick={() => void shareExport()}>
+                        分享／儲存到 iPhone
+                      </button>
+                    </div>
+                  )}
+                </section>
+              )}
+              <canvas ref={renderCanvasRef} className="export-canvas" aria-hidden="true" />
             </>
           )}
           <input ref={inputRef} className="sr-only" type="file" accept="video/*,.mov,.mp4" onChange={chooseVideo} />
@@ -496,7 +809,7 @@ export default function Home() {
 
         <aside className="side-panel">
           <div className="status-card">
-            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 6}</b></div>
+            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 7}</b></div>
             <div className="capability-list">
               {capabilities.length === 0 ? <p className="checking">正在檢查 Safari…</p> : capabilities.map((item) => (
                 <div className="capability" key={item.label}>
