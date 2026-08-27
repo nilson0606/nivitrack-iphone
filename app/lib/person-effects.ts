@@ -1,7 +1,6 @@
 import { InteractiveSubjectSegmenter } from './interactive-subject-segmenter';
 import type { Box } from './vit-tracker';
 import { TrackedPersonMaskSelector } from './tracked-person-mask';
-import { TemporalTargetMaskStabilizer } from './temporal-target-mask';
 import type { TrackPoint } from './video-export';
 
 export type BackgroundEffect = 'original' | 'black' | 'blur';
@@ -46,7 +45,6 @@ type PreparedMask = {
 export type PersonMaskPreparationOptions = {
   startTime: number;
   endTime: number;
-  anchorTime?: number;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -136,19 +134,6 @@ function cameraCrop(
   };
 }
 
-function sourceFrameCrop(video: HTMLVideoElement, canvas: HTMLCanvasElement): Rect {
-  const sourceWidth = video.videoWidth;
-  const sourceHeight = video.videoHeight;
-  const sourceAspect = sourceWidth / sourceHeight;
-  const outputAspect = canvas.width / canvas.height;
-  if (sourceAspect > outputAspect) {
-    const width = sourceHeight * outputAspect;
-    return { x: (sourceWidth - width) / 2, y: 0, width, height: sourceHeight };
-  }
-  const height = sourceWidth / outputAspect;
-  return { x: 0, y: (sourceHeight - height) / 2, width: sourceWidth, height };
-}
-
 function subjectRegion(box: Box, sourceWidth: number, sourceHeight: number): Rect {
   const [x, y, width, height] = box;
   const size = Math.min(
@@ -187,7 +172,7 @@ export class PersonEffectRenderer {
   private readonly history: Snapshot[] = [];
   private readonly preparedMasks: PreparedMask[] = [];
   private readonly maskSelector = new TrackedPersonMaskSelector();
-  private readonly temporalMask = new TemporalTargetMaskStabilizer();
+  private previousMaskAlpha = new Uint8ClampedArray(0);
   private maskReady = false;
   private lastRegion: Rect | null = null;
   private preparedMaskIndex = 0;
@@ -218,7 +203,7 @@ export class PersonEffectRenderer {
 
   clearPrepared() {
     this.preparedMasks.length = 0;
-    this.temporalMask.reset();
+    this.previousMaskAlpha.fill(0);
     this.resetPlayback();
   }
 
@@ -258,17 +243,18 @@ export class PersonEffectRenderer {
       region,
       trackedBox,
     );
-    const rawAlpha = new Uint8ClampedArray(values.length);
-    for (let index = 0; index < values.length; index += 1) {
-      rawAlpha[index] = componentGate[index] ? Math.round(smoothAlpha(values[index]) * 255) : 0;
+    if (this.previousMaskAlpha.length !== values.length) {
+      this.previousMaskAlpha = new Uint8ClampedArray(values.length);
     }
-    const alpha = this.temporalMask.stabilize(
-      rawAlpha,
-      result.width,
-      result.height,
-      region,
-      trackedBox,
-    );
+    const alpha = new Uint8ClampedArray(values.length);
+    const hasPrevious = this.previousMaskAlpha.some((value) => value > 0);
+    for (let index = 0; index < values.length; index += 1) {
+      const rawAlpha = componentGate[index] ? Math.round(smoothAlpha(values[index]) * 255) : 0;
+      alpha[index] = hasPrevious
+        ? Math.round(rawAlpha * 0.9 + this.previousMaskAlpha[index] * 0.1)
+        : rawAlpha;
+    }
+    this.previousMaskAlpha.set(alpha);
     return {
       time: video.currentTime,
       region: { ...region },
@@ -328,47 +314,25 @@ export class PersonEffectRenderer {
     if (endTime - startTime < 0.03) throw new Error('人物去背測試片段太短');
 
     const originalTime = video.currentTime;
-    const lastTime = Math.max(startTime, endTime - 0.001);
-    const frameTimes: number[] = [];
-    for (let at = startTime; at < lastTime - 0.0005; at += PREPARE_INTERVAL) {
-      frameTimes.push(at);
-    }
-    frameTimes.push(lastTime);
-    const anchorTime = clamp(options.anchorTime ?? video.currentTime, startTime, lastTime);
-    if (!frameTimes.some((at) => Math.abs(at - anchorTime) < 0.0005)) frameTimes.push(anchorTime);
-    frameTimes.sort((left, right) => left - right);
-    const anchorIndex = frameTimes.reduce((best, at, index) => (
-      Math.abs(at - anchorTime) < Math.abs(frameTimes[best] - anchorTime) ? index : best
-    ), 0);
-    const processingOrder = [
-      anchorIndex,
-      ...frameTimes.map((_, index) => index).filter((index) => index > anchorIndex),
-      ...frameTimes.map((_, index) => index).filter((index) => index < anchorIndex).reverse(),
-    ];
+    const totalFrames = Math.max(1, Math.ceil((endTime - startTime) / PREPARE_INTERVAL));
     this.clearPrepared();
     video.pause();
     try {
-      let processed = 0;
-      let anchorMask: Uint8ClampedArray | null = null;
-      const backwardStart = frameTimes.length - anchorIndex;
-      for (const frameIndex of processingOrder) {
+      for (let frame = 0; frame <= totalFrames; frame += 1) {
         if (options.isCancelled()) throw new Error('使用者已取消人物去背分析');
-        if (frameIndex < anchorIndex && processed === backwardStart) {
-          this.temporalMask.reset(anchorMask ?? undefined);
-        }
-        const at = frameTimes[frameIndex];
+        const at = Math.min(
+          Math.max(startTime, endTime - 0.001),
+          startTime + frame * PREPARE_INTERVAL,
+        );
         await seekVideo(video, at);
         const trackedBox = interpolateBox(path, at);
         const region = subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
         const prepared = this.segmentMask(video, region, trackedBox);
         prepared.time = at;
         this.preparedMasks.push(prepared);
-        if (frameIndex === anchorIndex) anchorMask = new Uint8ClampedArray(prepared.alpha);
-        processed += 1;
-        options.onProgress(processed / frameTimes.length);
+        options.onProgress(frame / totalFrames);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
-      this.preparedMasks.sort((left, right) => left.time - right.time);
       options.onProgress(1);
     } catch (error) {
       this.clearPrepared();
@@ -501,7 +465,6 @@ export class PersonEffectRenderer {
     time: number,
     subjectScale: number,
     options: PersonEffectOptions,
-    preserveSourceFraming = false,
   ) {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context || !video.videoWidth || !video.videoHeight) return;
@@ -509,9 +472,7 @@ export class PersonEffectRenderer {
     this.lastMediaTime = time;
 
     const trackedBox = interpolateBox(path, time);
-    const crop = preserveSourceFraming
-      ? sourceFrameCrop(video, canvas)
-      : cameraCrop(video, canvas, path, time, subjectScale);
+    const crop = cameraCrop(video, canvas, path, time, subjectScale);
     this.drawBackground(context, video, canvas, crop, options.background);
 
     const prepared = this.preparedMaskAt(time);
