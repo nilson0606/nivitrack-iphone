@@ -173,7 +173,19 @@ button { color: inherit; }
   cursor: crosshair;
   touch-action: none;
 }
+.effect-preview-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+  object-fit: contain;
+  pointer-events: none;
+}
 .source-badge {
+  z-index: 2;
   position: absolute;
   left: 13px;
   top: 13px;
@@ -201,6 +213,7 @@ button { color: inherit; }
 .video-actions button:disabled { cursor: wait; opacity: .45; }
 .progress-overlay {
   position: absolute;
+  z-index: 3;
   right: 13px;
   bottom: 13px;
   min-width: 110px;
@@ -354,6 +367,76 @@ footer p span { margin-right: 7px; color: #20a866; }
   font-weight: 750;
 }
 .range-control input { width: 100%; accent-color: var(--green); }
+.effect-lab {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+.effect-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.effect-heading > div { display: flex; flex-direction: column; gap: 3px; }
+.effect-heading span { color: var(--green); font-size: 10px; font-weight: 850; letter-spacing: .12em; }
+.effect-heading strong { font-size: 15px; letter-spacing: -.02em; }
+.effect-heading button,
+.effect-options button,
+.effect-test-button {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: white;
+  padding: 10px 11px;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 750;
+}
+.effect-heading button.selected,
+.effect-options button.selected {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: white;
+}
+.effect-heading button:disabled,
+.effect-options button:disabled,
+.effect-test-button:disabled,
+.color-control button:disabled,
+.color-control input:disabled { opacity: .42; }
+.effect-note { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.effect-group { margin-top: 15px; }
+.effect-group > span { display: block; margin-bottom: 7px; font-size: 11px; font-weight: 750; }
+.effect-options { display: grid; gap: 7px; }
+.effect-options.three { grid-template-columns: repeat(3, 1fr); }
+.effect-options.five { grid-template-columns: repeat(5, 1fr); }
+.effect-options button { min-width: 0; padding-inline: 6px; }
+.color-control { display: grid; gap: 9px; margin-top: 16px; }
+.color-control > label { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 750; }
+.color-control input[type="color"] {
+  width: 48px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+  padding: 3px;
+}
+.color-swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.color-swatches button {
+  min-height: 34px;
+  border: 3px solid white;
+  border-radius: 11px;
+  box-shadow: 0 0 0 1px var(--line);
+}
+.color-swatches button.selected { box-shadow: 0 0 0 2px var(--ink); }
+.effect-test-button {
+  width: 100%;
+  margin-top: 17px;
+  border-color: var(--ink);
+  background: var(--ink);
+  color: white;
+  padding-block: 13px;
+}
+.effect-test-button.passed { border-color: #188a55; background: #188a55; }
 .export-buttons {
   display: grid;
   grid-template-columns: 1fr 1fr;
