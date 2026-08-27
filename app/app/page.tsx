@@ -132,7 +132,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MediaPipe', available: typeof WebAssembly !== 'undefined' },
+        { label: '人物去背', detail: 'MagicTouch 指定物件', available: typeof WebAssembly !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -193,7 +193,7 @@ export default function Home() {
   async function getPersonEffectRenderer() {
     if (!personEffectRendererRef.current) {
       const wasmBase = new URL('mediapipe/', document.baseURI).href;
-      const modelUrl = new URL('models/selfie_segmenter.tflite', document.baseURI).href;
+      const modelUrl = new URL('models/magic_touch.tflite', document.baseURI).href;
       personEffectRendererRef.current = await PersonEffectRenderer.create(wasmBase, modelUrl);
     }
     return personEffectRendererRef.current;
@@ -621,7 +621,7 @@ export default function Home() {
     setPhase('effect-testing');
     setProgress(0);
     setCurrentScore(null);
-    setNotice('正在載入本機人物去背模型…');
+    setNotice('正在載入本機指定主角去背模型…');
     const testStart = Math.min(selection.time, Math.max(0, video.duration - 3));
     const testEnd = Math.min(video.duration, testStart + 3);
     const interval = 1 / 10;
@@ -903,7 +903,7 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟' : '開啟特效'}
                       </button>
                     </div>
-                    <p className="effect-note">目前人物去背針對人物主角；所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">MagicTouch 以 ViT 追蹤中心指定主角，遮罩可隨手腳動作延伸；所有影像仍在這台 iPhone 本機處理。</p>
 
                     {personEffects.enabled && (
                       <>

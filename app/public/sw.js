@@ -12,7 +12,7 @@ const APP_SHELL = [
 ];
 const MODEL_ASSETS = [
   appAsset('models/vittrack.onnx'),
-  appAsset('models/selfie_segmenter.tflite'),
+  appAsset('models/magic_touch.tflite'),
   appAsset('mediapipe/vision_wasm_internal.js'),
   appAsset('mediapipe/vision_wasm_internal.wasm'),
   appAsset('models/ssdlite_mobilenet_v2/model.json'),
