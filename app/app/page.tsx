@@ -160,6 +160,13 @@ export default function Home() {
     [capabilities],
   );
 
+  function openVideoPicker() {
+    const input = inputRef.current;
+    if (!input) return;
+    input.value = '';
+    input.click();
+  }
+
   function chooseVideo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -642,7 +649,7 @@ export default function Home() {
       <section className="workspace">
         <div className="video-panel">
           {!videoUrl ? (
-            <button className="picker" type="button" onClick={() => inputRef.current?.click()}>
+            <button className="picker" type="button" onClick={openVideoPicker}>
               <span className="picker-icon" aria-hidden="true">+</span>
               <strong>選擇一支影片</strong>
               <small>支援「照片」與「檔案」中的 MOV、HEVC、MP4</small>
@@ -680,13 +687,13 @@ export default function Home() {
                 )}
               </div>
               <div className="video-actions">
+                {phase !== 'tracking' && phase !== 'exporting' && (
+                  <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
+                )}
                 {phase === 'choose' && (
-                  <>
-                    <button type="button" onClick={() => inputRef.current?.click()}>更換影片</button>
-                    <button className="primary" type="button" disabled={!videoInfo} onClick={enterSelection}>
-                      進入主角選取
-                    </button>
-                  </>
+                  <button className="primary" type="button" disabled={!videoInfo} onClick={enterSelection}>
+                    進入主角選取
+                  </button>
                 )}
                 {phase === 'select' && (
                   <>
