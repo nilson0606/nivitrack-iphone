@@ -155,7 +155,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '主角記憶', detail: 'EdgeTAM Video', available: typeof WebAssembly !== 'undefined' },
+        { label: '主角記憶', detail: 'EdgeTAM Video', available: 'gpu' in navigator },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },

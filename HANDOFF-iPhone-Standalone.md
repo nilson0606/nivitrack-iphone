@@ -193,7 +193,7 @@ ViT 測試結果：
 ## 15. EdgeTAM Safari 候選版狀態（尚未發布）
 
 - 候選分支：`codex/edgetam-safari-v1`，正式 GitHub Pages 網址與 `main` 尚未變更。
-- Stage 1 已改用 EdgeTAM Video fp16 LiteRT 圖；Safari 優先使用 WebGPU，失敗時才回退單執行緒 WASM。
+- Stage 1 已改用 EdgeTAM Video fp16 LiteRT 圖，並要求五張模型圖都完整交給 Safari WebGPU。若 LiteRT 嘗試悄悄回退 CPU，程式會立即停止並顯示錯誤，避免讓使用者空等數分鐘。
 - 追蹤模式保留既有 ViT 路徑與構圖；不追蹤模式保留原構圖。兩種模式都由使用者框選一次完整主角。
 - 第一幀使用三個 box prompt token；之後使用時序 track token、7 格空間記憶與最多 16 幀物件指標延續同一主角。
 - 遮罩以 15 FPS 預先建立，使用完整來源畫面，不以 ViT 方框硬裁；只移除與主體分離的小連通區，沒有任何影片時間、位置、衣服或物品專用規則。

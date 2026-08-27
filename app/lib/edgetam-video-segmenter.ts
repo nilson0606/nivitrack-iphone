@@ -124,17 +124,24 @@ async function readFloats(url: string, expectedLength: number) {
 
 async function compileModels(baseUrl: string, accelerator: Accelerator): Promise<EdgeTamModels> {
   const loaded: CompiledModel[] = [];
+  const compile = async (file: string) => {
+    const model = await loadAndCompile(assetUrl(baseUrl, file), { accelerator });
+    if (
+      accelerator === 'webgpu'
+      && (model.options.accelerator !== 'webgpu' || !model.isFullyAccelerated)
+    ) {
+      model.delete();
+      throw new Error('EdgeTAM 無法完整使用 WebGPU，已停止以避免退回極慢的 CPU 模式');
+    }
+    loaded.push(model);
+    return model;
+  };
   try {
-    const encode = await loadAndCompile(assetUrl(baseUrl, 'encode.tflite'), { accelerator });
-    loaded.push(encode);
-    const memcond = await loadAndCompile(assetUrl(baseUrl, 'memcond.tflite'), { accelerator });
-    loaded.push(memcond);
-    const decodeBox = await loadAndCompile(assetUrl(baseUrl, 'decode_box.tflite'), { accelerator });
-    loaded.push(decodeBox);
-    const decode = await loadAndCompile(assetUrl(baseUrl, 'decode.tflite'), { accelerator });
-    loaded.push(decode);
-    const memorize = await loadAndCompile(assetUrl(baseUrl, 'memorize.tflite'), { accelerator });
-    loaded.push(memorize);
+    const encode = await compile('encode.tflite');
+    const memcond = await compile('memcond.tflite');
+    const decodeBox = await compile('decode_box.tflite');
+    const decode = await compile('decode.tflite');
+    const memorize = await compile('memorize.tflite');
     return { encode, memcond, decodeBox, decode, memorize };
   } catch (error) {
     for (const model of loaded) model.delete();
@@ -191,17 +198,12 @@ export class EdgeTamVideoSegmenter {
   }
 
   static async create(wasmBaseUrl: string, modelBaseUrl: string) {
-    await loadLiteRt(wasmBaseUrl, { threads: false, jspi: false });
-
-    let accelerator: Accelerator = isWebGPUSupported() ? 'webgpu' : 'wasm';
-    let models: EdgeTamModels;
-    try {
-      models = await compileModels(modelBaseUrl, accelerator);
-    } catch (webGpuError) {
-      if (accelerator !== 'webgpu') throw webGpuError;
-      accelerator = 'wasm';
-      models = await compileModels(modelBaseUrl, accelerator);
+    if (!isWebGPUSupported()) {
+      throw new Error('Stage 1 需要 Safari 26 WebGPU；請更新 iOS 並用 Safari 重新開啟');
     }
+    await loadLiteRt(wasmBaseUrl, { threads: false, jspi: false });
+    const accelerator: Accelerator = 'webgpu';
+    const models = await compileModels(modelBaseUrl, accelerator);
 
     const [noMemory, temporalPositions, noObjectPointer, trackSparse, prompt] = await Promise.all([
       readFloats(assetUrl(modelBaseUrl, 'no_memory.bin'), 256),

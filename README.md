@@ -22,7 +22,7 @@ NiviTrack 是一個為 iPhone Safari 設計的本機影片追蹤 Web App。選�
 5. 名稱保留為 **NiviTrack**，再點「加入」。
 6. 回到主畫面，點 NiviTrack 圖示啟動。
 
-第一次使用 Stage 1 特效時，請保持連線並完成一次「測試 3 秒特效」。Safari 會逐檔下載並離線快取約 77 MB 的 EdgeTAM 影片模型；之後影片仍只在這台 iPhone 本機處理。
+第一次使用 Stage 1 特效時，請保持連線並完成一次「測試 3 秒特效」。Safari 會逐檔下載並離線快取約 77 MB 的 EdgeTAM 影片模型；之後影片仍只在這台 iPhone 本機處理。Stage 1 需要 Safari 26 WebGPU，若模型不能完整使用 GPU，程式會停止而不會退回極慢的 CPU 模式。
 
 ## 處理一支影片
 

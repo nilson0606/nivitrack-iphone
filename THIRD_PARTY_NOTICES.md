@@ -22,7 +22,7 @@ NiviTrack Stage 1 includes the following third-party components for on-device pe
 - Package: `@litertjs/core` 2.5.3
 - Project: <https://github.com/google-ai-edge/LiteRT/tree/main/litert/js>
 - License: Apache License 2.0
-- Purpose: execute the EdgeTAM `.tflite` graphs locally in Safari using WebGPU, with WebAssembly/XNNPACK fallback.
+- Purpose: execute the EdgeTAM `.tflite` graphs locally in Safari using WebGPU. NiviTrack rejects an incomplete GPU delegation instead of silently falling back to an impractically slow CPU run.
 
 ## MediaPipe Tasks Vision
 
