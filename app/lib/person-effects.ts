@@ -1,5 +1,6 @@
 import type { ImageSegmenter } from '@mediapipe/tasks-vision';
 import type { Box } from './vit-tracker';
+import { TrackedPersonMaskSelector } from './tracked-person-mask';
 import type { TrackPoint } from './video-export';
 
 export type BackgroundEffect = 'original' | 'black' | 'blur';
@@ -126,6 +127,7 @@ export class PersonEffectRenderer {
   private readonly spriteCanvas = createCanvas();
   private readonly tintCanvas = createCanvas();
   private readonly history: Snapshot[] = [];
+  private readonly maskSelector = new TrackedPersonMaskSelector();
   private maskReady = false;
   private lastRegion: Rect | null = null;
   private lastSegmentTime = Number.NEGATIVE_INFINITY;
@@ -174,7 +176,7 @@ export class PersonEffectRenderer {
     this.lastMediaTime = Number.NEGATIVE_INFINITY;
   }
 
-  private updateMask(video: HTMLVideoElement, region: Rect) {
+  private updateMask(video: HTMLVideoElement, region: Rect, trackedBox: Box) {
     const input = this.inputCanvas.getContext('2d', { alpha: false });
     const mask = this.maskCanvas.getContext('2d');
     if (!input || !mask) throw new Error('Safari 無法建立人物去背 Canvas');
@@ -197,9 +199,16 @@ export class PersonEffectRenderer {
       const selected = masks[Math.min(this.personMaskIndex, Math.max(0, masks.length - 1))];
       if (!selected) throw new Error('人物去背模型沒有回傳遮罩');
       const values = selected.getAsFloat32Array();
+      const componentGate = this.maskSelector.select(
+        values,
+        selected.width,
+        selected.height,
+        region,
+        trackedBox,
+      );
       const image = mask.createImageData(selected.width, selected.height);
       for (let index = 0; index < values.length; index += 1) {
-        const alpha = Math.round(smoothAlpha(values[index]) * 255);
+        const alpha = componentGate[index] ? Math.round(smoothAlpha(values[index]) * 255) : 0;
         const pixel = index * 4;
         image.data[pixel] = 255;
         image.data[pixel + 1] = 255;
@@ -348,8 +357,9 @@ export class PersonEffectRenderer {
 
     const shouldSegment = !this.maskReady || time - this.lastSegmentTime >= SEGMENT_INTERVAL;
     if (shouldSegment) {
-      const region = subjectRegion(interpolateBox(path, time), video.videoWidth, video.videoHeight);
-      this.updateMask(video, region);
+      const trackedBox = interpolateBox(path, time);
+      const region = subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
+      this.updateMask(video, region, trackedBox);
       this.lastSegmentTime = time;
     }
     this.updateSprite(video);
