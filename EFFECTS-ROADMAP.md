@@ -6,7 +6,7 @@
 
 ## Stage 1：人物去背與延遲分身
 
-Stage 1 以 iPhone Safari 本機雙層人物分割為基礎：ViT 與 MagicTouch 負責鎖定原主角，人物語意遮罩負責排除風扇、家具等非人體物件；30 FPS 逐格遮罩預先完成後，再加入以下效果：
+Stage 1 以 iPhone Safari 本機雙層人物分割為基礎：ViT 與 MagicTouch 負責鎖定原主角，DeepLab‑V3 的 `person` 類別負責排除風扇、家具等非人體物件；30 FPS 逐格遮罩預先完成後，再加入以下效果：
 
 1. 背景：原始、純黑、模糊。
 2. 主角：原色、藍色剪影、黑色剪影。
