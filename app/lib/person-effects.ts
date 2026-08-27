@@ -139,7 +139,10 @@ export class PersonEffectRenderer {
 
   static async create(wasmBaseUrl: string, modelUrl: string) {
     const { FilesetResolver, ImageSegmenter } = await import('@mediapipe/tasks-vision');
-    const fileset = await FilesetResolver.forVisionTasks(wasmBaseUrl, true);
+    // MediaPipe injects the loader through a classic <script> element on the
+    // browser main thread. Use its UMD loader here; the ESM loader leaves
+    // ModuleFactory unset when launched from an iOS home-screen web app.
+    const fileset = await FilesetResolver.forVisionTasks(wasmBaseUrl);
     const gpuCanvas = createCanvas(1, 1);
     let segmenter: ImageSegmenter;
     try {

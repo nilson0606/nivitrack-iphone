@@ -8,8 +8,8 @@ NiviTrack Stage 1 includes the following third-party components for on-device pe
 - Project: <https://github.com/google-ai-edge/mediapipe>
 - License: Apache License 2.0
 - Local assets:
-  - `app/public/mediapipe/vision_wasm_module_internal.js`
-  - `app/public/mediapipe/vision_wasm_module_internal.wasm`
+  - `app/public/mediapipe/vision_wasm_internal.js`
+  - `app/public/mediapipe/vision_wasm_internal.wasm`
 
 ## MediaPipe Selfie Segmenter model
 

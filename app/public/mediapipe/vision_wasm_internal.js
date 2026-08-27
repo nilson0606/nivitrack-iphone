@@ -1,10 +1,15 @@
 // This code implements the `-sMODULARIZE` settings by taking the generated
 // JS program code (INNER_JS_CODE) and wrapping it in a factory function.
 
-// When targeting node and ES6 we use `await import ..` in the generated code
-// so the outer function needs to be marked as async.
-async function ModuleFactory(moduleArg = {}) {
-  var Module = moduleArg;
+// Single threaded MINIMAL_RUNTIME programs do not need access to
+// document.currentScript, so a simple export declaration is enough.
+var ModuleFactory = (() => {
+  // When MODULARIZE this JS may be executed later,
+  // after document.currentScript is gone, so we save it.
+  // In EXPORT_ES6 mode we can just use 'import.meta.url'.
+  var _scriptName = globalThis.document?.currentScript?.src;
+  return async function(moduleArg = {}) {
+    var Module = moduleArg;
 // include: shell.js
 // include: minimum_runtime_check.js
 // end include: minimum_runtime_check.js
@@ -32,13 +37,6 @@ var ENVIRONMENT_IS_WORKER = !!globalThis.WorkerGlobalScope;
 // also a web environment.
 var ENVIRONMENT_IS_NODE = globalThis.process?.versions?.node && globalThis.process?.type != "renderer";
 
-if (ENVIRONMENT_IS_NODE) {
-  // When building an ES module `require` is not normally available.
-  // We need to use `createRequire()` to construct the require()` function.
-  const {createRequire} = await import("node:module");
-  /** @suppress{duplicate} */ var require = createRequire(import.meta.url);
-}
-
 // --pre-jses are emitted after the Module integration code, so that they can
 // refer to Module (if they choose; they can also define Module)
 var programArgs = [];
@@ -49,7 +47,12 @@ var quit_ = (status, toThrow) => {
   throw toThrow;
 };
 
-var _scriptName = import.meta.url;
+if (typeof __filename != "undefined") {
+  // Node
+  _scriptName = __filename;
+} else if (ENVIRONMENT_IS_WORKER) {
+  _scriptName = self.location.href;
+}
 
 // `/` should be present at the end if `scriptDirectory` is not empty
 var scriptDirectory = "";
@@ -68,9 +71,7 @@ if (ENVIRONMENT_IS_NODE) {
   // These modules will usually be used on Node.js. Load them eagerly to avoid
   // the complexity of lazy-loading.
   var fs = require("node:fs");
-  if (_scriptName.startsWith("file:")) {
-    scriptDirectory = require("node:path").dirname(require("node:url").fileURLToPath(_scriptName)) + "/";
-  }
+  scriptDirectory = __dirname + "/";
   // include: node_shell_read.js
   readBinary = filename => {
     // We need to re-wrap `file://` strings to URLs.
@@ -287,11 +288,7 @@ function postRun() {
 var wasmBinaryFile;
 
 function findWasmBinary() {
-  if (Module["locateFile"]) {
-    return locateFile("vision_wasm_module_raw_internal.wasm");
-  }
-  // Use bundler-friendly `new URL(..., import.meta.url)` pattern; works in browsers too.
-  return new URL("vision_wasm_module_raw_internal.wasm", import.meta.url).href;
+  return locateFile("vision_wasm_internal.wasm");
 }
 
 function getBinarySync(file) {
@@ -8829,9 +8826,16 @@ wasmExports = await createWasm();
 await run();
 
 
-  return Module;
-}
+    return Module;
+  };
+})();
 
 // Export using a UMD style export, or ES6 exports if selected
-globalThis.ModuleFactory = ModuleFactory; globalThis.custom_dbg = console.warn.bind(console); export default ModuleFactory;
+if (typeof exports === 'object' && typeof module === 'object') {
+  module.exports = ModuleFactory;
+  // This default export looks redundant, but it allows TS to import this
+  // commonjs style module.
+  module.exports.default = ModuleFactory;
+} else if (typeof define === 'function' && define['amd'])
+  define([], () => ModuleFactory);
 

@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-stage1-effects-v3';
+const VERSION = 'nivitrack-stage1-effects-v4';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -13,8 +13,8 @@ const APP_SHELL = [
 const MODEL_ASSETS = [
   appAsset('models/vittrack.onnx'),
   appAsset('models/selfie_segmenter.tflite'),
-  appAsset('mediapipe/vision_wasm_module_internal.js'),
-  appAsset('mediapipe/vision_wasm_module_internal.wasm'),
+  appAsset('mediapipe/vision_wasm_internal.js'),
+  appAsset('mediapipe/vision_wasm_internal.wasm'),
   appAsset('models/ssdlite_mobilenet_v2/model.json'),
   appAsset('models/ssdlite_mobilenet_v2/group1-shard1of5'),
   appAsset('models/ssdlite_mobilenet_v2/group1-shard2of5'),
