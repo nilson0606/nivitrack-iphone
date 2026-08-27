@@ -43,7 +43,24 @@ assert.ok(stable[30 * width + 33] > 45, '短暫遮罩破洞應由對齊後前幀
 assert.ok(stable[5 * width + 5] < 8, '遠離人物的背景不可被前幀污染');
 assert.ok(stable[30 * width + 18] < 90, '人物移動後的舊邊緣不可形成明顯拖影');
 
+const missingFirstFrame = new Uint8ClampedArray(width * height);
+const backwardRecovered = stabilizeAlpha(
+  missingFirstFrame,
+  previousAlpha,
+  previousLuma,
+  previousLuma,
+  width,
+  height,
+  0.44,
+);
+assert.ok(
+  backwardRecovered[30 * width + 30] > 70,
+  '後一格已有可信人物時，反向穩定應補回開頭失敗幀',
+);
+assert.ok(backwardRecovered[5 * width + 5] < 8, '反向補幀不可污染遠端背景');
+
 console.log('motionDx', motion.dx[centerCell].toFixed(1));
 console.log('motionConfidence', motion.confidence[centerCell].toFixed(3));
 console.log('filledGap', stable[30 * width + 33]);
 console.log('oldEdge', stable[30 * width + 18]);
+console.log('backwardRecovered', backwardRecovered[30 * width + 30]);

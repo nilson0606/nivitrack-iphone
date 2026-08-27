@@ -296,6 +296,42 @@ export class PersonEffectRenderer {
     }
   }
 
+  private stabilizePreparedBackward() {
+    let following: PreparedMask | null = null;
+    const followingWeight = this.preparedPreserveFraming ? 0.44 : 0.36;
+    for (let index = this.preparedMasks.length - 1; index >= 0; index -= 1) {
+      const prepared = this.preparedMasks[index];
+      prepared.alpha = stabilizeAlpha(
+        prepared.alpha,
+        following?.alpha ?? null,
+        prepared.flowLuma,
+        following?.flowLuma ?? null,
+        prepared.width,
+        prepared.height,
+        followingWeight,
+      );
+      following = prepared;
+    }
+  }
+
+  private fillShortLeadingBodyCoreGaps() {
+    let followingCore: Uint8Array | null = null;
+    let missing = 0;
+    for (let index = this.preparedMasks.length - 1; index >= 0; index -= 1) {
+      const prepared = this.preparedMasks[index];
+      if (prepared.bodyCore) {
+        followingCore = prepared.bodyCore;
+        missing = 0;
+      } else if (followingCore && missing < 2) {
+        prepared.bodyCore = new Uint8Array(followingCore);
+        missing += 1;
+      } else {
+        followingCore = null;
+        missing = 0;
+      }
+    }
+  }
+
   private rebuildPreparedMasks() {
     let previous: PreparedMask | null = null;
     const previousWeight = this.preparedPreserveFraming ? 0.42 : 0.58;
@@ -312,6 +348,8 @@ export class PersonEffectRenderer {
       );
       previous = prepared;
     }
+    this.fillShortLeadingBodyCoreGaps();
+    this.stabilizePreparedBackward();
     excludePersistentBackground(this.preparedMasks);
     for (const prepared of this.preparedMasks) this.applyCorrections(prepared);
     this.resetPlayback();
@@ -539,6 +577,8 @@ export class PersonEffectRenderer {
         options.onProgress(frame / totalFrames);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
+      this.fillShortLeadingBodyCoreGaps();
+      this.stabilizePreparedBackward();
       excludePersistentBackground(this.preparedMasks);
       for (const prepared of this.preparedMasks) this.applyCorrections(prepared);
       options.onProgress(1);

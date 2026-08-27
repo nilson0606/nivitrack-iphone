@@ -287,7 +287,7 @@ export class MagicPoseMatte {
           : 0;
         for (let x = 0; x < subjectMask.width; x += 1) {
           const index = y * subjectMask.width + x;
-          let poseGate = 0;
+          let poseGate = this.previousPose ? 0 : 1;
           if (this.previousPose) {
             const poseX = Math.min(
               this.previousPoseWidth - 1,
