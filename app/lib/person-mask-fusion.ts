@@ -3,7 +3,10 @@ function clamp(value: number, minimum: number, maximum: number) {
 }
 
 function personGate(confidence: number) {
-  const normalized = clamp((confidence - 0.08) / 0.47, 0, 1);
+  // DeepLab's low-confidence person halo often contains nearby furniture or
+  // props. Keep the confident human body and let temporal stabilization carry
+  // uncertain hair/limb edges across an occasional weak frame.
+  const normalized = clamp((confidence - 0.2) / 0.52, 0, 1);
   return normalized * normalized * (3 - 2 * normalized);
 }
 
