@@ -1,4 +1,4 @@
-import * as ort from 'onnxruntime-web/webgpu';
+import * as ort from 'onnxruntime-web/wasm';
 
 const WIDTH = 288;
 const HEIGHT = 512;
@@ -263,44 +263,38 @@ export class MatAnyone2Engine {
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.simd = true;
     ort.env.wasm.wasmPaths = wasmBaseUrl;
-    const preferred: Array<'webgpu' | 'wasm'> = 'gpu' in navigator
-      ? ['webgpu', 'wasm']
-      : ['wasm'];
-    let lastError: unknown;
-    for (const backend of preferred) {
-      const loaded = {} as Partial<Record<StageName, ort.InferenceSession>>;
-      try {
-        for (let index = 0; index < STAGE_NAMES.length; index += 1) {
-          const stage = STAGE_NAMES[index];
-          loaded[stage] = await ort.InferenceSession.create(
-            new URL(`${stage}.onnx`, modelBaseUrl).href,
-            {
-              executionProviders: [backend],
-              graphOptimizationLevel: 'all',
-              executionMode: 'sequential',
-            },
-          );
-          onProgress?.({
-            loaded: index + 1,
-            total: STAGE_NAMES.length,
-            stage,
-            backend,
-          });
-        }
-        return new MatAnyone2Engine(
-          loaded as Record<StageName, ort.InferenceSession>,
+    const backend = 'wasm' as const;
+    const loaded = {} as Partial<Record<StageName, ort.InferenceSession>>;
+    let loadingStage: StageName = STAGE_NAMES[0];
+    try {
+      for (let index = 0; index < STAGE_NAMES.length; index += 1) {
+        loadingStage = STAGE_NAMES[index];
+        loaded[loadingStage] = await ort.InferenceSession.create(
+          new URL(`${loadingStage}.onnx`, modelBaseUrl).href,
+          {
+            executionProviders: [backend],
+            graphOptimizationLevel: 'all',
+            executionMode: 'sequential',
+          },
+        );
+        onProgress?.({
+          loaded: index + 1,
+          total: STAGE_NAMES.length,
+          stage: loadingStage,
           backend,
-        );
-      } catch (error) {
-        lastError = error;
-        await Promise.all(
-          Object.values(loaded).map((session) => session?.release()),
-        );
+        });
       }
+      return new MatAnyone2Engine(
+        loaded as Record<StageName, ort.InferenceSession>,
+        backend,
+      );
+    } catch (error) {
+      await Promise.all(
+        Object.values(loaded).map((session) => session?.release()),
+      );
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`WASM 模型載入失敗（${loadingStage}）：${detail}`);
     }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error('MatAnyone 2 模型無法在這台 Safari 載入');
   }
 
   reset() {

@@ -474,7 +474,7 @@ export default function MatteTestClient() {
                 <dd>
                   {backend || (
                     typeof navigator !== 'undefined' && 'gpu' in navigator
-                      ? '等待 WebGPU'
+                      ? '等待本機 WASM'
                       : '等待測試'
                   )}
                 </dd>
