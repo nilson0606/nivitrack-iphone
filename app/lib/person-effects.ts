@@ -1,11 +1,13 @@
 import { MagicPoseMatte } from './magic-pose-matte';
 import type { Box } from './vit-tracker';
 import type { TrackPoint } from './video-export';
+import { FLOW_HEIGHT, FLOW_WIDTH, stabilizeAlpha } from './temporal-mask';
 
 export type BackgroundEffect = 'original' | 'black' | 'blur';
 export type SubjectEffect = 'original' | 'blue' | 'black';
 export type OutlineEffect = 'white' | 'neon' | 'none';
 export type CloneLayout = 'trail' | 'lineup';
+export type MaskCorrectionMode = 'keep' | 'remove';
 
 export type PersonEffectOptions = {
   enabled: boolean;
@@ -40,13 +42,25 @@ type PreparedMask = {
   region: Rect;
   width: number;
   height: number;
+  flowLuma: Uint8Array;
+  baseAlpha: Uint8ClampedArray | null;
   alpha: Uint8ClampedArray;
+};
+
+type MaskCorrectionStroke = {
+  group: number;
+  time: number;
+  x: number;
+  y: number;
+  radius: number;
+  mode: MaskCorrectionMode;
 };
 
 export type PersonMaskPreparationOptions = {
   startTime: number;
   endTime: number;
   preserveFraming: boolean;
+  retainSourceForCorrections?: boolean;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -56,9 +70,39 @@ const MATTE_PIXEL_BUDGET = 360 * 640;
 const MATTE_MAX_EDGE = 640;
 const PREPARE_INTERVAL = 1 / 30;
 const SNAPSHOT_INTERVAL = 1 / 15;
+const CORRECTION_BACKWARD_SECONDS = 0.12;
+const CORRECTION_FORWARD_SECONDS = 1.2;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function paintAlpha(
+  alpha: Uint8ClampedArray,
+  width: number,
+  height: number,
+  stroke: MaskCorrectionStroke,
+) {
+  const centerX = stroke.x * Math.max(0, width - 1);
+  const centerY = stroke.y * Math.max(0, height - 1);
+  const radius = Math.max(2, stroke.radius * Math.min(width, height));
+  const left = Math.max(0, Math.floor(centerX - radius));
+  const right = Math.min(width - 1, Math.ceil(centerX + radius));
+  const top = Math.max(0, Math.floor(centerY - radius));
+  const bottom = Math.min(height - 1, Math.ceil(centerY + radius));
+  for (let y = top; y <= bottom; y += 1) {
+    for (let x = left; x <= right; x += 1) {
+      const distance = Math.hypot(x - centerX, y - centerY);
+      if (distance > radius) continue;
+      const feather = 1 - clamp((distance / radius - 0.72) / 0.28, 0, 1);
+      const index = y * width + x;
+      if (stroke.mode === 'keep') {
+        alpha[index] = Math.max(alpha[index], Math.round(feather * 255));
+      } else {
+        alpha[index] = Math.round(alpha[index] * (1 - feather));
+      }
+    }
+  }
 }
 
 function createCanvas(width = SPRITE_SIZE, height = SPRITE_SIZE) {
@@ -178,16 +222,21 @@ function outputRect(region: Rect, crop: Rect, canvas: HTMLCanvasElement): Rect {
 export class PersonEffectRenderer {
   private readonly segmenter: MagicPoseMatte;
   private readonly inputCanvas = createCanvas();
+  private readonly flowCanvas = createCanvas(FLOW_WIDTH, FLOW_HEIGHT);
   private readonly maskCanvas = createCanvas();
   private readonly spriteCanvas = createCanvas();
   private readonly tintCanvas = createCanvas();
   private readonly history: Snapshot[] = [];
   private readonly preparedMasks: PreparedMask[] = [];
+  private readonly corrections: MaskCorrectionStroke[] = [];
   private maskReady = false;
   private lastRegion: Rect | null = null;
   private preparedMaskIndex = 0;
   private lastSnapshotTime = Number.NEGATIVE_INFINITY;
   private lastMediaTime = Number.NEGATIVE_INFINITY;
+  private nextCorrectionGroup = 0;
+  private activeCorrectionGroup = 0;
+  private preparedPreserveFraming = false;
 
   private constructor(segmenter: MagicPoseMatte) {
     this.segmenter = segmenter;
@@ -219,6 +268,109 @@ export class PersonEffectRenderer {
 
   reset() {
     this.clearPrepared();
+    this.corrections.length = 0;
+    this.activeCorrectionGroup = 0;
+    this.nextCorrectionGroup = 0;
+  }
+
+  get correctionCount() {
+    return new Set(this.corrections.map((stroke) => stroke.group)).size;
+  }
+
+  beginCorrectionStroke() {
+    this.nextCorrectionGroup += 1;
+    this.activeCorrectionGroup = this.nextCorrectionGroup;
+  }
+
+  endCorrectionStroke() {
+    this.activeCorrectionGroup = 0;
+  }
+
+  private applyCorrections(prepared: PreparedMask) {
+    for (const stroke of this.corrections) {
+      const delta = prepared.time - stroke.time;
+      if (delta < -CORRECTION_BACKWARD_SECONDS || delta > CORRECTION_FORWARD_SECONDS) continue;
+      paintAlpha(prepared.alpha, prepared.width, prepared.height, stroke);
+    }
+  }
+
+  private rebuildPreparedMasks() {
+    let previous: PreparedMask | null = null;
+    const previousWeight = this.preparedPreserveFraming ? 0.42 : 0.58;
+    for (const prepared of this.preparedMasks) {
+      const sourceAlpha = prepared.baseAlpha ?? prepared.alpha;
+      prepared.alpha = stabilizeAlpha(
+        sourceAlpha,
+        previous?.alpha ?? null,
+        prepared.flowLuma,
+        previous?.flowLuma ?? null,
+        prepared.width,
+        prepared.height,
+        previousWeight,
+      );
+      this.applyCorrections(prepared);
+      previous = prepared;
+    }
+    this.resetPlayback();
+  }
+
+  undoCorrection() {
+    if (this.corrections.length === 0) return 0;
+    const group = this.corrections[this.corrections.length - 1].group;
+    for (let index = this.corrections.length - 1; index >= 0; index -= 1) {
+      if (this.corrections[index].group === group) this.corrections.splice(index, 1);
+    }
+    this.rebuildPreparedMasks();
+    return this.correctionCount;
+  }
+
+  clearCorrections() {
+    this.corrections.length = 0;
+    this.activeCorrectionGroup = 0;
+    this.rebuildPreparedMasks();
+  }
+
+  paintCorrection(
+    time: number,
+    normalizedCanvasX: number,
+    normalizedCanvasY: number,
+    brushRadiusPixels: number,
+    mode: MaskCorrectionMode,
+    video: HTMLVideoElement,
+    canvas: HTMLCanvasElement,
+    path: TrackPoint[],
+    subjectScale: number,
+    options: PersonEffectOptions,
+  ) {
+    const prepared = this.preparedMaskAt(time);
+    if (!prepared || canvas.width <= 0 || canvas.height <= 0) return this.correctionCount;
+    if (this.activeCorrectionGroup === 0) this.beginCorrectionStroke();
+
+    const crop = options.preserveFraming
+      ? framingCrop(video, canvas)
+      : cameraCrop(video, canvas, path, time, subjectScale);
+    const sourceX = crop.x + clamp(normalizedCanvasX, 0, 1) * crop.width;
+    const sourceY = crop.y + clamp(normalizedCanvasY, 0, 1) * crop.height;
+    const x = (sourceX - prepared.region.x) / prepared.region.width;
+    const y = (sourceY - prepared.region.y) / prepared.region.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return this.correctionCount;
+
+    const sourceRadius = Math.max(2, brushRadiusPixels) * crop.width / canvas.width;
+    const stroke: MaskCorrectionStroke = {
+      group: this.activeCorrectionGroup,
+      time: prepared.time,
+      x,
+      y,
+      radius: clamp(sourceRadius / Math.min(prepared.region.width, prepared.region.height), 0.008, 0.2),
+      mode,
+    };
+    this.corrections.push(stroke);
+    for (const candidate of this.preparedMasks) {
+      const delta = candidate.time - stroke.time;
+      if (delta < -CORRECTION_BACKWARD_SECONDS || delta > CORRECTION_FORWARD_SECONDS) continue;
+      paintAlpha(candidate.alpha, candidate.width, candidate.height, stroke);
+    }
+    return this.correctionCount;
   }
 
   private segmentMask(video: HTMLVideoElement, region: Rect): PreparedMask {
@@ -246,11 +398,24 @@ export class PersonEffectRenderer {
       inputHeight,
     );
     const result = this.segmenter.segment(this.inputCanvas);
+    const flow = this.flowCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    if (!flow) throw new Error('Safari 無法建立光流分析 Canvas');
+    flow.drawImage(this.inputCanvas, 0, 0, FLOW_WIDTH, FLOW_HEIGHT);
+    const pixels = flow.getImageData(0, 0, FLOW_WIDTH, FLOW_HEIGHT).data;
+    const flowLuma = new Uint8Array(FLOW_WIDTH * FLOW_HEIGHT);
+    for (let index = 0; index < flowLuma.length; index += 1) {
+      const pixel = index * 4;
+      flowLuma[index] = Math.round(
+        pixels[pixel] * 0.299 + pixels[pixel + 1] * 0.587 + pixels[pixel + 2] * 0.114,
+      );
+    }
     return {
       time: video.currentTime,
       region: { ...region },
       width: result.width,
       height: result.height,
+      flowLuma,
+      baseAlpha: null,
       alpha: result.alpha,
     };
   }
@@ -313,6 +478,9 @@ export class PersonEffectRenderer {
     const originalTime = video.currentTime;
     const totalFrames = Math.max(1, Math.ceil((endTime - startTime) / PREPARE_INTERVAL));
     this.clearPrepared();
+    this.preparedPreserveFraming = options.preserveFraming;
+    const previousWeight = options.preserveFraming ? 0.42 : 0.58;
+    let previousPrepared: PreparedMask | null = null;
     video.pause();
     try {
       for (let frame = 0; frame <= totalFrames; frame += 1) {
@@ -328,7 +496,22 @@ export class PersonEffectRenderer {
           : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
         const prepared = this.segmentMask(video, region);
         prepared.time = at;
+        const sourceAlpha = prepared.alpha;
+        if (options.retainSourceForCorrections) {
+          prepared.baseAlpha = new Uint8ClampedArray(sourceAlpha);
+        }
+        prepared.alpha = stabilizeAlpha(
+          sourceAlpha,
+          previousPrepared?.alpha ?? null,
+          prepared.flowLuma,
+          previousPrepared?.flowLuma ?? null,
+          prepared.width,
+          prepared.height,
+          previousWeight,
+        );
+        this.applyCorrections(prepared);
         this.preparedMasks.push(prepared);
+        previousPrepared = prepared;
         options.onProgress(frame / totalFrames);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }

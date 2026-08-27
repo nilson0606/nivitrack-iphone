@@ -23,6 +23,7 @@ import {
   BackgroundEffect,
   CloneLayout,
   DEFAULT_PERSON_EFFECTS,
+  MaskCorrectionMode,
   OutlineEffect,
   PersonEffectOptions,
   PersonEffectRenderer,
@@ -66,6 +67,8 @@ type ExportInfo = {
   resolution: string;
 };
 
+type EffectTestWindow = { start: number; end: number };
+
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
@@ -87,6 +90,10 @@ function normalizeBox(start: [number, number], end: [number, number]): Box {
   ];
 }
 
+function clampTime(value: number, minimum: number, maximum: number) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -101,6 +108,7 @@ export default function Home() {
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
   const personEffectRendererRef = useRef<PersonEffectRenderer | null>(null);
   const sourceModeRef = useRef<SourceMode>('track');
+  const correctionDrawingRef = useRef(false);
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -129,6 +137,12 @@ export default function Home() {
   const [showEffectPreview, setShowEffectPreview] = useState(false);
   const [effectTestPassed, setEffectTestPassed] = useState(false);
   const [sourceMode, setSourceMode] = useState<SourceMode>('track');
+  const [editingMask, setEditingMask] = useState(false);
+  const [correctionMode, setCorrectionMode] = useState<MaskCorrectionMode>('remove');
+  const [correctionBrush, setCorrectionBrush] = useState(28);
+  const [correctionCount, setCorrectionCount] = useState(0);
+  const [correctionTime, setCorrectionTime] = useState(0);
+  const [effectTestWindow, setEffectTestWindow] = useState<EffectTestWindow | null>(null);
 
   useEffect(() => {
     const support = getRecorderSupport();
@@ -183,6 +197,9 @@ export default function Home() {
 
   function clearRenderedOutput() {
     personEffectRendererRef.current?.clearPrepared();
+    correctionDrawingRef.current = false;
+    setEditingMask(false);
+    setEffectTestWindow(null);
     setShowEffectPreview(false);
     setEffectTestPassed(false);
     setExportUrl('');
@@ -237,6 +254,7 @@ export default function Home() {
     setEffectTestPassed(false);
     setPersonEffects(DEFAULT_PERSON_EFFECTS);
     personEffectRendererRef.current?.reset();
+    setCorrectionCount(0);
     setProgress(0);
     setPhase('choose');
     setNotice(sourceModeRef.current === 'direct' ? '正在讀取不追蹤影片…' : '正在讀取追蹤影片…');
@@ -297,6 +315,8 @@ export default function Home() {
     setProgress(0);
     clearRenderedOutput();
     setPersonEffects(DEFAULT_PERSON_EFFECTS);
+    personEffectRendererRef.current?.reset();
+    setCorrectionCount(0);
     if (nextMode === 'direct') {
       activateDirectMode(video);
     } else {
@@ -368,6 +388,7 @@ export default function Home() {
     setShowEffectPreview(false);
     setEffectTestPassed(false);
     personEffectRendererRef.current?.reset();
+    setCorrectionCount(0);
     setNotice('用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawFrame(null));
   }
@@ -582,6 +603,7 @@ export default function Home() {
     setShowEffectPreview(false);
     setEffectTestPassed(false);
     personEffectRendererRef.current?.reset();
+    setCorrectionCount(0);
     setProgress(0);
     setCurrentScore(null);
 
@@ -667,6 +689,126 @@ export default function Home() {
     }
   }
 
+  function renderCorrectionPreview(at = videoRef.current?.currentTime ?? correctionTime) {
+    const video = videoRef.current;
+    const canvas = effectPreviewCanvasRef.current;
+    const renderer = personEffectRendererRef.current;
+    if (!video || !canvas || !renderer || trackPath.length < 2) return;
+    configureOutputCanvas(canvas, aspect);
+    renderer.render(
+      video,
+      canvas,
+      smoothTrackPath(trackPath, smoothness),
+      at,
+      subjectScale,
+      personEffects,
+    );
+    setShowEffectPreview(true);
+  }
+
+  function beginMaskCorrection() {
+    const video = videoRef.current;
+    const window = effectTestWindow;
+    if (!video || !window || !personEffectRendererRef.current) return;
+    video.pause();
+    const at = clampTime(video.currentTime, window.start, window.end);
+    setCorrectionTime(at);
+    setEditingMask(true);
+    void seekTo(at).then(() => renderCorrectionPreview(at)).catch((error) => {
+      setNotice(error instanceof Error ? error.message : String(error));
+    });
+    setNotice('修正主角：紅色移除誤入背景，綠色補回主角；閃爍由系統自動穩定');
+  }
+
+  function closeMaskCorrection() {
+    correctionDrawingRef.current = false;
+    personEffectRendererRef.current?.endCorrectionStroke();
+    setEditingMask(false);
+    setNotice(correctionCount > 0 ? '修正已保存，正式輸出時會自動套用' : '未加入人工修正');
+  }
+
+  function seekCorrectionPreview(at: number) {
+    const video = videoRef.current;
+    const window = effectTestWindow;
+    if (!video || !window) return;
+    const next = clampTime(at, window.start, window.end);
+    setCorrectionTime(next);
+    video.pause();
+    if (Math.abs(video.currentTime - next) < 0.001) {
+      renderCorrectionPreview(next);
+    } else {
+      video.currentTime = next;
+    }
+  }
+
+  function handleVideoSeeked() {
+    if (!editingMask) return;
+    const at = videoRef.current?.currentTime ?? correctionTime;
+    setCorrectionTime(at);
+    renderCorrectionPreview(at);
+  }
+
+  function paintMaskCorrection(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!editingMask || !correctionDrawingRef.current) return;
+    const canvas = effectPreviewCanvasRef.current;
+    const video = videoRef.current;
+    const renderer = personEffectRendererRef.current;
+    if (!canvas || !video || !renderer) return;
+    const bounds = canvas.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    const x = clampTime((event.clientX - bounds.left) / bounds.width, 0, 1);
+    const y = clampTime((event.clientY - bounds.top) / bounds.height, 0, 1);
+    const brushPixels = correctionBrush * canvas.width / bounds.width;
+    const count = renderer.paintCorrection(
+      video.currentTime,
+      x,
+      y,
+      brushPixels,
+      correctionMode,
+      video,
+      canvas,
+      smoothTrackPath(trackPath, smoothness),
+      subjectScale,
+      personEffects,
+    );
+    setCorrectionCount(count);
+    setExportUrl('');
+    setExportBlob(null);
+    setExportInfo(null);
+    renderCorrectionPreview(video.currentTime);
+  }
+
+  function startMaskCorrection(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!editingMask) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    correctionDrawingRef.current = true;
+    personEffectRendererRef.current?.beginCorrectionStroke();
+    paintMaskCorrection(event);
+  }
+
+  function finishMaskCorrection(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!editingMask) return;
+    correctionDrawingRef.current = false;
+    personEffectRendererRef.current?.endCorrectionStroke();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function undoMaskCorrection() {
+    const count = personEffectRendererRef.current?.undoCorrection() ?? 0;
+    setCorrectionCount(count);
+    renderCorrectionPreview();
+    setNotice(count > 0 ? '已復原上一筆修正' : '所有人工修正已清除');
+  }
+
+  function clearMaskCorrections() {
+    personEffectRendererRef.current?.clearCorrections();
+    setCorrectionCount(0);
+    renderCorrectionPreview();
+    setNotice('人工修正已全部清除；保留自動時間穩定');
+  }
+
   async function runEffectTest() {
     const video = videoRef.current;
     const previewCanvas = effectPreviewCanvasRef.current;
@@ -685,8 +827,8 @@ export default function Home() {
     setPhase('effect-testing');
     setProgress(0);
     setCurrentScore(null);
-    setNotice('正在載入本機指定主角去背模型…');
-    const testStart = Math.min(selection.time, Math.max(0, video.duration - 3));
+    setNotice('正在載入本機指定主角去背模型與時間穩定…');
+    const testStart = Math.min(video.currentTime, Math.max(0, video.duration - 3));
     const testEnd = Math.min(video.duration, testStart + 3);
     const interval = 1 / 10;
     const totalFrames = Math.max(1, Math.ceil((testEnd - testStart) / interval));
@@ -701,6 +843,7 @@ export default function Home() {
         startTime: testStart,
         endTime: testEnd,
         preserveFraming: personEffects.preserveFraming,
+        retainSourceForCorrections: true,
         onProgress: (next) => {
           setProgress(next * 0.9);
           setNotice('先逐格鎖定主角並去背 · ' + Math.round(next * 100) + '%');
@@ -723,8 +866,14 @@ export default function Home() {
 
       setProgress(1);
       setEffectTestPassed(true);
+      setEffectTestWindow({ start: testStart, end: testEnd });
+      setCorrectionTime(testStart);
       setPhase('path-ready');
-      setNotice('3 秒特效測試完成；滿意後可輸出完整影片');
+      await seekTo(testStart);
+      renderer.resetPlayback();
+      renderer.render(video, previewCanvas, smoothedPath, testStart, subjectScale, personEffects);
+      setShowEffectPreview(true);
+      setNotice('3 秒自動去背完成；若有多餘物品再按「修正主角」');
     } catch (error) {
       setShowEffectPreview(false);
       setEffectTestPassed(false);
@@ -878,6 +1027,7 @@ export default function Home() {
                   playsInline
                   preload="metadata"
                   onLoadedMetadata={readMetadata}
+                  onSeeked={handleVideoSeeked}
                   onError={() => setNotice('Safari 無法解碼這支影片，請保留檔案供實機記錄')}
                 />
                 <canvas
@@ -890,11 +1040,15 @@ export default function Home() {
                 />
                 <canvas
                   ref={effectPreviewCanvasRef}
-                  className={showEffectPreview ? 'effect-preview-canvas' : 'effect-preview-canvas is-hidden'}
+                  className={(showEffectPreview ? 'effect-preview-canvas' : 'effect-preview-canvas is-hidden') + (editingMask ? ' editing-mask' : '')}
                   aria-label="3 秒人物特效預覽"
+                  onPointerDown={startMaskCorrection}
+                  onPointerMove={paintMaskCorrection}
+                  onPointerUp={finishMaskCorrection}
+                  onPointerCancel={finishMaskCorrection}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '影片本機解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒人物特效測試' : showEffectPreview ? 'Stage 1 特效預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? (sourceMode === 'direct' ? '不追蹤 · 直接去背' : '構圖與輸出') : 'ViT 本機推論'}
+                  {phase === 'choose' ? '影片本機解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒人物特效測試' : editingMask ? (correctionMode === 'remove' ? '紅色筆刷 · 移除背景' : '綠色筆刷 · 補回主角') : showEffectPreview ? 'Stage 1 特效預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? (sourceMode === 'direct' ? '不追蹤 · 直接去背' : '構圖與輸出') : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
                   <div className="progress-overlay">
@@ -944,6 +1098,67 @@ export default function Home() {
                   <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
                 )}
               </div>
+              {phase === 'path-ready' && effectTestPassed && showEffectPreview && effectTestWindow && (
+                <section className={'mask-correction-panel ' + (editingMask ? 'is-editing' : '')}>
+                  <div className="mask-correction-heading">
+                    <div>
+                      <span>光流防閃已套用</span>
+                      <strong>智慧去背完成</strong>
+                    </div>
+                    {!editingMask ? (
+                      <button type="button" onClick={beginMaskCorrection}>修正主角（最後手段）</button>
+                    ) : (
+                      <b>{correctionCount} 筆修正</b>
+                    )}
+                  </div>
+                  {!editingMask ? (
+                    <p>正常情況直接輸出，不需要手修；只有仍看見明顯誤入物或主角缺角時才開啟修正。</p>
+                  ) : (
+                    <>
+                      <label className="correction-timeline">
+                        <span><b>選擇錯誤畫面</b><em>{correctionTime.toFixed(1)} 秒</em></span>
+                        <input
+                          type="range"
+                          min={effectTestWindow.start}
+                          max={effectTestWindow.end}
+                          step="0.033333"
+                          value={correctionTime}
+                          onChange={(event) => seekCorrectionPreview(Number(event.target.value))}
+                        />
+                      </label>
+                      <div className="correction-tools" aria-label="主角修正工具">
+                        <button
+                          className={correctionMode === 'remove' ? 'selected remove' : ''}
+                          type="button"
+                          onClick={() => setCorrectionMode('remove')}
+                        >移除背景</button>
+                        <button
+                          className={correctionMode === 'keep' ? 'selected keep' : ''}
+                          type="button"
+                          onClick={() => setCorrectionMode('keep')}
+                        >補回主角</button>
+                      </div>
+                      <label className="correction-brush">
+                        <span><b>筆刷大小</b><em>{correctionBrush}px</em></span>
+                        <input
+                          type="range"
+                          min="12"
+                          max="72"
+                          step="4"
+                          value={correctionBrush}
+                          onChange={(event) => setCorrectionBrush(Number(event.target.value))}
+                        />
+                      </label>
+                      <p>直接在上方畫面塗抹。移除用於風扇、路人及其他背景；補回用於主角被吃掉的部分。</p>
+                      <div className="correction-actions">
+                        <button type="button" disabled={correctionCount === 0} onClick={undoMaskCorrection}>復原上一筆</button>
+                        <button type="button" disabled={correctionCount === 0} onClick={clearMaskCorrections}>全部清除</button>
+                        <button className="primary" type="button" onClick={closeMaskCorrection}>完成修正</button>
+                      </div>
+                    </>
+                  )}
+                </section>
+              )}
               {(phase === 'path-ready' || phase === 'effect-testing' || phase === 'exporting') && trackPath.length > 1 && (
                 <section className="export-panel">
                   <div className="export-heading">
@@ -1007,7 +1222,7 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟' : '開啟特效'}
                       </button>
                     </div>
-                    <p className="effect-note">{sourceMode === 'direct' ? '依使用者選擇保留輸入影片構圖，直接用 MagicTouch＋Pose 去背，不執行 ViT 追蹤。' : '先逐格用 ViT＋MagicTouch 鎖定原主角，再以 Pose 人體遮罩排除風扇與家具；去背全部完成後才套特效。'} 所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">{sourceMode === 'direct' ? '依使用者選擇保留輸入影片構圖，以 MagicTouch＋Pose 去背，再用光流對齊前後影格；不執行 ViT 追蹤。' : 'ViT 追蹤維持原樣；框內使用 MagicTouch＋Pose 去背，再以光流對齊前後遮罩，降低動作邊緣閃爍。'} 所有影像仍在這台 iPhone 本機處理。</p>
 
                     {personEffects.enabled && (
                       <>
