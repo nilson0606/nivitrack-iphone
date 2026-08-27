@@ -407,6 +407,7 @@ footer p span { margin-right: 7px; color: #20a866; }
 .effect-group { margin-top: 15px; }
 .effect-group > span { display: block; margin-bottom: 7px; font-size: 11px; font-weight: 750; }
 .effect-options { display: grid; gap: 7px; }
+.effect-options.two { grid-template-columns: repeat(2, 1fr); }
 .effect-options.three { grid-template-columns: repeat(3, 1fr); }
 .effect-options.five { grid-template-columns: repeat(5, 1fr); }
 .effect-options button { min-width: 0; padding-inline: 6px; }
