@@ -695,6 +695,9 @@ export default function Home() {
     setNotice(codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
 
     try {
+      if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
+      setNotice('正在啟動 Safari 音訊編碼…');
+      await exporterRef.current.primeAudio();
       const effectRenderer = personEffects.enabled ? await getPersonEffectRenderer() : undefined;
       if (effectRenderer) {
         await effectRenderer.prepare(video, smoothTrackPath(trackPath, smoothness), {
@@ -709,7 +712,6 @@ export default function Home() {
         effectRenderer.resetPlayback();
         setNotice('主角去背完成，正在套用特效與編碼…');
       }
-      if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         aspect,
         subjectScale,

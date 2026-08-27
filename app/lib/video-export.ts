@@ -212,8 +212,28 @@ export class RealtimeVideoExporter {
       this.monitor.connect(this.audioContext.destination);
     }
     this.monitor!.gain.value = 0;
-    await this.audioContext.resume();
+    if (this.audioContext.state !== 'running') {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          reject(new Error('Safari 音訊編碼啟動逾時，請重新點一次輸出'));
+        }, 5000);
+        this.audioContext!.resume().then(
+          () => {
+            window.clearTimeout(timeout);
+            resolve();
+          },
+          (error) => {
+            window.clearTimeout(timeout);
+            reject(error);
+          },
+        );
+      });
+    }
     return this.destination!.stream.getAudioTracks();
+  }
+
+  async primeAudio() {
+    await this.prepareAudio();
   }
 
   async export(
