@@ -52,6 +52,7 @@ export type PersonMaskPreparationOptions = {
 };
 
 const SPRITE_SIZE = 256;
+const DIRECT_MATTE_LONG_EDGE = 640;
 const PREPARE_INTERVAL = 1 / 30;
 const SNAPSHOT_INTERVAL = 1 / 15;
 
@@ -219,10 +220,14 @@ export class PersonEffectRenderer {
     this.clearPrepared();
   }
 
-  private segmentMask(video: HTMLVideoElement, region: Rect): PreparedMask {
+  private segmentMask(
+    video: HTMLVideoElement,
+    region: Rect,
+    inputLongEdge = SPRITE_SIZE,
+  ): PreparedMask {
     const input = this.inputCanvas.getContext('2d', { alpha: false });
     if (!input) throw new Error('Safari 無法建立人物去背 Canvas');
-    const inputScale = SPRITE_SIZE / Math.max(region.width, region.height);
+    const inputScale = inputLongEdge / Math.max(region.width, region.height);
     const inputWidth = Math.max(1, Math.round(region.width * inputScale));
     const inputHeight = Math.max(1, Math.round(region.height * inputScale));
     if (this.inputCanvas.width !== inputWidth || this.inputCanvas.height !== inputHeight) {
@@ -321,7 +326,11 @@ export class PersonEffectRenderer {
         const region = options.preserveFraming
           ? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
           : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
-        const prepared = this.segmentMask(video, region);
+        const prepared = this.segmentMask(
+          video,
+          region,
+          options.preserveFraming ? DIRECT_MATTE_LONG_EDGE : SPRITE_SIZE,
+        );
         prepared.time = at;
         this.preparedMasks.push(prepared);
         options.onProgress(frame / totalFrames);
@@ -482,7 +491,11 @@ export class PersonEffectRenderer {
       const region = options.preserveFraming
         ? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
         : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
-      this.applyMask(this.segmentMask(video, region));
+      this.applyMask(this.segmentMask(
+        video,
+        region,
+        options.preserveFraming ? DIRECT_MATTE_LONG_EDGE : SPRITE_SIZE,
+      ));
     }
     this.updateSprite(video);
     if (time - this.lastSnapshotTime >= SNAPSHOT_INTERVAL) {
