@@ -771,6 +771,7 @@ export default function Home() {
     setNotice('正在載入本機指定主角去背模型與時間穩定…');
     const testStart = Math.min(video.currentTime, Math.max(0, video.duration - 3));
     const testEnd = Math.min(video.duration, testStart + 3);
+    const testPreviewTime = testStart + (testEnd - testStart) * 0.5;
     const interval = 1 / 10;
     const totalFrames = Math.max(1, Math.ceil((testEnd - testStart) / interval));
 
@@ -808,11 +809,11 @@ export default function Home() {
       setProgress(1);
       setEffectTestPassed(true);
       setEffectTestWindow({ start: testStart, end: testEnd });
-      setCorrectionTime(testStart);
+      setCorrectionTime(testPreviewTime);
       setPhase('path-ready');
-      await seekTo(testStart);
+      await seekTo(testPreviewTime);
       renderer.resetPlayback();
-      renderer.render(video, previewCanvas, smoothedPath, testStart, subjectScale, personEffects);
+      renderer.render(video, previewCanvas, smoothedPath, testPreviewTime, subjectScale, personEffects);
       setShowEffectPreview(true);
       setNotice('3 秒自動去背完成；若有多餘物品再按「修正主角」');
     } catch (error) {
@@ -822,7 +823,7 @@ export default function Home() {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       video.pause();
-      await seekTo(testStart).catch(() => undefined);
+      await seekTo(testPreviewTime).catch(() => undefined);
     }
   }
   async function exportVideo(codec: 'h264' | 'hevc') {
