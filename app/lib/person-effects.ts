@@ -134,6 +134,19 @@ function cameraCrop(
   };
 }
 
+function sourceFrameCrop(video: HTMLVideoElement, canvas: HTMLCanvasElement): Rect {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  const sourceAspect = sourceWidth / sourceHeight;
+  const outputAspect = canvas.width / canvas.height;
+  if (sourceAspect > outputAspect) {
+    const width = sourceHeight * outputAspect;
+    return { x: (sourceWidth - width) / 2, y: 0, width, height: sourceHeight };
+  }
+  const height = sourceWidth / outputAspect;
+  return { x: 0, y: (sourceHeight - height) / 2, width: sourceWidth, height };
+}
+
 function subjectRegion(box: Box, sourceWidth: number, sourceHeight: number): Rect {
   const [x, y, width, height] = box;
   const size = Math.min(
@@ -465,6 +478,7 @@ export class PersonEffectRenderer {
     time: number,
     subjectScale: number,
     options: PersonEffectOptions,
+    preserveSourceFraming = false,
   ) {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context || !video.videoWidth || !video.videoHeight) return;
@@ -472,7 +486,9 @@ export class PersonEffectRenderer {
     this.lastMediaTime = time;
 
     const trackedBox = interpolateBox(path, time);
-    const crop = cameraCrop(video, canvas, path, time, subjectScale);
+    const crop = preserveSourceFraming
+      ? sourceFrameCrop(video, canvas)
+      : cameraCrop(video, canvas, path, time, subjectScale);
     this.drawBackground(context, video, canvas, crop, options.background);
 
     const prepared = this.preparedMaskAt(time);

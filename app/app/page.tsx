@@ -43,6 +43,7 @@ type VideoInfo = {
 };
 
 type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'effect-testing' | 'exporting';
+type ProcessingMode = 'track' | 'direct-matte';
 
 type TrackingStats = {
   frames: number;
@@ -126,6 +127,7 @@ export default function Home() {
   const [personEffects, setPersonEffects] = useState<PersonEffectOptions>(DEFAULT_PERSON_EFFECTS);
   const [showEffectPreview, setShowEffectPreview] = useState(false);
   const [effectTestPassed, setEffectTestPassed] = useState(false);
+  const [processingMode, setProcessingMode] = useState<ProcessingMode>('track');
 
   useEffect(() => {
     const support = getRecorderSupport();
@@ -230,6 +232,7 @@ export default function Home() {
     setExportInfo(null);
     setShowEffectPreview(false);
     setEffectTestPassed(false);
+    setProcessingMode('track');
     personEffectRendererRef.current?.reset();
     setProgress(0);
     setPhase('choose');
@@ -310,8 +313,9 @@ export default function Home() {
     setExportInfo(null);
     setShowEffectPreview(false);
     setEffectTestPassed(false);
+    setProcessingMode('track');
     personEffectRendererRef.current?.reset();
-    setNotice('用手指框住要追蹤的人物或寵物');
+    setNotice('用手指框住主角；下一步再選擇「原片鎖定」或「已鎖定影片直接去背」');
     requestAnimationFrame(() => drawFrame(null));
   }
 
@@ -375,7 +379,49 @@ export default function Home() {
       box: [...next] as Box,
     };
     drawFrame(next);
-    setNotice('主角已指定；可開始 3 秒 ViT 追蹤測試');
+    setNotice('主角已指定；請選擇原片鎖定，或已鎖定影片直接去背');
+  }
+
+  function prepareDirectMatte() {
+    const video = videoRef.current;
+    const selection = selectionRef.current;
+    if (!video || !selection || !Number.isFinite(video.duration)) {
+      setNotice('請先在鎖定影片中框住主角');
+      return;
+    }
+    const stableBox = [...selection.box] as Box;
+    const point = (time: number): TrackPoint => ({
+      time,
+      box: [...stableBox] as Box,
+      score: 1,
+      accepted: true,
+    });
+    const ratio = video.videoWidth / Math.max(1, video.videoHeight);
+    const nearestAspect = ([
+      ['9:16', 9 / 16],
+      ['1:1', 1],
+      ['16:9', 16 / 9],
+    ] as Array<[AspectPreset, number]>).sort(
+      (left, right) => Math.abs(left[1] - ratio) - Math.abs(right[1] - ratio),
+    )[0][0];
+
+    clearRenderedOutput();
+    setProcessingMode('direct-matte');
+    setTrackPath([point(0), point(Math.max(0.001, video.duration))]);
+    setStats(null);
+    setProgress(0);
+    setCurrentScore(null);
+    setAspect(nearestAspect);
+    setPersonEffects({
+      ...DEFAULT_PERSON_EFFECTS,
+      enabled: true,
+      background: 'black',
+      subject: 'original',
+      outline: 'none',
+      cloneCount: 0,
+    });
+    setPhase('path-ready');
+    setNotice('已鎖定影片直接去背：使用原本 V8.1 特效，不執行 ViT');
   }
 
   async function detectSubjects() {
@@ -450,6 +496,7 @@ export default function Home() {
     const video = videoRef.current;
     if (!video || !box) return;
     cancelRef.current = false;
+    setProcessingMode('track');
     setPhase('tracking');
     setStats(null);
     setProgress(0);
@@ -516,6 +563,7 @@ export default function Home() {
     }
 
     cancelRef.current = false;
+    setProcessingMode('track');
     setPhase('tracking');
     setStats(null);
     setTrackPath([]);
@@ -615,7 +663,7 @@ export default function Home() {
     const previewCanvas = effectPreviewCanvasRef.current;
     const selection = selectionRef.current;
     if (!video || !previewCanvas || !selection || trackPath.length < 2) {
-      setNotice('請先完成整支影片的 ViT 追蹤');
+      setNotice(processingMode === 'direct-matte' ? '請先指定去背主角' : '請先完成整支影片的 ViT 追蹤');
       return;
     }
     if (!personEffects.enabled) {
@@ -645,7 +693,7 @@ export default function Home() {
         endTime: testEnd,
         onProgress: (next) => {
           setProgress(next * 0.9);
-          setNotice('先逐格鎖定主角並去背 · ' + Math.round(next * 100) + '%');
+          setNotice('逐格建立主角去背遮罩 · ' + Math.round(next * 100) + '%');
         },
         isCancelled: () => cancelRef.current,
       });
@@ -655,18 +703,26 @@ export default function Home() {
         if (cancelRef.current) throw new Error('使用者已取消特效測試');
         const at = Math.min(testEnd, testStart + frame * interval);
         await seekTo(at);
-        renderer.render(video, previewCanvas, smoothedPath, at, subjectScale, personEffects);
+        renderer.render(
+          video,
+          previewCanvas,
+          smoothedPath,
+          at,
+          subjectScale,
+          personEffects,
+          processingMode === 'direct-matte',
+        );
         setShowEffectPreview(true);
         const next = frame / Math.max(1, totalFrames);
         setProgress(0.9 + next * 0.1);
-        setNotice('套用特效測試 · ' + Math.round(next * 100) + '%');
+        setNotice((processingMode === 'direct-matte' ? '套用去背測試 · ' : '套用特效測試 · ') + Math.round(next * 100) + '%');
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
 
       setProgress(1);
       setEffectTestPassed(true);
       setPhase('path-ready');
-      setNotice('3 秒特效測試完成；滿意後可輸出完整影片');
+      setNotice(processingMode === 'direct-matte' ? '3 秒直接去背測試完成；滿意後可輸出完整影片' : '3 秒特效測試完成；滿意後可輸出完整影片');
     } catch (error) {
       setShowEffectPreview(false);
       setEffectTestPassed(false);
@@ -681,11 +737,11 @@ export default function Home() {
     const video = videoRef.current;
     const renderCanvas = renderCanvasRef.current;
     if (!video || !renderCanvas || trackPath.length < 2) {
-      setNotice('請先完成整支影片的 ViT 追蹤');
+      setNotice(processingMode === 'direct-matte' ? '請先指定去背主角' : '請先完成整支影片的 ViT 追蹤');
       return;
     }
     if (personEffects.enabled && !effectTestPassed) {
-      setNotice('請先完成 3 秒特效測試，再輸出完整影片');
+      setNotice(processingMode === 'direct-matte' ? '請先完成 3 秒直接去背測試，再輸出完整影片' : '請先完成 3 秒特效測試，再輸出完整影片');
       return;
     }
     cancelRef.current = false;
@@ -719,6 +775,7 @@ export default function Home() {
         codec,
         effects: personEffects,
         effectRenderer,
+        preserveSourceFraming: processingMode === 'direct-matte',
         onProgress: (next) => {
           setProgress(personEffects.enabled ? 0.8 + next * 0.2 : next);
           setNotice('本機編碼中 · ' + Math.round(next * 100) + '%');
@@ -726,7 +783,9 @@ export default function Home() {
         isCancelled: () => cancelRef.current,
       });
       const baseName = (sourceFile?.name ?? 'NiviTrack').replace(/\.[^.]+$/, '');
-      const name = baseName + '-NiviTrack' + (personEffects.enabled ? '-FX' : '') + '-' + aspect.replace(':', 'x') + '.mp4';
+      const name = processingMode === 'direct-matte'
+        ? baseName + '-Cutout-' + aspect.replace(':', 'x') + '.mp4'
+        : baseName + '-NiviTrack' + (personEffects.enabled ? '-FX' : '') + '-' + aspect.replace(':', 'x') + '.mp4';
       setExportBlob(result.blob);
       setExportUrl(URL.createObjectURL(result.blob));
       setExportInfo({
@@ -766,7 +825,7 @@ export default function Home() {
 
   function cancelTracking() {
     cancelRef.current = true;
-    setNotice(phase === 'exporting' ? '正在取消輸出…' : phase === 'effect-testing' ? '正在取消特效測試…' : '正在取消追蹤…');
+    setNotice(phase === 'exporting' ? '正在取消輸出…' : phase === 'effect-testing' ? '正在取消去背測試…' : '正在取消追蹤…');
   }
 
   const step = phase === 'choose' ? 1 : phase === 'select' ? 2 : 3;
@@ -777,7 +836,7 @@ export default function Home() {
         <a className="brand" href="#" aria-label="NiviTrack 首頁">
           <span className="brand-mark">N</span><span>NiviTrack</span>
         </a>
-        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理</span>
+        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 · V8.1D</span>
       </header>
 
       <section className="hero">
@@ -787,7 +846,7 @@ export default function Home() {
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
           <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>指定主角</span></div>
-          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤與輸出</span></div>
+          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>鎖定／去背與輸出</span></div>
         </div>
       </section>
 
@@ -827,7 +886,7 @@ export default function Home() {
                   aria-label="3 秒人物特效預覽"
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒人物特效測試' : showEffectPreview ? 'Stage 1 特效預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒人物去背測試' : showEffectPreview ? 'Stage 1 特效預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' && processingMode === 'direct-matte' ? '已鎖定影片 · 只去背' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
                   <div className="progress-overlay">
@@ -854,13 +913,16 @@ export default function Home() {
                     <button type="button" disabled={!box} onClick={runTracking}>
                       測試 3 秒 ViT
                     </button>
-                    <button className="primary" type="button" disabled={!box} onClick={runFullTracking}>
-                      追蹤完整影片
+                    <button type="button" disabled={!box} onClick={runFullTracking}>
+                      原始影片：追蹤完整影片
+                    </button>
+                    <button className="primary" type="button" disabled={!box} onClick={prepareDirectMatte}>
+                      已鎖定影片：只去背
                     </button>
                   </>
                 )}
                 {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
-                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'effect-testing' ? '取消特效測試' : '取消追蹤'}</button>
+                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'effect-testing' ? '取消去背測試' : '取消追蹤'}</button>
                 )}
                 {phase === 'complete' && (
                   <>
@@ -869,20 +931,22 @@ export default function Home() {
                   </>
                 )}
                 {phase === 'path-ready' && (
-                  <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
+                  <button type="button" onClick={enterSelection}>
+                    {processingMode === 'direct-matte' ? '重新指定去背主角' : '重新選角與追蹤'}
+                  </button>
                 )}
               </div>
               {(phase === 'path-ready' || phase === 'effect-testing' || phase === 'exporting') && trackPath.length > 1 && (
                 <section className="export-panel">
                   <div className="export-heading">
                     <div>
-                      <span>完整路徑已就緒</span>
-                      <strong>選擇輸出構圖</strong>
+                      <span>{processingMode === 'direct-matte' ? '鎖定影片已就緒' : '完整路徑已就緒'}</span>
+                      <strong>{processingMode === 'direct-matte' ? '只去背，不再鎖定' : '選擇輸出構圖'}</strong>
                     </div>
-                    <b>{trackPath.length} 點</b>
+                    <b>{processingMode === 'direct-matte' ? '不跑 ViT' : trackPath.length + ' 點'}</b>
                   </div>
 
-                  <div className="aspect-options" aria-label="輸出比例">
+                  {processingMode === 'track' && <div className="aspect-options" aria-label="輸出比例">
                     {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
                       <button
                         className={aspect === preset ? 'selected' : ''}
@@ -894,9 +958,9 @@ export default function Home() {
                         {preset}
                       </button>
                     ))}
-                  </div>
+                  </div>}
 
-                  <label className="range-control">
+                  {processingMode === 'track' && <label className="range-control">
                     <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
                     <input
                       type="range"
@@ -906,9 +970,9 @@ export default function Home() {
                       disabled={phase === 'exporting'}
                       onChange={(event) => { setSubjectScale(Number(event.target.value) / 100); clearRenderedOutput(); }}
                     />
-                  </label>
+                  </label>}
 
-                  <label className="range-control">
+                  {processingMode === 'track' && <label className="range-control">
                     <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
                     <input
                       type="range"
@@ -918,7 +982,7 @@ export default function Home() {
                       disabled={phase === 'exporting'}
                       onChange={(event) => { setSmoothness(Number(event.target.value) / 100); clearRenderedOutput(); }}
                     />
-                  </label>
+                  </label>}
 
                   <div className="effect-lab">
                     <div className="effect-heading">
@@ -935,7 +999,11 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟' : '開啟特效'}
                       </button>
                     </div>
-                    <p className="effect-note">先逐格用 ViT＋MagicTouch 鎖定原主角，再以 DeepLab‑V3 的 person 類別排除風扇與家具；去背全部完成後才套特效。所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">
+                      {processingMode === 'direct-matte'
+                        ? '只去背模式不執行 ViT，也不再次置中；直接使用原本 V8.1 的去背與完整 Stage 1 特效。'
+                        : '原本 V8.1 流程：完成 ViT 鎖定後，再使用原有去背與 Stage 1 特效。'}
+                    </p>
 
                     {personEffects.enabled && (
                       <>
@@ -1071,7 +1139,9 @@ export default function Home() {
                           disabled={phase !== 'path-ready'}
                           onClick={() => void runEffectTest()}
                         >
-                          {effectTestPassed ? '✓ 3 秒特效測試完成' : '測試 3 秒特效'}
+                          {processingMode === 'direct-matte'
+                            ? effectTestPassed ? '✓ 3 秒去背測試完成' : '測試 3 秒去背'
+                            : effectTestPassed ? '✓ 3 秒特效測試完成' : '測試 3 秒特效'}
                         </button>
                       </>
                     )}
