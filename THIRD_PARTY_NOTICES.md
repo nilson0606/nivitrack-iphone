@@ -18,11 +18,11 @@ NiviTrack Stage 1 includes the following third-party components for on-device pe
 - Local asset: `app/public/models/magic_touch.tflite`
 - SHA-256: `E24338A717C1B7AD8D159666677EF400BABB7F33B8AD60C4D96DB4ECF694CD25`
 
-## MediaPipe Selfie Segmenter model
+## MediaPipe DeepLab-V3 model
 
-- Source: <https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite>
+- Source: <https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/latest/deeplab_v3.tflite>
 - Documentation: <https://developers.google.com/edge/mediapipe/solutions/vision/image_segmenter>
-- Local asset: `app/public/models/selfie_segmenter.tflite`
-- SHA-256: `191AC9529AE506EE0BEEFA6B2C945A172DAB9D07D1E802A290A4E4038226658B`
+- Local asset: `app/public/models/deeplab_v3.tflite`
+- SHA-256: `FF36E24D40547FE9E645E2F4E8745D1876D6E38B332D39A82F0BF0F5D1D561B3`
 
 MediaPipe processes the selected video frames on the user's device. NiviTrack does not send those frames to Google.
