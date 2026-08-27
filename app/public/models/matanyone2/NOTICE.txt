@@ -1,0 +1,16 @@
+MatAnyone2 browser test model notice
+
+The ONNX files in this directory are FP16 conversions of MatAnyone2:
+https://github.com/pq-yang/MatAnyone2
+Source revision: 0079197acd6d16a741f71558809c06c586c579e0
+
+The model weights remain licensed under the NTU S-Lab License 1.0.
+They are for non-commercial use only. See MODEL-LICENSE.txt.
+
+MatAnyone2Kit was used as a reference for the staged model decomposition:
+https://github.com/flowtyone/MatAnyone2Kit
+Reference revision: d85a029870b5149af6aa122cbc13c90db11e5b35
+
+The seven stages are:
+encoder, uncertainty estimator, memory matching, readout, decoder,
+mask encoder, and object summary.

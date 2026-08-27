@@ -1,5 +1,6 @@
 # Generated image workspace (the final social card is copied into app/public).
 /artifacts/
+/.prototype/
 
 # Local editor and OS files.
 .DS_Store
