@@ -1,4 +1,4 @@
-import type { ImageSegmenter } from '@mediapipe/tasks-vision';
+import { InteractiveSubjectSegmenter } from './interactive-subject-segmenter';
 import type { Box } from './vit-tracker';
 import { TrackedPersonMaskSelector } from './tracked-person-mask';
 import type { TrackPoint } from './video-export';
@@ -33,7 +33,7 @@ type Rect = { x: number; y: number; width: number; height: number };
 type Snapshot = { time: number; region: Rect; canvas: HTMLCanvasElement };
 
 const SPRITE_SIZE = 256;
-const SEGMENT_INTERVAL = 1 / 12;
+const SEGMENT_INTERVAL = 1 / 8;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -93,7 +93,7 @@ function cameraCrop(
 function subjectRegion(box: Box, sourceWidth: number, sourceHeight: number): Rect {
   const [x, y, width, height] = box;
   const size = Math.min(
-    Math.max(width * 1.55, height * 1.16, 64),
+    Math.max(width * 2.2, height * 1.7, 96),
     sourceWidth,
     sourceHeight,
   );
@@ -120,52 +120,26 @@ function smoothAlpha(confidence: number) {
 }
 
 export class PersonEffectRenderer {
-  private readonly segmenter: ImageSegmenter;
-  private readonly personMaskIndex: number;
+  private readonly segmenter: InteractiveSubjectSegmenter;
   private readonly inputCanvas = createCanvas();
   private readonly maskCanvas = createCanvas();
   private readonly spriteCanvas = createCanvas();
   private readonly tintCanvas = createCanvas();
   private readonly history: Snapshot[] = [];
   private readonly maskSelector = new TrackedPersonMaskSelector();
+  private previousMaskAlpha = new Uint8ClampedArray(0);
   private maskReady = false;
   private lastRegion: Rect | null = null;
   private lastSegmentTime = Number.NEGATIVE_INFINITY;
   private lastMediaTime = Number.NEGATIVE_INFINITY;
-  private lastTaskTimestamp = 0;
 
-  private constructor(segmenter: ImageSegmenter, personMaskIndex: number) {
+  private constructor(segmenter: InteractiveSubjectSegmenter) {
     this.segmenter = segmenter;
-    this.personMaskIndex = personMaskIndex;
   }
 
   static async create(wasmBaseUrl: string, modelUrl: string) {
-    const { FilesetResolver, ImageSegmenter } = await import('@mediapipe/tasks-vision');
-    // MediaPipe injects the loader through a classic <script> element on the
-    // browser main thread. Use its UMD loader here; the ESM loader leaves
-    // ModuleFactory unset when launched from an iOS home-screen web app.
-    const fileset = await FilesetResolver.forVisionTasks(wasmBaseUrl);
-    const gpuCanvas = createCanvas(1, 1);
-    let segmenter: ImageSegmenter;
-    try {
-      segmenter = await ImageSegmenter.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
-        canvas: gpuCanvas,
-        runningMode: 'VIDEO',
-        outputCategoryMask: false,
-        outputConfidenceMasks: true,
-      });
-    } catch {
-      segmenter = await ImageSegmenter.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' },
-        runningMode: 'VIDEO',
-        outputCategoryMask: false,
-        outputConfidenceMasks: true,
-      });
-    }
-    const labels = segmenter.getLabels().map((label) => label.toLowerCase());
-    const personIndex = labels.findIndex((label) => label.includes('person'));
-    return new PersonEffectRenderer(segmenter, personIndex >= 0 ? personIndex : Math.max(0, labels.length - 1));
+    const segmenter = await InteractiveSubjectSegmenter.create(wasmBaseUrl, modelUrl);
+    return new PersonEffectRenderer(segmenter);
   }
 
   reset() {
@@ -174,6 +148,7 @@ export class PersonEffectRenderer {
     this.lastRegion = null;
     this.lastSegmentTime = Number.NEGATIVE_INFINITY;
     this.lastMediaTime = Number.NEGATIVE_INFINITY;
+    this.previousMaskAlpha.fill(0);
   }
 
   private updateMask(video: HTMLVideoElement, region: Rect, trackedBox: Box) {
@@ -191,14 +166,29 @@ export class PersonEffectRenderer {
       SPRITE_SIZE,
       SPRITE_SIZE,
     );
-    const timestamp = Math.max(performance.now(), this.lastTaskTimestamp + 1);
-    this.lastTaskTimestamp = timestamp;
-    const result = this.segmenter.segmentForVideo(this.inputCanvas, timestamp);
+    const [boxX, boxY, boxWidth, boxHeight] = trackedBox;
+    const keypoint = {
+      x: clamp((boxX + boxWidth / 2 - region.x) / region.width, 0.02, 0.98),
+      y: clamp((boxY + boxHeight / 2 - region.y) / region.height, 0.02, 0.98),
+    };
+    const result = this.segmenter.segment(this.inputCanvas, keypoint);
     try {
       const masks = result.confidenceMasks ?? [];
-      const selected = masks[Math.min(this.personMaskIndex, Math.max(0, masks.length - 1))];
-      if (!selected) throw new Error('人物去背模型沒有回傳遮罩');
-      const values = selected.getAsFloat32Array();
+      if (masks.length === 0) throw new Error('指定主角去背模型沒有回傳遮罩');
+      let selected = masks[0];
+      let values = selected.getAsFloat32Array();
+      let bestKeypointScore = Number.NEGATIVE_INFINITY;
+      for (const candidate of masks) {
+        const candidateValues = candidate.getAsFloat32Array();
+        const keypointX = Math.round(keypoint.x * Math.max(0, candidate.width - 1));
+        const keypointY = Math.round(keypoint.y * Math.max(0, candidate.height - 1));
+        const score = candidateValues[keypointY * candidate.width + keypointX] ?? 0;
+        if (score > bestKeypointScore) {
+          bestKeypointScore = score;
+          selected = candidate;
+          values = candidateValues;
+        }
+      }
       const componentGate = this.maskSelector.select(
         values,
         selected.width,
@@ -207,8 +197,15 @@ export class PersonEffectRenderer {
         trackedBox,
       );
       const image = mask.createImageData(selected.width, selected.height);
+      if (this.previousMaskAlpha.length !== values.length) {
+        this.previousMaskAlpha = new Uint8ClampedArray(values.length);
+      }
       for (let index = 0; index < values.length; index += 1) {
-        const alpha = componentGate[index] ? Math.round(smoothAlpha(values[index]) * 255) : 0;
+        const rawAlpha = componentGate[index] ? Math.round(smoothAlpha(values[index]) * 255) : 0;
+        const alpha = this.maskReady
+          ? Math.round(rawAlpha * 0.86 + this.previousMaskAlpha[index] * 0.14)
+          : rawAlpha;
+        this.previousMaskAlpha[index] = alpha;
         const pixel = index * 4;
         image.data[pixel] = 255;
         image.data[pixel + 1] = 255;

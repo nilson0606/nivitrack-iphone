@@ -35,10 +35,6 @@ export class TrackedPersonMaskSelector {
     const centerY = (top + bottom) / 2;
     const halfWidth = Math.max(1, (right - left) / 2);
     const halfHeight = Math.max(1, (bottom - top) / 2);
-    const allowedLeft = Math.max(0, Math.floor(left - (right - left) * 0.14));
-    const allowedRight = Math.min(width - 1, Math.ceil(right + (right - left) * 0.14));
-    const allowedTop = Math.max(0, Math.floor(top - (bottom - top) * 0.06));
-    const allowedBottom = Math.min(height - 1, Math.ceil(bottom + (bottom - top) * 0.08));
 
     let nextLabel = 0;
     let bestLabel = 0;
@@ -47,16 +43,7 @@ export class TrackedPersonMaskSelector {
     let bestConfidence = -1;
 
     for (let start = 0; start < total; start += 1) {
-      const startX = start % width;
-      const startY = Math.floor(start / width);
-      if (
-        this.labels[start] !== 0
-        || values[start] < COMPONENT_THRESHOLD
-        || startX < allowedLeft
-        || startX > allowedRight
-        || startY < allowedTop
-        || startY > allowedBottom
-      ) continue;
+      if (this.labels[start] !== 0 || values[start] < COMPONENT_THRESHOLD) continue;
       nextLabel += 1;
       let head = 0;
       let tail = 1;
@@ -82,25 +69,25 @@ export class TrackedPersonMaskSelector {
         }
 
         let neighbor = index - 1;
-        if (x > allowedLeft && this.labels[neighbor] === 0 && values[neighbor] >= COMPONENT_THRESHOLD) {
+        if (x > 0 && this.labels[neighbor] === 0 && values[neighbor] >= COMPONENT_THRESHOLD) {
           this.labels[neighbor] = nextLabel;
           this.queue[tail] = neighbor;
           tail += 1;
         }
         neighbor = index + 1;
-        if (x < allowedRight && this.labels[neighbor] === 0 && values[neighbor] >= COMPONENT_THRESHOLD) {
+        if (x + 1 < width && this.labels[neighbor] === 0 && values[neighbor] >= COMPONENT_THRESHOLD) {
           this.labels[neighbor] = nextLabel;
           this.queue[tail] = neighbor;
           tail += 1;
         }
         neighbor = index - width;
-        if (y > allowedTop && this.labels[neighbor] === 0 && values[neighbor] >= COMPONENT_THRESHOLD) {
+        if (y > 0 && this.labels[neighbor] === 0 && values[neighbor] >= COMPONENT_THRESHOLD) {
           this.labels[neighbor] = nextLabel;
           this.queue[tail] = neighbor;
           tail += 1;
         }
         neighbor = index + width;
-        if (y < allowedBottom && this.labels[neighbor] === 0 && values[neighbor] >= COMPONENT_THRESHOLD) {
+        if (y + 1 < height && this.labels[neighbor] === 0 && values[neighbor] >= COMPONENT_THRESHOLD) {
           this.labels[neighbor] = nextLabel;
           this.queue[tail] = neighbor;
           tail += 1;
