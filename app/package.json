@@ -12,7 +12,8 @@
     "lint": "eslint app lib scripts vite.config.ts next.config.ts",
     "test:vit": "node scripts/smoke-vit.mjs",
     "test:mask": "node --experimental-strip-types scripts/smoke-tracked-mask.mjs",
-    "test:fusion": "node --experimental-strip-types scripts/smoke-person-mask-fusion.mjs"
+    "test:fusion": "node --experimental-strip-types scripts/smoke-person-mask-fusion.mjs",
+    "test:temporal": "node --experimental-strip-types scripts/smoke-temporal-mask.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "1.0.1",
