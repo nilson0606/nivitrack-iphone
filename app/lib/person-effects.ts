@@ -1,8 +1,6 @@
-import { MagicPoseMatte } from './magic-pose-matte';
+import { EdgeTamVideoSegmenter, type EdgeTamMask } from './edgetam-video-segmenter';
 import type { Box } from './vit-tracker';
 import type { TrackPoint } from './video-export';
-import { excludePersistentBackground } from './temporal-background';
-import { FLOW_HEIGHT, FLOW_WIDTH, stabilizeAlpha } from './temporal-mask';
 
 export type BackgroundEffect = 'original' | 'black' | 'blur';
 export type SubjectEffect = 'original' | 'blue' | 'black';
@@ -43,8 +41,6 @@ type PreparedMask = {
   region: Rect;
   width: number;
   height: number;
-  flowLuma: Uint8Array;
-  bodyCore: Uint8Array | null;
   baseAlpha: Uint8ClampedArray | null;
   alpha: Uint8ClampedArray;
 };
@@ -62,15 +58,14 @@ export type PersonMaskPreparationOptions = {
   startTime: number;
   endTime: number;
   preserveFraming: boolean;
+  subjectSelection?: { time: number; box: Box };
   retainSourceForCorrections?: boolean;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
 
 const SPRITE_SIZE = 256;
-const MATTE_PIXEL_BUDGET = 360 * 640;
-const MATTE_MAX_EDGE = 640;
-const PREPARE_INTERVAL = 1 / 30;
+const PREPARE_INTERVAL = 1 / 15;
 const SNAPSHOT_INTERVAL = 1 / 15;
 const CORRECTION_BACKWARD_SECONDS = 0.12;
 const CORRECTION_FORWARD_SECONDS = 1.2;
@@ -197,21 +192,6 @@ function framingCrop(video: HTMLVideoElement, canvas: HTMLCanvasElement): Rect {
   return { x: 0, y: (sourceHeight - height) / 2, width: sourceWidth, height };
 }
 
-function subjectRegion(box: Box, sourceWidth: number, sourceHeight: number): Rect {
-  const [x, y, width, height] = box;
-  const size = Math.min(
-    Math.max(width * 2.2, height * 1.7, 96),
-    sourceWidth,
-    sourceHeight,
-  );
-  return {
-    x: clamp(x + width / 2 - size / 2, 0, Math.max(0, sourceWidth - size)),
-    y: clamp(y + height / 2 - size / 2, 0, Math.max(0, sourceHeight - size)),
-    width: size,
-    height: size,
-  };
-}
-
 function outputRect(region: Rect, crop: Rect, canvas: HTMLCanvasElement): Rect {
   return {
     x: ((region.x - crop.x) / crop.width) * canvas.width,
@@ -222,9 +202,7 @@ function outputRect(region: Rect, crop: Rect, canvas: HTMLCanvasElement): Rect {
 }
 
 export class PersonEffectRenderer {
-  private readonly segmenter: MagicPoseMatte;
-  private readonly inputCanvas = createCanvas();
-  private readonly flowCanvas = createCanvas(FLOW_WIDTH, FLOW_HEIGHT);
+  private readonly segmenter: EdgeTamVideoSegmenter;
   private readonly maskCanvas = createCanvas();
   private readonly spriteCanvas = createCanvas();
   private readonly tintCanvas = createCanvas();
@@ -238,18 +216,13 @@ export class PersonEffectRenderer {
   private lastMediaTime = Number.NEGATIVE_INFINITY;
   private nextCorrectionGroup = 0;
   private activeCorrectionGroup = 0;
-  private preparedPreserveFraming = false;
 
-  private constructor(segmenter: MagicPoseMatte) {
+  private constructor(segmenter: EdgeTamVideoSegmenter) {
     this.segmenter = segmenter;
   }
 
-  static async create(wasmBaseUrl: string, subjectModelUrl: string, poseModelUrl: string) {
-    const segmenter = await MagicPoseMatte.create(
-      wasmBaseUrl,
-      subjectModelUrl,
-      poseModelUrl,
-    );
+  static async create(wasmBaseUrl: string, modelBaseUrl: string) {
+    const segmenter = await EdgeTamVideoSegmenter.create(wasmBaseUrl, modelBaseUrl);
     return new PersonEffectRenderer(segmenter);
   }
 
@@ -264,7 +237,7 @@ export class PersonEffectRenderer {
 
   clearPrepared() {
     this.preparedMasks.length = 0;
-    this.segmenter.beginSequence();
+    this.segmenter.reset();
     this.resetPlayback();
   }
 
@@ -296,61 +269,10 @@ export class PersonEffectRenderer {
     }
   }
 
-  private stabilizePreparedBackward() {
-    let following: PreparedMask | null = null;
-    const followingWeight = this.preparedPreserveFraming ? 0.44 : 0.36;
-    for (let index = this.preparedMasks.length - 1; index >= 0; index -= 1) {
-      const prepared = this.preparedMasks[index];
-      prepared.alpha = stabilizeAlpha(
-        prepared.alpha,
-        following?.alpha ?? null,
-        prepared.flowLuma,
-        following?.flowLuma ?? null,
-        prepared.width,
-        prepared.height,
-        followingWeight,
-      );
-      following = prepared;
-    }
-  }
-
-  private fillShortLeadingBodyCoreGaps() {
-    let followingCore: Uint8Array | null = null;
-    let missing = 0;
-    for (let index = this.preparedMasks.length - 1; index >= 0; index -= 1) {
-      const prepared = this.preparedMasks[index];
-      if (prepared.bodyCore) {
-        followingCore = prepared.bodyCore;
-        missing = 0;
-      } else if (followingCore && missing < 2) {
-        prepared.bodyCore = new Uint8Array(followingCore);
-        missing += 1;
-      } else {
-        followingCore = null;
-        missing = 0;
-      }
-    }
-  }
-
   private rebuildPreparedMasks() {
-    let previous: PreparedMask | null = null;
-    const previousWeight = this.preparedPreserveFraming ? 0.42 : 0.58;
     for (const prepared of this.preparedMasks) {
-      const sourceAlpha = prepared.baseAlpha ?? prepared.alpha;
-      prepared.alpha = stabilizeAlpha(
-        sourceAlpha,
-        previous?.alpha ?? null,
-        prepared.flowLuma,
-        previous?.flowLuma ?? null,
-        prepared.width,
-        prepared.height,
-        previousWeight,
-      );
-      previous = prepared;
+      if (prepared.baseAlpha) prepared.alpha = new Uint8ClampedArray(prepared.baseAlpha);
     }
-    this.fillShortLeadingBodyCoreGaps();
-    this.stabilizePreparedBackward();
-    excludePersistentBackground(this.preparedMasks);
     for (const prepared of this.preparedMasks) this.applyCorrections(prepared);
     this.resetPlayback();
   }
@@ -414,70 +336,12 @@ export class PersonEffectRenderer {
     return this.correctionCount;
   }
 
-  private segmentMask(video: HTMLVideoElement, region: Rect): PreparedMask {
-    const input = this.inputCanvas.getContext('2d', { alpha: false });
-    if (!input) throw new Error('Safari 無法建立人物去背 Canvas');
-    const inputScale = Math.min(
-      Math.sqrt(MATTE_PIXEL_BUDGET / Math.max(1, region.width * region.height)),
-      MATTE_MAX_EDGE / Math.max(1, region.width, region.height),
-    );
-    const inputWidth = Math.max(1, Math.round(region.width * inputScale));
-    const inputHeight = Math.max(1, Math.round(region.height * inputScale));
-    if (this.inputCanvas.width !== inputWidth || this.inputCanvas.height !== inputHeight) {
-      this.inputCanvas.width = inputWidth;
-      this.inputCanvas.height = inputHeight;
-    }
-    input.drawImage(
-      video,
-      region.x,
-      region.y,
-      region.width,
-      region.height,
-      0,
-      0,
-      inputWidth,
-      inputHeight,
-    );
-    const result = this.segmenter.segment(this.inputCanvas);
-    const flow = this.flowCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
-    if (!flow) throw new Error('Safari 無法建立光流分析 Canvas');
-    flow.drawImage(this.inputCanvas, 0, 0, FLOW_WIDTH, FLOW_HEIGHT);
-    const pixels = flow.getImageData(0, 0, FLOW_WIDTH, FLOW_HEIGHT).data;
-    const flowLuma = new Uint8Array(FLOW_WIDTH * FLOW_HEIGHT);
-    for (let index = 0; index < flowLuma.length; index += 1) {
-      const pixel = index * 4;
-      flowLuma[index] = Math.round(
-        pixels[pixel] * 0.299 + pixels[pixel + 1] * 0.587 + pixels[pixel + 2] * 0.114,
-      );
-    }
-    let bodyCore: Uint8Array | null = null;
-    if (result.bodySupport?.length === result.width * result.height) {
-      bodyCore = new Uint8Array(FLOW_WIDTH * FLOW_HEIGHT);
-      for (let y = 0; y < result.height; y += 1) {
-        const targetY = Math.min(
-          FLOW_HEIGHT - 1,
-          Math.floor(((y + 0.5) / result.height) * FLOW_HEIGHT),
-        );
-        for (let x = 0; x < result.width; x += 1) {
-          const targetX = Math.min(
-            FLOW_WIDTH - 1,
-            Math.floor(((x + 0.5) / result.width) * FLOW_WIDTH),
-          );
-          const targetIndex = targetY * FLOW_WIDTH + targetX;
-          bodyCore[targetIndex] = Math.max(
-            bodyCore[targetIndex],
-            result.bodySupport[y * result.width + x],
-          );
-        }
-      }
-    }
+  private createPreparedMask(video: HTMLVideoElement, time: number, result: EdgeTamMask): PreparedMask {
     return {
-      time: video.currentTime,
-      region: { ...region },
+      time,
+      region: { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight },
       width: result.width,
       height: result.height,
-      flowLuma,
-      bodyCore,
       baseAlpha: null,
       alpha: result.alpha,
     };
@@ -539,47 +403,70 @@ export class PersonEffectRenderer {
     if (endTime - startTime < 0.03) throw new Error('人物去背測試片段太短');
 
     const originalTime = video.currentTime;
-    const totalFrames = Math.max(1, Math.ceil((endTime - startTime) / PREPARE_INTERVAL));
     this.clearPrepared();
-    this.preparedPreserveFraming = options.preserveFraming;
-    const previousWeight = options.preserveFraming ? 0.42 : 0.58;
-    let previousPrepared: PreparedMask | null = null;
-    video.pause();
-    try {
-      for (let frame = 0; frame <= totalFrames; frame += 1) {
+    const prompt = options.subjectSelection ?? {
+      time: startTime,
+      box: interpolateBox(path, startTime),
+    };
+    const promptTime = clamp(prompt.time, 0, sourceDuration);
+    const promptBox: [number, number, number, number] = [
+      clamp(prompt.box[0] / video.videoWidth, 0, 1),
+      clamp(prompt.box[1] / video.videoHeight, 0, 1),
+      clamp(prompt.box[2] / video.videoWidth, 0, 1),
+      clamp(prompt.box[3] / video.videoHeight, 0, 1),
+    ];
+
+    const buildTimes = (direction: 1 | -1) => {
+      const boundary = direction === 1 ? endTime : startTime;
+      const values = [promptTime];
+      let next = promptTime + direction * PREPARE_INTERVAL;
+      const inRange = () => direction === 1 ? next < boundary - 0.001 : next > boundary + 0.001;
+      while (inRange()) {
+        values.push(next);
+        next += direction * PREPARE_INTERVAL;
+      }
+      if (Math.abs(values[values.length - 1] - boundary) > 0.001) values.push(boundary);
+      return values;
+    };
+    const forwardTimes = promptTime <= endTime ? buildTimes(1) : [];
+    const backwardTimes = promptTime >= startTime ? buildTimes(-1) : [];
+    const inferenceFrames = Math.max(1, forwardTimes.length + backwardTimes.length);
+    let processed = 0;
+
+    const runDirection = async (times: number[]) => {
+      if (times.length === 0) return;
+      this.segmenter.reset();
+      for (let index = 0; index < times.length; index += 1) {
         if (options.isCancelled()) throw new Error('使用者已取消人物去背分析');
-        const at = Math.min(
-          Math.max(startTime, endTime - 0.001),
-          startTime + frame * PREPARE_INTERVAL,
-        );
+        const at = clamp(times[index], 0, sourceDuration);
         await seekVideo(video, at);
-        const trackedBox = interpolateBox(path, at);
-        const region = options.preserveFraming
-          ? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
-          : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
-        const prepared = this.segmentMask(video, region);
-        prepared.time = at;
-        const sourceAlpha = prepared.alpha;
-        if (options.retainSourceForCorrections) {
-          prepared.baseAlpha = new Uint8ClampedArray(sourceAlpha);
+        const result = index === 0
+          ? await this.segmenter.start(video, promptBox)
+          : await this.segmenter.track(video);
+        if (at >= startTime - 0.001 && at <= endTime + 0.001) {
+          const prepared = this.createPreparedMask(video, at, result);
+          if (options.retainSourceForCorrections) {
+            prepared.baseAlpha = new Uint8ClampedArray(prepared.alpha);
+          }
+          this.preparedMasks.push(prepared);
         }
-        prepared.alpha = stabilizeAlpha(
-          sourceAlpha,
-          previousPrepared?.alpha ?? null,
-          prepared.flowLuma,
-          previousPrepared?.flowLuma ?? null,
-          prepared.width,
-          prepared.height,
-          previousWeight,
-        );
-        this.preparedMasks.push(prepared);
-        previousPrepared = prepared;
-        options.onProgress(frame / totalFrames);
+        processed += 1;
+        options.onProgress(processed / inferenceFrames);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
-      this.fillShortLeadingBodyCoreGaps();
-      this.stabilizePreparedBackward();
-      excludePersistentBackground(this.preparedMasks);
+    };
+
+    video.pause();
+    try {
+      await runDirection(forwardTimes);
+      await runDirection(backwardTimes);
+      this.preparedMasks.sort((left, right) => left.time - right.time);
+      for (let index = this.preparedMasks.length - 1; index > 0; index -= 1) {
+        if (Math.abs(this.preparedMasks[index].time - this.preparedMasks[index - 1].time) < 0.001) {
+          this.preparedMasks.splice(index, 1);
+        }
+      }
+      if (this.preparedMasks.length === 0) throw new Error('EdgeTAM 沒有產生可用的主角遮罩');
       for (const prepared of this.preparedMasks) this.applyCorrections(prepared);
       options.onProgress(1);
     } catch (error) {
@@ -733,10 +620,8 @@ export class PersonEffectRenderer {
     if (prepared) {
       this.applyMask(prepared);
     } else {
-      const region = options.preserveFraming
-        ? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
-        : subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
-      this.applyMask(this.segmentMask(video, region));
+      this.maskReady = false;
+      this.lastRegion = null;
     }
     this.updateSprite(video);
     if (time - this.lastSnapshotTime >= SNAPSHOT_INTERVAL) {

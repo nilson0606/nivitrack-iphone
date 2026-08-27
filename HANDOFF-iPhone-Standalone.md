@@ -7,7 +7,7 @@
 「直接執行」的定義：
 
 - 選片、主角指定、ViT 追蹤、置中／縮放與影片輸出都在 iPhone 完成。
-- 實際使用時不依賴 Windows 電腦、Node.js、Python、OpenCV 伺服器或區網電腦。
+- 實際使用時不依賴其他電腦、Node.js、Python、OpenCV 伺服器或區網後端。
 - 不把影片上傳到雲端運算。
 - 可以從 iPhone「照片」或「檔案」選擇影片。
 - 必須直接讀取並處理 iPhone 原始 MOV／HEVC；不得要求使用者先轉成 H.264。
@@ -18,19 +18,7 @@
 
 使用者接下來會在新 Codex 對話繼續此工作。
 
-## 2. 唯讀技術參考
-
-Windows 實作位於隔壁的 `D:\nivitrack\`，不在本 iPhone 專案的開發範圍內。只可讀取其演算法、模型與既有行為作為參考，不需維護 Windows 版，也不得修改或刪除該目錄內的任何內容。
-
-與 iPhone 版直接相關的唯讀參考：
-
-- `D:\nivitrack\nivitrack.html`：現有介面與瀏覽器端初始辨識。
-- `D:\nivitrack\opencv_tracker.py`：已驗證的 OpenCV ViT 逐幀追蹤邏輯。
-- `D:\nivitrack\vendor\models\object_tracking_vittrack_2023sep.onnx`：OpenCV ViT Tracker ONNX 模型。
-- `D:\nivitrack\public\models\ssdlite_mobilenet_v2\`：COCO-SSD／SSDLite 初始物件辨識模型。
-- `D:\nivitrack\NiviTrack-使用手冊.md` 與 `D:\nivitrack\NiviTrack-使用手冊.html`：現有操作行為參考。
-
-現有實作已驗證的產品行為：
+## 2. 已驗證的產品行為
 
 - 載入 MP4、WebM，以及將 MOV／HEVC 轉為 H.264 MP4。
 - 使用 SSDLite MobileNet V2（COCO-SSD）找出人物、狗與貓。
@@ -42,11 +30,7 @@ Windows 實作位於隔壁的 `D:\nivitrack\`，不在本 iPhone 專案的開發
 
 ## 3. 已驗證的重要行為
 
-曾使用來源影片：
-
-`C:\Users\User\Downloads\IMG_6887.MOV`
-
-來源為 HEVC、1920×1080、30 FPS、約 15.33 秒。
+曾使用一支 HEVC、1920×1080、30 FPS、約 15.33 秒的來源影片驗證。
 
 ViT 測試結果：
 
@@ -65,19 +49,10 @@ ViT 測試結果：
 - 不得把 SSD 漏檢誤認為 ViT 追蹤失敗。
 - 不得在開始追蹤前把整支 MOV 預先轉成 H.264；追蹤應直接取得 iPhone 原生解碼後的影格。
 - 不得把 H.264 當成唯一或預設本機輸出；H.264 是相容分享用格式。
-- 不得修改或刪除隔壁唯讀參考專案 `D:\nivitrack\` 內的任何內容。
 - 不得未經使用者同意發布網站、建立雲端影片儲存或上傳影片。
 - 不得宣稱「iPhone 可用」卻仍要求旁邊有一台電腦處理。
 
-## 5. iPhone 專案邊界
-
-所有新建與修改都必須在 iPhone 專案內進行：
-
-`D:\nivitrack_iphone\`
-
-`D:\nivitrack\` 僅供讀取與對照，不是交付目標或可編輯工作區。
-
-## 6. 第一階段：先做有證據的技術可行性研究
+## 5. 第一階段：先做有證據的技術可行性研究
 
 這些能力在 iOS Safari 上會隨版本改變，必須查閱最新的一手官方資料並實測，不要憑印象：
 
@@ -201,12 +176,11 @@ ViT 測試結果：
 
 ## 13. 新對話的第一個行動
 
-1. 先閱讀本 handoff，並以唯讀方式參考 `D:\nivitrack\opencv_tracker.py`、`D:\nivitrack\nivitrack.html` 與模型。
-2. 檢查工作樹，保留所有現有修改；不要 reset 或刪除。
-3. 查最新官方 iOS Safari／WebKit、ONNX Runtime Web、影片編碼支援。
-4. 寫出可行性決策與最小原型架構。
-5. 在 `D:\nivitrack_iphone\` 建立第一個可跑的短片追蹤原型。
-6. 沒有真實 iPhone 測試證據前，不要宣布完成。
+1. 先閱讀本 handoff，檢查工作樹並保留所有現有修改；不要 reset 或刪除。
+2. 查最新官方 iOS Safari／WebKit、ONNX Runtime Web、影片編碼支援。
+3. 寫出可行性決策與最小原型架構。
+4. 在本專案建立第一個可跑的短片追蹤原型。
+5. 沒有真實 iPhone 測試證據前，不要宣布完成。
 
 ## 14. 使用者偏好
 
@@ -215,3 +189,15 @@ ViT 測試結果：
 - 修改要通用，不能只救單一影片。
 - 優先追蹤準確、影片流暢與畫質，再考慮速度。
 - 使用者會更換不同主角測試。
+
+## 15. EdgeTAM Safari 候選版狀態（尚未發布）
+
+- 候選分支：`codex/edgetam-safari-v1`，正式 GitHub Pages 網址與 `main` 尚未變更。
+- Stage 1 已改用 EdgeTAM Video fp16 LiteRT 圖；Safari 優先使用 WebGPU，失敗時才回退單執行緒 WASM。
+- 追蹤模式保留既有 ViT 路徑與構圖；不追蹤模式保留原構圖。兩種模式都由使用者框選一次完整主角。
+- 第一幀使用三個 box prompt token；之後使用時序 track token、7 格空間記憶與最多 16 幀物件指標延續同一主角。
+- 遮罩以 15 FPS 預先建立，使用完整來源畫面，不以 ViT 方框硬裁；只移除與主體分離的小連通區，沒有任何影片時間、位置、衣服或物品專用規則。
+- 使用一支 15 秒多人影片做離線通用驗證：230／230 幀都有主角，抽查 0、3、6、9、12、15 秒均為同一完整主角，未把背景物或其他人物納入主要遮罩。
+- 型別檢查、ESLint、既有 ViT／遮罩回歸測試與 EdgeTAM 模型雜湊檢查皆通過。
+- 靜態網站已完成建置；本機 Vinext 在顯示 `Build complete` 後仍會觸發既有的 libuv 關閉 assertion，建置產物本身已產生且模型雜湊一致。
+- 尚未證明的唯一關鍵項目是實機 iPhone Safari WebGPU 的速度、溫度與記憶體；下一步只安排一次 3 秒實機測試，通過後才可考慮發布。
