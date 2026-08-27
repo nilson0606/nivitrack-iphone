@@ -1,6 +1,5 @@
-import { InteractiveSubjectSegmenter } from './interactive-subject-segmenter';
+import { MagicPoseMatte } from './magic-pose-matte';
 import type { Box } from './vit-tracker';
-import { TrackedPersonMaskSelector } from './tracked-person-mask';
 import type { TrackPoint } from './video-export';
 
 export type BackgroundEffect = 'original' | 'black' | 'blur';
@@ -158,36 +157,29 @@ function outputRect(region: Rect, crop: Rect, canvas: HTMLCanvasElement): Rect {
   };
 }
 
-function smoothAlpha(confidence: number) {
-  const normalized = clamp((confidence - 0.16) / 0.58, 0, 1);
-  return normalized * normalized * (3 - 2 * normalized);
-}
-
 export class PersonEffectRenderer {
-  private readonly segmenter: InteractiveSubjectSegmenter;
+  private readonly segmenter: MagicPoseMatte;
   private readonly inputCanvas = createCanvas();
   private readonly maskCanvas = createCanvas();
   private readonly spriteCanvas = createCanvas();
   private readonly tintCanvas = createCanvas();
   private readonly history: Snapshot[] = [];
   private readonly preparedMasks: PreparedMask[] = [];
-  private readonly maskSelector = new TrackedPersonMaskSelector();
-  private previousMaskAlpha = new Uint8ClampedArray(0);
   private maskReady = false;
   private lastRegion: Rect | null = null;
   private preparedMaskIndex = 0;
   private lastSnapshotTime = Number.NEGATIVE_INFINITY;
   private lastMediaTime = Number.NEGATIVE_INFINITY;
 
-  private constructor(segmenter: InteractiveSubjectSegmenter) {
+  private constructor(segmenter: MagicPoseMatte) {
     this.segmenter = segmenter;
   }
 
-  static async create(wasmBaseUrl: string, subjectModelUrl: string, personModelUrl: string) {
-    const segmenter = await InteractiveSubjectSegmenter.create(
+  static async create(wasmBaseUrl: string, subjectModelUrl: string, poseModelUrl: string) {
+    const segmenter = await MagicPoseMatte.create(
       wasmBaseUrl,
       subjectModelUrl,
-      personModelUrl,
+      poseModelUrl,
     );
     return new PersonEffectRenderer(segmenter);
   }
@@ -203,7 +195,7 @@ export class PersonEffectRenderer {
 
   clearPrepared() {
     this.preparedMasks.length = 0;
-    this.previousMaskAlpha.fill(0);
+    this.segmenter.beginSequence();
     this.resetPlayback();
   }
 
@@ -211,7 +203,7 @@ export class PersonEffectRenderer {
     this.clearPrepared();
   }
 
-  private segmentMask(video: HTMLVideoElement, region: Rect, trackedBox: Box): PreparedMask {
+  private segmentMask(video: HTMLVideoElement, region: Rect): PreparedMask {
     const input = this.inputCanvas.getContext('2d', { alpha: false });
     if (!input) throw new Error('Safari 無法建立人物去背 Canvas');
     input.drawImage(
@@ -225,42 +217,13 @@ export class PersonEffectRenderer {
       SPRITE_SIZE,
       SPRITE_SIZE,
     );
-    const [boxX, boxY, boxWidth, boxHeight] = trackedBox;
-    const centerX = clamp((boxX + boxWidth / 2 - region.x) / region.width, 0.02, 0.98);
-    const centerY = clamp((boxY + boxHeight / 2 - region.y) / region.height, 0.02, 0.98);
-    const promptHalfHeight = clamp((boxHeight / region.height) * 0.08, 0.015, 0.055);
-    const result = this.segmenter.segment(this.inputCanvas, {
-      scribble: [-1, -0.5, 0, 0.5, 1].map((offset) => ({
-        x: centerX,
-        y: clamp(centerY + offset * promptHalfHeight, 0.02, 0.98),
-      })),
-    });
-    const values = result.values;
-    const componentGate = this.maskSelector.select(
-      values,
-      result.width,
-      result.height,
-      region,
-      trackedBox,
-    );
-    if (this.previousMaskAlpha.length !== values.length) {
-      this.previousMaskAlpha = new Uint8ClampedArray(values.length);
-    }
-    const alpha = new Uint8ClampedArray(values.length);
-    const hasPrevious = this.previousMaskAlpha.some((value) => value > 0);
-    for (let index = 0; index < values.length; index += 1) {
-      const rawAlpha = componentGate[index] ? Math.round(smoothAlpha(values[index]) * 255) : 0;
-      alpha[index] = hasPrevious
-        ? Math.round(rawAlpha * 0.9 + this.previousMaskAlpha[index] * 0.1)
-        : rawAlpha;
-    }
-    this.previousMaskAlpha.set(alpha);
+    const result = this.segmenter.segment(this.inputCanvas);
     return {
       time: video.currentTime,
       region: { ...region },
       width: result.width,
       height: result.height,
-      alpha,
+      alpha: result.alpha,
     };
   }
 
@@ -327,7 +290,7 @@ export class PersonEffectRenderer {
         await seekVideo(video, at);
         const trackedBox = interpolateBox(path, at);
         const region = subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
-        const prepared = this.segmentMask(video, region, trackedBox);
+        const prepared = this.segmentMask(video, region);
         prepared.time = at;
         this.preparedMasks.push(prepared);
         options.onProgress(frame / totalFrames);
@@ -480,7 +443,7 @@ export class PersonEffectRenderer {
       this.applyMask(prepared);
     } else {
       const region = subjectRegion(trackedBox, video.videoWidth, video.videoHeight);
-      this.applyMask(this.segmentMask(video, region, trackedBox));
+      this.applyMask(this.segmentMask(video, region));
     }
     this.updateSprite(video);
     if (time - this.lastSnapshotTime >= SNAPSHOT_INTERVAL) {

@@ -13,7 +13,7 @@ const APP_SHELL = [
 const MODEL_ASSETS = [
   appAsset('models/vittrack.onnx'),
   appAsset('models/magic_touch.tflite'),
-  appAsset('models/deeplab_v3.tflite'),
+  appAsset('models/pose_landmarker_lite.task'),
   appAsset('mediapipe/vision_wasm_internal.js'),
   appAsset('mediapipe/vision_wasm_internal.wasm'),
   appAsset('models/ssdlite_mobilenet_v2/model.json'),

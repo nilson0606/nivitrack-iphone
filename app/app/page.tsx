@@ -133,7 +133,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MagicTouch × DeepLab‑V3', available: typeof WebAssembly !== 'undefined' },
+        { label: '人物去背', detail: 'MagicTouch × Pose', available: typeof WebAssembly !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -196,11 +196,11 @@ export default function Home() {
     if (!personEffectRendererRef.current) {
       const wasmBase = new URL('mediapipe/', document.baseURI).href;
       const subjectModelUrl = new URL('models/magic_touch.tflite', document.baseURI).href;
-      const personModelUrl = new URL('models/deeplab_v3.tflite', document.baseURI).href;
+      const poseModelUrl = new URL('models/pose_landmarker_lite.task', document.baseURI).href;
       personEffectRendererRef.current = await PersonEffectRenderer.create(
         wasmBase,
         subjectModelUrl,
-        personModelUrl,
+        poseModelUrl,
       );
     }
     return personEffectRendererRef.current;
@@ -935,7 +935,7 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟' : '開啟特效'}
                       </button>
                     </div>
-                    <p className="effect-note">先逐格用 ViT＋MagicTouch 鎖定原主角，再以 DeepLab‑V3 的 person 類別排除風扇與家具；去背全部完成後才套特效。所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">先逐格用 ViT＋MagicTouch 鎖定原主角，再以 Pose 人體遮罩排除風扇與家具；去背全部完成後才套特效。所有影像仍在這台 iPhone 本機處理。</p>
 
                     {personEffects.enabled && (
                       <>
