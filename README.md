@@ -7,6 +7,7 @@ NiviTrack 是一個為 iPhone Safari 設計的本機影片追蹤 Web App。選�
 ## 開啟 NiviTrack
 
 - Web App：<https://nilson0606.github.io/nivitrack-iphone/>
+- HTML 使用手冊：<https://nilson0606.github.io/nivitrack-iphone/manual.html>
 - 程式碼：<https://github.com/nilson0606/nivitrack-iphone>
 - 費用：免費，不需要 GitHub 帳號
 - 支援範圍：iPhone、iOS 26、Safari

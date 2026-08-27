@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#102018">
+  <title>NiviTrack iPhone 使用手冊</title>
+  <meta name="description" content="NiviTrack iPhone 本機影片追蹤 Web App 使用手冊">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c1511;
+      --panel: #13231b;
+      --text: #f3f7f1;
+      --muted: #aebdb3;
+      --accent: #d9f06f;
+      --green: #35d292;
+      --line: rgba(255, 255, 255, 0.1);
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at top right, rgba(53, 210, 146, 0.12), transparent 32rem), var(--bg);
+      line-height: 1.7;
+    }
+    a { color: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    .wrap { width: min(920px, calc(100% - 32px)); margin: 0 auto; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      padding: calc(12px + env(safe-area-inset-top)) 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(12, 21, 17, 0.88);
+      -webkit-backdrop-filter: blur(18px);
+      backdrop-filter: blur(18px);
+    }
+    header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 850; letter-spacing: -0.02em; }
+    .brand i { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 18px var(--accent); }
+    .app-link, .top-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 15px;
+      border-radius: 999px;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .app-link { color: #102018; background: var(--accent); }
+    .top-link { color: var(--accent); border: 1px solid rgba(217, 240, 111, 0.36); }
+    .hero { padding: 64px 0 30px; }
+    .eyebrow { color: var(--green); font-size: 0.78rem; font-weight: 850; letter-spacing: 0.14em; }
+    h1 { margin: 10px 0 14px; max-width: 700px; font-size: clamp(2.35rem, 9vw, 5rem); line-height: 0.98; letter-spacing: -0.055em; }
+    .hero p { max-width: 680px; margin: 0; color: var(--muted); font-size: 1.08rem; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+    .notice {
+      margin: 26px 0 0;
+      padding: 16px 18px;
+      border: 1px solid rgba(217, 240, 111, 0.28);
+      border-radius: 16px;
+      color: #e9f5b8;
+      background: rgba(217, 240, 111, 0.07);
+    }
+    .toc { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 26px 0 42px; }
+    .toc a {
+      padding: 14px 15px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--muted);
+      background: var(--panel);
+      text-decoration: none;
+      font-weight: 750;
+    }
+    .toc a:active { transform: scale(0.98); }
+    main { padding-bottom: 70px; }
+    section {
+      scroll-margin-top: 90px;
+      margin: 0 0 18px;
+      padding: 25px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: linear-gradient(145deg, rgba(25, 44, 34, 0.95), rgba(19, 35, 27, 0.95));
+      box-shadow: var(--shadow);
+    }
+    h2 { margin: 0 0 14px; font-size: 1.45rem; letter-spacing: -0.025em; }
+    p { margin: 8px 0; }
+    ol, ul { margin: 10px 0; padding-left: 1.35rem; }
+    li { margin: 7px 0; }
+    strong { color: #fff; }
+    .muted { color: var(--muted); }
+    .steps { display: grid; gap: 12px; margin-top: 18px; }
+    .step { display: grid; grid-template-columns: 42px 1fr; gap: 13px; align-items: start; }
+    .step b { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; color: #102018; background: var(--accent); }
+    .step div > strong { display: block; padding-top: 7px; }
+    .step div > p { color: var(--muted); }
+    .options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 14px 0; }
+    .option { padding: 15px; border-radius: 15px; background: rgba(255, 255, 255, 0.045); }
+    .option strong { display: block; color: var(--accent); font-size: 1.15rem; }
+    .tip { padding: 14px 16px; border-left: 3px solid var(--green); border-radius: 0 12px 12px 0; color: var(--muted); background: rgba(53, 210, 146, 0.07); }
+    details { border-top: 1px solid var(--line); }
+    details:first-of-type { border-top: 0; }
+    summary { padding: 16px 0; color: var(--accent); cursor: pointer; font-weight: 800; }
+    details > div { padding: 0 0 18px; color: var(--muted); }
+    footer { padding: 20px 0 calc(28px + env(safe-area-inset-bottom)); color: var(--muted); text-align: center; }
+    @media (max-width: 680px) {
+      .wrap { width: min(100% - 22px, 920px); }
+      header .wrap { align-items: stretch; }
+      .brand { font-size: 0.95rem; }
+      .top-link { display: none; }
+      .hero { padding-top: 42px; }
+      .toc { grid-template-columns: 1fr 1fr; }
+      section { padding: 20px 17px; border-radius: 18px; }
+      .options { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="brand"><i aria-hidden="true"></i>NiviTrack 使用手冊</div>
+      <a class="top-link" href="#install">安裝說明</a>
+      <a class="app-link" href="./">開啟 App</a>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="hero">
+      <div class="eyebrow">IPHONE · SAFARI · 本機處理</div>
+      <h1>從選片到輸出，照著做就好。</h1>
+      <p>NiviTrack 直接讀取 iPhone 裡的 MOV、HEVC 或 MP4，追蹤指定主角並輸出置中構圖的影片。影片不會上傳。</p>
+      <div class="hero-actions"><a class="app-link" href="./">立即開啟 NiviTrack</a></div>
+      <div class="notice"><strong>支援範圍：</strong>iPhone、iOS 26、Safari。本專案不支援 Windows PC。</div>
+    </div>
+    <nav class="toc" aria-label="手冊目錄">
+      <a href="#install">安裝到主畫面</a>
+      <a href="#workflow">完整操作流程</a>
+      <a href="#export">輸出與儲存</a>
+      <a href="#next">下一支影片</a>
+      <a href="#another-phone">另一台 iPhone</a>
+      <a href="#faq">常見問題</a>
+    </nav>
+    <main>
+      <section id="install">
+        <h2>第一次安裝到 iPhone 主畫面</h2>
+        <ol>
+          <li>讓 iPhone 連接網路。</li>
+          <li>使用 <strong>Safari</strong> 開啟 NiviTrack 網址。</li>
+          <li>點 Safari 的「分享」按鈕。</li>
+          <li>向下找到並點「加入主畫面」。</li>
+          <li>名稱保留為 <strong>NiviTrack</strong>，再點「加入」。</li>
+          <li>回到主畫面，點 NiviTrack 圖示。</li>
+        </ol>
+        <p class="tip">第一次使用請保持連線，並完成一次「測試 3 秒 ViT」，讓 AI 模型與離線資源載入完成。</p>
+      </section>
+      <section id="workflow">
+        <h2>完整操作流程</h2>
+        <div class="steps">
+          <div class="step"><b>1</b><div><strong>選擇影片</strong><p>從「照片」或「檔案」選擇 MOV、HEVC 或 MP4。等待顯示影片已在本機載入，不需要先轉成 MP4。</p></div></div>
+          <div class="step"><b>2</b><div><strong>播放後暫停</strong><p>找到主角清楚、較大、遮擋較少的畫面，然後暫停。</p></div></div>
+          <div class="step"><b>3</b><div><strong>指定主角</strong><p>點「進入主角選取」，用手指完整框住人物或寵物。也可點「AI 尋找人物／寵物」。</p></div></div>
+          <div class="step"><b>4</b><div><strong>先測試 3 秒</strong><p>點「測試 3 秒 ViT」，確認框線能跟著主角。這一步只測試，不會輸出影片。</p></div></div>
+          <div class="step"><b>5</b><div><strong>追蹤完整影片</strong><p>測試正常後點「追蹤完整影片」，等待顯示「完整 ViT 路徑已建立」。</p></div></div>
+        </div>
+        <p class="tip">追蹤及輸出期間，請保持 NiviTrack 在前景，不要鎖定螢幕或切換到其他 App。</p>
+      </section>
+      <section id="export">
+        <h2>構圖、輸出與儲存</h2>
+        <div class="options">
+          <div class="option"><strong>9:16</strong><span>直式手機影片</span></div>
+          <div class="option"><strong>1:1</strong><span>正方形影片</span></div>
+          <div class="option"><strong>16:9</strong><span>橫式影片</span></div>
+        </div>
+        <ul>
+          <li><strong>主角大小：</strong>數值越大，主角在成品中越大。</li>
+          <li><strong>置中柔順度：</strong>數值越高，鏡頭移動越平順。</li>
+          <li><strong>建議預設：</strong>9:16、主角大小 55%、置中柔順度 72%。</li>
+        </ul>
+        <ol>
+          <li>一般分享請點「輸出相容 MP4」。</li>
+          <li>保持 App 在前景並等待成品預覽出現。</li>
+          <li>播放確認畫面、聲音與影片長度。</li>
+          <li>點「分享／儲存到 iPhone」。</li>
+          <li>選「儲存影片」或「儲存到檔案」。</li>
+        </ol>
+        <p class="muted">「HEVC 母片」輸出的是 MP4，不是 MOV。若 HEVC 按鈕無法使用，請改用相容性最高的 H.264 MP4。</p>
+      </section>
+      <section id="next">
+        <h2>處理下一支影片</h2>
+        <p>完成測試、追蹤或輸出後，點 <strong>「重新選擇影片」</strong>即可選擇下一支影片。</p>
+        <p class="muted">舊影片的框選、追蹤路徑與輸出結果會自動清除，不需要刪除或重新安裝 App。</p>
+      </section>
+      <section id="another-phone">
+        <h2>安裝到另一台 iPhone</h2>
+        <p>不需要搬移程式檔，也不需要 GitHub 帳號或密碼。</p>
+        <ol>
+          <li>在另一台 iPhone 使用 Safari 開啟 NiviTrack 網址。</li>
+          <li>使用 Safari 的「加入主畫面」。</li>
+          <li>從主畫面啟動，並在連網時完成一次 3 秒測試。</li>
+        </ol>
+        <p class="muted">每台手機的影片與輸出檔彼此獨立，不會自動互傳。成品可使用 AirDrop、訊息或共享相簿分享。</p>
+      </section>
+      <section id="privacy">
+        <h2>隱私與網路</h2>
+        <ul>
+          <li>原始影片與輸出影片都不會上傳到 GitHub。</li>
+          <li>GitHub Pages 只提供 Web App 程式與 AI 模型。</li>
+          <li>第一次開啟及第一次載入 AI 模型時需要網路。</li>
+          <li>首次載入後可嘗試離線使用；若 iOS 清除快取，需要重新連線載入。</li>
+          <li>網站與程式碼是公開的，但其他人無法看到你手機裡的影片。</li>
+        </ul>
+      </section>
+      <section id="faq">
+        <h2>常見問題</h2>
+        <details open><summary>一直顯示「正在檢查 Safari…」</summary><div>從多工畫面將 NiviTrack 往上滑關閉，確認網路正常，再由主畫面重新開啟。若仍未恢復，再關閉並開啟一次。</div></details>
+        <details><summary>影片畫面是黑的</summary><div>先按播放，確認 Safari 能解碼影片。看得到畫面後，暫停在主角清楚的位置，再進入主角選取。</div></details>
+        <details><summary>追蹤框跑掉</summary><div>重新框選主角。選擇主角輪廓清楚的畫面，完整框住主角並減少背景，避開嚴重遮擋。先通過 3 秒測試，再做完整追蹤。</div></details>
+        <details><summary>輸出中斷或沒有聲音</summary><div>保持 NiviTrack 在前景、確認電量與儲存空間充足，並優先使用「輸出相容 MP4」。仍有問題時，關閉 App 後重新開啟再處理。</div></details>
+        <details><summary>主畫面的功能沒有更新</summary><div>從多工畫面完全關閉 NiviTrack，再由主畫面重新開啟。網址和主畫面圖示都不需要更換。</div></details>
+      </section>
+    </main>
+  </div>
+  <footer><div class="wrap">NiviTrack · iPhone Safari 本機影片追蹤</div></footer>
+</body>
+</html>
