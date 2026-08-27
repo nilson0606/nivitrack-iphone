@@ -115,6 +115,7 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
+  const [videoDuration, setVideoDuration] = useState(0);
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [phase, setPhase] = useState<Phase>('choose');
   const [box, setBox] = useState<Box | null>(null);
@@ -145,6 +146,7 @@ export default function Home() {
   const [correctionCount, setCorrectionCount] = useState(0);
   const [correctionTime, setCorrectionTime] = useState(0);
   const [effectTestWindow, setEffectTestWindow] = useState<EffectTestWindow | null>(null);
+  const [effectTestStart, setEffectTestStart] = useState(0);
   const [replayingEffectTest, setReplayingEffectTest] = useState(false);
 
   useEffect(() => {
@@ -227,6 +229,18 @@ export default function Home() {
     clearRenderedOutput();
   }
 
+  function changeEffectTestStart(value: number) {
+    const video = videoRef.current;
+    if (!video) return;
+    const maximum = Math.max(0, video.duration - 3);
+    const next = clampTime(value, 0, maximum);
+    clearRenderedOutput();
+    setEffectTestStart(next);
+    video.pause();
+    video.currentTime = next;
+    setNotice('3 秒測試將從 ' + next.toFixed(1) + ' 秒開始');
+  }
+
   async function getPersonEffectRenderer() {
     if (!personEffectRendererRef.current) {
       const wasmBase = new URL('mediapipe/', document.baseURI).href;
@@ -257,6 +271,8 @@ export default function Home() {
     setSourceFile(file);
     setVideoUrl(URL.createObjectURL(file));
     setVideoInfo(null);
+    setVideoDuration(0);
+    setEffectTestStart(0);
     setBox(null);
     setStats(null);
     setCandidates([]);
@@ -301,6 +317,7 @@ export default function Home() {
   function readMetadata() {
     const video = videoRef.current;
     if (!video || !sourceFile) return;
+    setVideoDuration(Number.isFinite(video.duration) ? video.duration : 0);
     setVideoInfo({
       name: sourceFile.name,
       size: formatBytes(sourceFile.size),
@@ -843,7 +860,7 @@ export default function Home() {
     setProgress(0);
     setCurrentScore(null);
     setNotice('正在載入本機指定主角去背模型與時間穩定…');
-    const testStart = Math.min(video.currentTime, Math.max(0, video.duration - 3));
+    const testStart = Math.min(effectTestStart, Math.max(0, video.duration - 3));
     const testEnd = Math.min(video.duration, testStart + 3);
     const testPreviewTime = testStart + (testEnd - testStart) * 0.5;
     const interval = 1 / 10;
@@ -1456,6 +1473,19 @@ export default function Home() {
                             ))}
                           </div>
                         </div>
+
+                        <label className="range-control">
+                          <span><b>3 秒測試起點</b><em>{effectTestStart.toFixed(1)} 秒</em></span>
+                          <input
+                            type="range"
+                            min="0"
+                            max={Math.max(0, videoDuration - 3)}
+                            step="0.1"
+                            value={Math.min(effectTestStart, Math.max(0, videoDuration - 3))}
+                            disabled={phase !== 'path-ready' || videoDuration <= 3}
+                            onChange={(event) => changeEffectTestStart(Number(event.target.value))}
+                          />
+                        </label>
 
                         <button
                           className={'effect-test-button ' + (effectTestPassed ? 'passed' : '')}
