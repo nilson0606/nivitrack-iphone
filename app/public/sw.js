@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-stage1-effects-v8-4-pose-envelope-2';
+const VERSION = 'nivitrack-stage1-effects-v8-5-original-background-1';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

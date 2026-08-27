@@ -1,6 +1,13 @@
 import { MagicPoseMatte } from './magic-pose-matte';
 import type { Box } from './vit-tracker';
 import type { TrackPoint } from './video-export';
+import {
+  applyOriginalBackgroundSuppression,
+  buildOriginalBackgroundModel,
+  createOriginalBackgroundSuppression,
+  type OriginalBackgroundModel,
+  type OriginalBackgroundSample,
+} from './original-background';
 import { excludePersistentBackground } from './temporal-background';
 import { FLOW_HEIGHT, FLOW_WIDTH, stabilizeAlpha } from './temporal-mask';
 
@@ -63,6 +70,7 @@ export type PersonMaskPreparationOptions = {
   endTime: number;
   preserveFraming: boolean;
   retainSourceForCorrections?: boolean;
+  onStage?: (message: string) => void;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -74,6 +82,8 @@ const PREPARE_INTERVAL = 1 / 30;
 const SNAPSHOT_INTERVAL = 1 / 15;
 const CORRECTION_BACKWARD_SECONDS = 0.12;
 const CORRECTION_FORWARD_SECONDS = 1.2;
+const BACKGROUND_MAX_EDGE = 256;
+const BACKGROUND_PROGRESS_WEIGHT = 0.12;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -225,6 +235,7 @@ export class PersonEffectRenderer {
   private readonly segmenter: MagicPoseMatte;
   private readonly inputCanvas = createCanvas();
   private readonly flowCanvas = createCanvas(FLOW_WIDTH, FLOW_HEIGHT);
+  private readonly backgroundCanvas = createCanvas();
   private readonly maskCanvas = createCanvas();
   private readonly spriteCanvas = createCanvas();
   private readonly tintCanvas = createCanvas();
@@ -239,6 +250,8 @@ export class PersonEffectRenderer {
   private nextCorrectionGroup = 0;
   private activeCorrectionGroup = 0;
   private preparedPreserveFraming = false;
+  private originalBackground: OriginalBackgroundModel | null = null;
+  private originalBackgroundKey = '';
 
   private constructor(segmenter: MagicPoseMatte) {
     this.segmenter = segmenter;
@@ -270,9 +283,100 @@ export class PersonEffectRenderer {
 
   reset() {
     this.clearPrepared();
+    this.originalBackground = null;
+    this.originalBackgroundKey = '';
     this.corrections.length = 0;
     this.activeCorrectionGroup = 0;
     this.nextCorrectionGroup = 0;
+  }
+
+  private backgroundKey(video: HTMLVideoElement, path: TrackPoint[]) {
+    const checkpoints = [
+      path[0],
+      path[Math.floor(path.length / 2)],
+      path[path.length - 1],
+    ].filter(Boolean);
+    const boxes = checkpoints
+      .map((point) => point.box.map((value) => Math.round(value)).join(','))
+      .join('|');
+    return [
+      video.currentSrc,
+      video.videoWidth + 'x' + video.videoHeight,
+      Number.isFinite(video.duration) ? video.duration.toFixed(3) : '0',
+      path.length,
+      boxes,
+    ].join(':');
+  }
+
+  private async ensureOriginalBackground(
+    video: HTMLVideoElement,
+    path: TrackPoint[],
+    options: PersonMaskPreparationOptions,
+  ) {
+    if (options.preserveFraming) return false;
+    const key = this.backgroundKey(video, path);
+    if (this.originalBackground && this.originalBackgroundKey === key) return false;
+
+    const sourceWidth = video.videoWidth;
+    const sourceHeight = video.videoHeight;
+    const scale = Math.min(1, BACKGROUND_MAX_EDGE / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(32, Math.round(sourceWidth * scale));
+    const height = Math.max(32, Math.round(sourceHeight * scale));
+    this.backgroundCanvas.width = width;
+    this.backgroundCanvas.height = height;
+    const context = this.backgroundCanvas.getContext('2d', {
+      alpha: false,
+      willReadFrequently: true,
+    });
+    if (!context) return false;
+
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const lastTime = Math.max(0, duration - 0.034);
+    const sampleCount = Math.round(clamp(Math.ceil(duration * 1.5), 12, 28));
+    const samples: OriginalBackgroundSample[] = [];
+    options.onStage?.('正在自動學習原始畫面的固定背景…');
+
+    try {
+      for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+        if (options.isCancelled()) throw new Error('使用者已取消人物去背分析');
+        const at = sampleCount <= 1
+          ? 0
+          : (sampleIndex / (sampleCount - 1)) * lastTime;
+        await seekVideo(video, at);
+        context.drawImage(video, 0, 0, width, height);
+        const [boxX, boxY, boxWidth, boxHeight] = interpolateBox(path, at);
+        const marginX = boxWidth * 0.08;
+        const marginY = boxHeight * 0.08;
+        const left = clamp(boxX - marginX, 0, sourceWidth);
+        const top = clamp(boxY - marginY, 0, sourceHeight);
+        const right = clamp(boxX + boxWidth + marginX, 0, sourceWidth);
+        const bottom = clamp(boxY + boxHeight + marginY, 0, sourceHeight);
+        samples.push({
+          rgba: new Uint8ClampedArray(
+            context.getImageData(0, 0, width, height).data,
+          ),
+          excluded: {
+            x: left / sourceWidth,
+            y: top / sourceHeight,
+            width: (right - left) / sourceWidth,
+            height: (bottom - top) / sourceHeight,
+          },
+        });
+        options.onProgress(
+          ((sampleIndex + 1) / sampleCount) * BACKGROUND_PROGRESS_WEIGHT,
+        );
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      this.originalBackground = buildOriginalBackgroundModel(samples, width, height);
+      this.originalBackgroundKey = this.originalBackground ? key : '';
+      return Boolean(this.originalBackground);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('使用者已取消')) throw error;
+      this.originalBackground = null;
+      this.originalBackgroundKey = '';
+      options.onStage?.('背景樣本不足，改用 Full Pose 與光流穩定');
+      return false;
+    }
   }
 
   get correctionCount() {
@@ -471,6 +575,51 @@ export class PersonEffectRenderer {
         }
       }
     }
+    const alpha = result.alpha;
+    const background = this.originalBackground;
+    if (background) {
+      if (
+        this.backgroundCanvas.width !== background.width
+        || this.backgroundCanvas.height !== background.height
+      ) {
+        this.backgroundCanvas.width = background.width;
+        this.backgroundCanvas.height = background.height;
+      }
+      const backgroundContext = this.backgroundCanvas.getContext('2d', {
+        alpha: false,
+        willReadFrequently: true,
+      });
+      if (backgroundContext) {
+        backgroundContext.drawImage(
+          video,
+          0,
+          0,
+          background.width,
+          background.height,
+        );
+        const current = backgroundContext.getImageData(
+          0,
+          0,
+          background.width,
+          background.height,
+        ).data;
+        const suppression = createOriginalBackgroundSuppression(background, current);
+        applyOriginalBackgroundSuppression(
+          alpha,
+          result.width,
+          result.height,
+          region,
+          video.videoWidth,
+          video.videoHeight,
+          suppression,
+          background.width,
+          background.height,
+          bodyCore,
+          FLOW_WIDTH,
+          FLOW_HEIGHT,
+        );
+      }
+    }
     return {
       time: video.currentTime,
       region: { ...region },
@@ -479,7 +628,7 @@ export class PersonEffectRenderer {
       flowLuma,
       bodyCore,
       baseAlpha: null,
-      alpha: result.alpha,
+      alpha,
     };
   }
 
@@ -546,6 +695,13 @@ export class PersonEffectRenderer {
     let previousPrepared: PreparedMask | null = null;
     video.pause();
     try {
+      const builtBackground = await this.ensureOriginalBackground(video, path, options);
+      const matteProgressStart = builtBackground ? BACKGROUND_PROGRESS_WEIGHT : 0;
+      options.onStage?.(
+        this.originalBackground
+          ? '正在逐格分離主角與原始背景…'
+          : '正在逐格分離主角並穩定邊緣…',
+      );
       for (let frame = 0; frame <= totalFrames; frame += 1) {
         if (options.isCancelled()) throw new Error('使用者已取消人物去背分析');
         const at = Math.min(
@@ -574,7 +730,10 @@ export class PersonEffectRenderer {
         );
         this.preparedMasks.push(prepared);
         previousPrepared = prepared;
-        options.onProgress(frame / totalFrames);
+        options.onProgress(
+          matteProgressStart
+          + (frame / totalFrames) * (1 - matteProgressStart),
+        );
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
       this.fillShortLeadingBodyCoreGaps();

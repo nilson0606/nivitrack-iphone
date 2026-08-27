@@ -879,9 +879,9 @@ export default function Home() {
         retainSourceForCorrections: true,
         onProgress: (next) => {
           setProgress(next * 0.9);
-          setNotice('先逐格鎖定主角並去背 · ' + Math.round(next * 100) + '%');
         },
         isCancelled: () => cancelRef.current,
+        onStage: (message) => setNotice(message),
       });
       renderer.resetPlayback();
 
@@ -1028,9 +1028,9 @@ export default function Home() {
           preserveFraming: personEffects.preserveFraming,
           onProgress: (next) => {
             setProgress(next * 0.8);
-            setNotice('先完成整支影片的主角去背 · ' + Math.round(next * 100) + '%');
           },
           isCancelled: () => cancelRef.current,
+          onStage: (message) => setNotice(message),
         });
         effectRenderer.resetPlayback();
         setNotice('主角去背完成，正在套用特效與編碼…');
@@ -1217,7 +1217,7 @@ export default function Home() {
                 <section className={'mask-correction-panel ' + (editingMask ? 'is-editing' : '')}>
                   <div className="mask-correction-heading">
                     <div>
-                      <span>Full Pose 人體包絡＋光流防閃已套用</span>
+                      <span>原始背景底圖＋Full Pose＋光流防閃已套用</span>
                       <strong>智慧去背完成</strong>
                     </div>
                     {!editingMask ? (
