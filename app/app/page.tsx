@@ -228,7 +228,7 @@ export default function Home() {
     if (!personEffectRendererRef.current) {
       const wasmBase = new URL('mediapipe/', document.baseURI).href;
       const subjectModelUrl = new URL('models/magic_touch.tflite', document.baseURI).href;
-      const poseModelUrl = new URL('models/pose_landmarker_lite.task', document.baseURI).href;
+      const poseModelUrl = new URL('models/pose_landmarker_full.task', document.baseURI).href;
       personEffectRendererRef.current = await PersonEffectRenderer.create(
         wasmBase,
         subjectModelUrl,
@@ -830,7 +830,7 @@ export default function Home() {
       renderer.resetPlayback();
       renderer.render(video, previewCanvas, smoothedPath, testPreviewTime, subjectScale, personEffects);
       setShowEffectPreview(true);
-      setNotice('3 秒自動去背完成；若有多餘物品再按「修正主角」');
+      setNotice('3 秒自動去背完成；請先重播檢查人物與背景');
     } catch (error) {
       setShowEffectPreview(false);
       setEffectTestPassed(false);
@@ -1128,7 +1128,7 @@ export default function Home() {
                 <section className={'mask-correction-panel ' + (editingMask ? 'is-editing' : '')}>
                   <div className="mask-correction-heading">
                     <div>
-                      <span>光流防閃＋移動背景排除已套用</span>
+                      <span>Full Pose 人體包絡＋光流防閃已套用</span>
                       <strong>智慧去背完成</strong>
                     </div>
                     {!editingMask ? (

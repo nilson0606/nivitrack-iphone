@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { createBodyCoreSupport } from '../lib/magic-pose-matte.ts';
+import {
+  createBodyCoreSupport,
+  fuseSubjectPoseAlpha,
+} from '../lib/magic-pose-matte.ts';
 
 const points = Array.from(
   { length: 33 },
@@ -52,3 +55,37 @@ assert.ok(sample(64, 55) > 220);
 assert.ok(sample(36, 71) > 100);
 assert.ok(sample(56, 120) > 100);
 assert.equal(sample(116, 54), 0);
+
+const subjectValues = new Float32Array([0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95]);
+const poseValues = new Float32Array([0, 0.95, 0, 0, 0.2, 0.03, 0]);
+const tinyBodyCore = new Uint8ClampedArray([0, 0, 0, 0, 0, 255, 0]);
+const fused = fuseSubjectPoseAlpha(
+  subjectValues,
+  7,
+  1,
+  poseValues,
+  7,
+  1,
+  tinyBodyCore,
+);
+const fallback = fuseSubjectPoseAlpha(
+  subjectValues,
+  7,
+  1,
+  null,
+  0,
+  0,
+  null,
+);
+console.log(
+  'posePerson', fused[1],
+  'poseObject', fused[4],
+  'coreProtected', fused[5],
+  'poseBackground', fused[6],
+  'fallback', fallback[4],
+);
+assert.ok(fused[1] > 220);
+assert.ok(fused[4] < 40);
+assert.ok(fused[5] > 210);
+assert.ok(fused[6] < 8);
+assert.ok(fallback[4] > 230);
