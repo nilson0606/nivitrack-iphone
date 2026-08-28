@@ -2,7 +2,7 @@ import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 
 import type { Box } from './vit-tracker';
 
-const LOW_CONFIDENCE_LIMIT = 0.06;
+const LOW_CONFIDENCE_LIMIT = 0.12;
 const MAX_MISSED_FRAMES = 12;
 const INFERENCE_SIZE = 256;
 
@@ -13,6 +13,25 @@ function clamp(value: number, minimum: number, maximum: number) {
 function smoothstep(edge0: number, edge1: number, value: number) {
   const amount = clamp((value - edge0) / Math.max(0.0001, edge1 - edge0), 0, 1);
   return amount * amount * (3 - 2 * amount);
+}
+
+export function tightenTrackedSubjectEdges(alpha: Float32Array, width: number, height: number) {
+  const tightened = new Float32Array(alpha.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const current = alpha[index];
+      if (current <= 0) continue;
+      const left = x > 0 ? alpha[index - 1] : 0;
+      const right = x + 1 < width ? alpha[index + 1] : 0;
+      const top = y > 0 ? alpha[index - width] : 0;
+      const bottom = y + 1 < height ? alpha[index + width] : 0;
+      const eroded = Math.min(current, left, right, top, bottom);
+      const next = current * 0.18 + eroded * 0.82;
+      tightened[index] = next < 0.055 ? 0 : next;
+    }
+  }
+  return tightened;
 }
 
 function findSeed(
@@ -58,19 +77,19 @@ export function selectTrackedSubjectAlpha(
 
   // A low, peak-relative threshold keeps fast-moving arms and legs connected,
   // while the tracked seed prevents separate people from being retained.
-  const threshold = clamp(seed.confidence * 0.34, 0.06, 0.38);
-  const solidConfidence = Math.max(threshold + 0.02, Math.min(0.82, seed.confidence * 0.82));
+  const threshold = Math.min(seed.confidence * 0.78, clamp(seed.confidence * 0.38, 0.14, 0.36));
+  const solidConfidence = Math.max(threshold + 0.08, Math.min(0.86, seed.confidence * 0.82));
   const [boxX, boxY, boxWidth, boxHeight] = box;
   const gateCenterX = ((boxX + boxWidth / 2) / sourceWidth) * maskWidth;
   const gateCenterY = ((boxY + boxHeight / 2) / sourceHeight) * maskHeight;
-  const gateRadiusX = Math.max(2, (boxWidth / sourceWidth) * maskWidth * 0.62);
-  const gateRadiusY = Math.max(2, (boxHeight / sourceHeight) * maskHeight * 0.62);
+  const gateRadiusX = Math.max(2, (boxWidth / sourceWidth) * maskWidth * 0.56);
+  const gateRadiusY = Math.max(2, (boxHeight / sourceHeight) * maskHeight * 0.56);
   const isInsideTrackedDancer = (index: number) => {
     const x = index % maskWidth;
     const y = Math.floor(index / maskWidth);
     const normalizedX = (x - gateCenterX) / gateRadiusX;
     const normalizedY = (y - gateCenterY) / gateRadiusY;
-    return Math.pow(Math.abs(normalizedX), 4) + Math.pow(Math.abs(normalizedY), 4) <= 1;
+    return Math.pow(Math.abs(normalizedX), 8) + Math.pow(Math.abs(normalizedY), 8) <= 1;
   };
   const selected = new Uint8Array(pixelCount);
   const queue = new Int32Array(pixelCount);
@@ -104,7 +123,7 @@ export function selectTrackedSubjectAlpha(
       alpha[index] = smoothstep(threshold, solidConfidence, confidence[index]);
     }
   }
-  return alpha;
+  return tightenTrackedSubjectEdges(alpha, maskWidth, maskHeight);
 }
 
 export function trackedSubjectRegion(box: Box, sourceWidth: number, sourceHeight: number): Box {
@@ -135,12 +154,37 @@ export function recoverTrackedSubjectAlpha(
   return { alpha, missedFrames: nextMissedFrames, fresh: false };
 }
 
+export function stabilizeTrackedSubjectAlpha(
+  currentAlpha: Float32Array,
+  previousAlpha: Float32Array | null,
+  pendingAlpha: Float32Array | null,
+) {
+  if (previousAlpha?.length !== currentAlpha.length) return new Float32Array(currentAlpha);
+  const stabilized = new Float32Array(currentAlpha.length);
+  const hasPending = pendingAlpha?.length === currentAlpha.length;
+  for (let index = 0; index < currentAlpha.length; index += 1) {
+    const current = currentAlpha[index];
+    const previous = previousAlpha[index];
+    const pending = hasPending ? pendingAlpha![index] : 0;
+    if (previous < 0.06 && (current < 0.48 || pending < 0.32)) {
+      stabilized[index] = 0;
+      continue;
+    }
+    const blended = current >= previous
+      ? previous * 0.34 + current * 0.66
+      : previous * 0.55 + current * 0.45;
+    stabilized[index] = blended < 0.025 ? 0 : blended;
+  }
+  return stabilized;
+}
+
 export class PersonBackgroundRenderer {
   private readonly segmenter: ImageSegmenter;
   private readonly inferenceCanvas = document.createElement('canvas');
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
   private previousAlpha: Float32Array | null = null;
+  private pendingAlpha: Float32Array | null = null;
   private timestamp = 0;
   private missedFrames = 0;
 
@@ -170,7 +214,7 @@ export class PersonBackgroundRenderer {
     }
   }
 
-  render(video: HTMLVideoElement, outputCanvas: HTMLCanvasElement, box: Box) {
+  render(video: HTMLVideoElement, outputCanvas: HTMLCanvasElement, box: Box, crop?: Box) {
     if (!video.videoWidth || !video.videoHeight) return;
     const [regionX, regionY, regionWidth, regionHeight] = trackedSubjectRegion(
       box,
@@ -231,12 +275,12 @@ export class PersonBackgroundRenderer {
     currentAlpha = recovered.alpha;
     this.missedFrames = recovered.missedFrames;
 
-    if (recovered.fresh && this.previousAlpha?.length === currentAlpha.length && this.previousAlpha !== currentAlpha) {
-      for (let index = 0; index < currentAlpha.length; index += 1) {
-        // A light one-frame blend reduces edge shimmer without leaving long trails
-        // behind a dancer's fast-moving hands and feet.
-        currentAlpha[index] = currentAlpha[index] * 0.86 + this.previousAlpha[index] * 0.14;
-      }
+    if (recovered.fresh) {
+      const freshAlpha = currentAlpha;
+      currentAlpha = stabilizeTrackedSubjectAlpha(freshAlpha, this.previousAlpha, this.pendingAlpha);
+      this.pendingAlpha = new Float32Array(freshAlpha);
+    } else {
+      this.pendingAlpha = null;
     }
     this.previousAlpha = new Float32Array(currentAlpha);
 
@@ -266,10 +310,11 @@ export class PersonBackgroundRenderer {
 
     subjectContext.globalCompositeOperation = 'source-over';
     subjectContext.clearRect(0, 0, this.subjectCanvas.width, this.subjectCanvas.height);
-    const outputScaleX = outputCanvas.width / video.videoWidth;
-    const outputScaleY = outputCanvas.height / video.videoHeight;
-    const destinationX = regionX * outputScaleX;
-    const destinationY = regionY * outputScaleY;
+    const [cropX, cropY, cropWidth, cropHeight] = crop ?? [0, 0, video.videoWidth, video.videoHeight];
+    const outputScaleX = outputCanvas.width / cropWidth;
+    const outputScaleY = outputCanvas.height / cropHeight;
+    const destinationX = (regionX - cropX) * outputScaleX;
+    const destinationY = (regionY - cropY) * outputScaleY;
     const destinationWidth = regionWidth * outputScaleX;
     const destinationHeight = regionHeight * outputScaleY;
     subjectContext.drawImage(
@@ -301,10 +346,12 @@ export class PersonBackgroundRenderer {
   close() {
     this.segmenter.close();
     this.previousAlpha = null;
+    this.pendingAlpha = null;
   }
 
   reset() {
     this.previousAlpha = null;
+    this.pendingAlpha = null;
     this.missedFrames = 0;
   }
 }

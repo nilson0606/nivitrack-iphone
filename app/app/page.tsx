@@ -301,6 +301,9 @@ export default function Home() {
     setCropCenterX(0.5);
     setCropCenterY(0.5);
     setCropZoom(1);
+    setAspect('9:16');
+    setSubjectScale(0.55);
+    setSmoothness(0.72);
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
@@ -338,6 +341,9 @@ export default function Home() {
     setCropCenterX(0.5);
     setCropCenterY(0.5);
     setCropZoom(1);
+    setAspect('9:16');
+    setSubjectScale(0.55);
+    setSmoothness(0.72);
     setCropBox(null);
     resetExportResult();
     if (tool === 'track' || tool === 'remove-background') {
@@ -952,7 +958,7 @@ export default function Home() {
       setBox(selection.box);
       drawFrame(selection.box);
       setNotice(selectedTool === 'remove-background'
-        ? '完整舞者路徑已建立；可輸出純黑背景影片'
+        ? '完整舞者路徑已建立；可調整比例、主角大小與柔順度後輸出'
         : '完整 ViT 路徑已建立；可調整構圖並輸出影片');
     } catch (error) {
       setPhase('select');
@@ -988,7 +994,7 @@ export default function Home() {
     } else if (selectedTool === 'track') {
       operation = { kind: 'track', aspect, subjectScale, smoothness };
     } else if (selectedTool === 'remove-background') {
-      operation = { kind: 'remove-background', smoothness: 0.35 };
+      operation = { kind: 'remove-background', aspect, subjectScale, smoothness };
     }
     if (!video || !renderCanvas || !operation) {
       setNotice('請先選擇一項後製功能');
@@ -1326,57 +1332,55 @@ export default function Home() {
                   <div className="export-heading">
                     <div>
                       <span>{selectedTool === 'remove-background' ? '單一舞者路徑已就緒' : '完整路徑已就緒'}</span>
-                      <strong>{selectedTool === 'remove-background' ? '純黑背景去背' : '選擇輸出構圖'}</strong>
+                      <strong>{selectedTool === 'remove-background' ? '選擇去背構圖' : '選擇輸出構圖'}</strong>
                     </div>
-                    <b>{selectedTool === 'remove-background' ? '原比例' : trackPath.length + ' 點'}</b>
+                    <b>{selectedTool === 'remove-background' ? aspect : trackPath.length + ' 點'}</b>
                   </div>
 
-                  {selectedTool === 'remove-background' ? (
+                  {selectedTool === 'remove-background' && (
                     <div className="crop-summary">
                       <span>輸出方式</span>
-                      <strong>只留選定舞者 · 其他人物與物品皆為純黑</strong>
+                      <strong>放大並置中選定舞者 · 其餘畫面為純黑</strong>
                     </div>
-                  ) : (
-                    <>
-                      <div className="aspect-options" aria-label="輸出比例">
-                        {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
-                          <button
-                            className={aspect === preset ? 'selected' : ''}
-                            type="button"
-                            key={preset}
-                            disabled={phase === 'exporting'}
-                            onClick={() => setAspect(preset)}
-                          >
-                            {preset}
-                          </button>
-                        ))}
-                      </div>
-
-                      <label className="range-control">
-                        <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
-                        <input
-                          type="range"
-                          min="25"
-                          max="80"
-                          value={Math.round(subjectScale * 100)}
-                          disabled={phase === 'exporting'}
-                          onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
-                        />
-                      </label>
-
-                      <label className="range-control">
-                        <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={Math.round(smoothness * 100)}
-                          disabled={phase === 'exporting'}
-                          onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
-                        />
-                      </label>
-                    </>
                   )}
+
+                  <div className="aspect-options" aria-label="輸出比例">
+                    {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
+                      <button
+                        className={aspect === preset ? 'selected' : ''}
+                        type="button"
+                        key={preset}
+                        disabled={phase === 'exporting'}
+                        onClick={() => setAspect(preset)}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+
+                  <label className="range-control">
+                    <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
+                    <input
+                      type="range"
+                      min="25"
+                      max="80"
+                      value={Math.round(subjectScale * 100)}
+                      disabled={phase === 'exporting'}
+                      onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
+                    />
+                  </label>
+
+                  <label className="range-control">
+                    <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={Math.round(smoothness * 100)}
+                      disabled={phase === 'exporting'}
+                      onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
+                    />
+                  </label>
 
                   <div className="export-buttons">
                     <button
@@ -1404,7 +1408,7 @@ export default function Home() {
 
                   {selectedTool === 'remove-background' && (
                     <p className="export-note">
-                      首次會下載開源 MediaPipe 模型；推論、去背、原聲合成都只在這台 iPhone 執行。主角手持物品會視為背景移除。
+                      遮罩會柔性內縮並抑制單幀閃漏；推論、去背、放大置中與原聲合成都只在這台 iPhone 執行。主角手持物品會視為背景移除。
                     </p>
                   )}
 

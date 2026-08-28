@@ -27,6 +27,8 @@ export type ExportOperation =
     }
   | {
       kind: 'remove-background';
+      aspect: AspectPreset;
+      subjectScale: number;
       smoothness: number;
     };
 
@@ -304,7 +306,7 @@ function configureOutputCanvas(
     [canvas.width, canvas.height] = selectionOutputSize(operation.selectionBox);
     return;
   }
-  if (operation.kind === 'filter' || operation.kind === 'remove-background' || operation.aspect === 'source') {
+  if (operation.kind === 'filter' || operation.aspect === 'source') {
     [canvas.width, canvas.height] = sourceOutputSize(video);
     return;
   }
@@ -354,6 +356,25 @@ export function smoothTrackPath(path: TrackPoint[], smoothness: number) {
   return result;
 }
 
+export function trackedFrameCrop(
+  sourceWidth: number,
+  sourceHeight: number,
+  box: Box,
+  outputAspect: number,
+  subjectScale: number,
+): Box {
+  const [x, y, width, height] = box;
+  const scale = clamp(subjectScale, 0.25, 0.8);
+  let cropHeight = Math.max(height / scale, width / (outputAspect * Math.min(0.9, scale + 0.12)));
+  cropHeight = Math.min(cropHeight, sourceHeight, sourceWidth / outputAspect);
+  const cropWidth = cropHeight * outputAspect;
+  const centerX = x + width / 2;
+  const centerY = y + height / 2;
+  const cropX = clamp(centerX - cropWidth / 2, 0, Math.max(0, sourceWidth - cropWidth));
+  const cropY = clamp(centerY - cropHeight / 2, 0, Math.max(0, sourceHeight - cropHeight));
+  return [cropX, cropY, cropWidth, cropHeight];
+}
+
 function drawTrackedFrame(
   video: HTMLVideoElement,
   canvas: HTMLCanvasElement,
@@ -363,19 +384,16 @@ function drawTrackedFrame(
 ) {
   const context = canvas.getContext('2d', { alpha: false });
   if (!context || !video.videoWidth || !video.videoHeight) return;
-  const [x, y, width, height] = interpolateBox(path, time);
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
   const outputAspect = canvas.width / canvas.height;
-  const scale = clamp(subjectScale, 0.25, 0.8);
-
-  let cropHeight = Math.max(height / scale, width / (outputAspect * Math.min(0.9, scale + 0.12)));
-  cropHeight = Math.min(cropHeight, sourceHeight, sourceWidth / outputAspect);
-  const cropWidth = cropHeight * outputAspect;
-  const centerX = x + width / 2;
-  const centerY = y + height / 2;
-  const cropX = clamp(centerX - cropWidth / 2, 0, Math.max(0, sourceWidth - cropWidth));
-  const cropY = clamp(centerY - cropHeight / 2, 0, Math.max(0, sourceHeight - cropHeight));
+  const [cropX, cropY, cropWidth, cropHeight] = trackedFrameCrop(
+    sourceWidth,
+    sourceHeight,
+    interpolateBox(path, time),
+    outputAspect,
+    subjectScale,
+  );
 
   context.fillStyle = '#000';
   context.fillRect(0, 0, canvas.width, canvas.height);
@@ -469,7 +487,15 @@ function drawOutputFrame(
   }
   if (operation.kind === 'remove-background') {
     if (!backgroundRenderer) throw new Error('人物去背模型尚未就緒');
-    backgroundRenderer.render(video, canvas, interpolateBox(path, time));
+    const trackedBox = interpolateBox(path, time);
+    const crop = trackedFrameCrop(
+      video.videoWidth,
+      video.videoHeight,
+      trackedBox,
+      canvas.width / canvas.height,
+      operation.subjectScale,
+    );
+    backgroundRenderer.render(video, canvas, trackedBox, crop);
     return;
   }
   if (!filterRenderer) throw new Error('濾鏡輸出器尚未就緒');

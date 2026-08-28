@@ -1,8 +1,11 @@
 import {
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
+  stabilizeTrackedSubjectAlpha,
+  tightenTrackedSubjectEdges,
   trackedSubjectRegion,
 } from '../lib/person-background-removal.ts';
+import { trackedFrameCrop } from '../lib/video-export.ts';
 
 const width = 20;
 const height = 10;
@@ -41,8 +44,8 @@ function testTouchingDancers() {
 function testLowConfidenceDancer() {
   const mask = new Float32Array(width * height);
   for (let y = 2; y <= 7; y += 1) {
-    for (let x = 2; x <= 6; x += 1) mask[y * width + x] = 0.1;
-    for (let x = 12; x <= 16; x += 1) mask[y * width + x] = 0.11;
+    for (let x = 2; x <= 6; x += 1) mask[y * width + x] = 0.18;
+    for (let x = 12; x <= 16; x += 1) mask[y * width + x] = 0.19;
   }
   return countSides(selectTrackedSubjectAlpha(mask, width, height, trackedBox, 100, 50));
 }
@@ -76,11 +79,47 @@ function testTrackedRegion() {
   };
 }
 
+function testTemporalStability() {
+  const current = new Float32Array([0.9]);
+  const empty = new Float32Array([0]);
+  const firstAppearance = stabilizeTrackedSubjectAlpha(current, empty, empty);
+  const confirmedAppearance = stabilizeTrackedSubjectAlpha(current, empty, current);
+  const persistentSubject = stabilizeTrackedSubjectAlpha(new Float32Array([0.7]), new Float32Array([0.8]), current);
+  return {
+    oneFrameLeakRejected: firstAppearance[0] === 0,
+    confirmedSubjectAccepted: confirmedAppearance[0] > 0.5,
+    persistentSubjectRetained: persistentSubject[0] > 0.6,
+  };
+}
+
+function testEdgeTightening() {
+  const alpha = new Float32Array(25).fill(1);
+  const tightened = tightenTrackedSubjectEdges(alpha, 5, 5);
+  return {
+    centerPreserved: tightened[12] === 1,
+    edgeFeathered: tightened[2] > 0 && tightened[2] < 0.25,
+  };
+}
+
+function testAdjustableFraming() {
+  const box = [400, 300, 200, 600];
+  const smallerSubject = trackedFrameCrop(1080, 1920, box, 9 / 16, 0.25);
+  const largerSubject = trackedFrameCrop(1080, 1920, box, 9 / 16, 0.8);
+  return {
+    largerSubjectUsesTighterCrop: largerSubject[2] < smallerSubject[2]
+      && largerSubject[3] < smallerSubject[3],
+    aspectPreserved: Math.abs(largerSubject[2] / largerSubject[3] - 9 / 16) < 0.0001,
+  };
+}
+
 const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
 const lowConfidence = testLowConfidenceDancer();
 const recovery = testMissingFrameRecovery();
 const region = testTrackedRegion();
+const temporal = testTemporalStability();
+const edges = testEdgeTightening();
+const framing = testAdjustableFraming();
 const pass = separated.selected > 0 && separated.leaked === 0
   && touching.selected > 0 && touching.leaked === 0
   && lowConfidence.selected > 0 && lowConfidence.leaked === 0
@@ -88,7 +127,24 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && recovery.temporaryMissingRetained
   && recovery.expiredIsBlack
   && region.containsBox
-  && region.cropped;
+  && region.cropped
+  && temporal.oneFrameLeakRejected
+  && temporal.confirmedSubjectAccepted
+  && temporal.persistentSubjectRetained
+  && edges.centerPreserved
+  && edges.edgeFeathered
+  && framing.largerSubjectUsesTighterCrop
+  && framing.aspectPreserved;
 
-console.log(JSON.stringify({ separated, touching, lowConfidence, recovery, region, pass }, null, 2));
+console.log(JSON.stringify({
+  separated,
+  touching,
+  lowConfidence,
+  recovery,
+  region,
+  temporal,
+  edges,
+  framing,
+  pass,
+}, null, 2));
 if (!pass) process.exitCode = 1;
