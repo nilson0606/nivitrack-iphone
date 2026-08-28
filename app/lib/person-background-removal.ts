@@ -231,4 +231,9 @@ export class PersonBackgroundRenderer {
     this.segmenter.close();
     this.previousAlpha = null;
   }
+
+  reset() {
+    this.previousAlpha = null;
+    this.missedFrames = 0;
+  }
 }

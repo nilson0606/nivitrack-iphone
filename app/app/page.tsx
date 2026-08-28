@@ -20,6 +20,7 @@ import {
   RecorderSupport,
   TrackPoint,
 } from '../lib/video-export';
+import type { PersonBackgroundRenderer } from '../lib/person-background-removal';
 
 type Capability = {
   label: string;
@@ -37,7 +38,7 @@ type VideoInfo = {
   height: number;
 };
 
-type Phase = 'choose' | 'tool-ready' | 'crop-select' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
+type Phase = 'choose' | 'tool-ready' | 'crop-select' | 'select' | 'tracking' | 'previewing' | 'complete' | 'path-ready' | 'exporting';
 
 type ToolId =
   | `filter-${FilterPreset}`
@@ -104,6 +105,12 @@ type ExportInfo = {
   resolution: string;
 };
 
+type BackgroundPreview = {
+  startTime: number;
+  endTime: number;
+  path: TrackPoint[];
+};
+
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
@@ -129,6 +136,19 @@ function normalizeBox(start: [number, number], end: [number, number]): Box {
   ];
 }
 
+function previewBoxAt(path: TrackPoint[], time: number): Box {
+  if (path.length === 0) return [0, 0, 1, 1];
+  if (time <= path[0].time) return [...path[0].box] as Box;
+  const last = path[path.length - 1];
+  if (time >= last.time) return [...last.box] as Box;
+  let beforeIndex = 0;
+  while (beforeIndex + 1 < path.length && path[beforeIndex + 1].time < time) beforeIndex += 1;
+  const before = path[beforeIndex];
+  const after = path[Math.min(path.length - 1, beforeIndex + 1)];
+  const amount = (time - before.time) / Math.max(0.0001, after.time - before.time);
+  return before.box.map((value, index) => value + (after.box[index] - value) * amount) as Box;
+}
+
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -141,6 +161,10 @@ export default function Home() {
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
   const exportResultRef = useRef<HTMLDivElement>(null);
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
+  const backgroundPreviewRef = useRef<BackgroundPreview | null>(null);
+  const backgroundPreviewRendererRef = useRef<PersonBackgroundRenderer | null>(null);
+  const previewFrameCallbackRef = useRef(0);
+  const previewAnimationFrameRef = useRef(0);
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -154,6 +178,8 @@ export default function Home() {
   const [stats, setStats] = useState<TrackingStats | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [detecting, setDetecting] = useState(false);
+  const [selectionPlaying, setSelectionPlaying] = useState(false);
+  const [backgroundPreviewReady, setBackgroundPreviewReady] = useState(false);
   const [trackPath, setTrackPath] = useState<TrackPoint[]>([]);
   const [cropBox, setCropBox] = useState<Box | null>(null);
   const [selectedTool, setSelectedTool] = useState<ToolId | null>(null);
@@ -212,8 +238,15 @@ export default function Home() {
   }, [exportUrl]);
 
   useEffect(() => {
+    const activeVideoRef = videoRef;
     return () => {
       void exporterRef.current?.dispose();
+      const video = activeVideoRef.current;
+      if (video && previewFrameCallbackRef.current && 'cancelVideoFrameCallback' in video) {
+        video.cancelVideoFrameCallback(previewFrameCallbackRef.current);
+      }
+      if (previewAnimationFrameRef.current) cancelAnimationFrame(previewAnimationFrameRef.current);
+      backgroundPreviewRendererRef.current?.close();
     };
   }, []);
 
@@ -229,9 +262,30 @@ export default function Home() {
     input.click();
   }
 
+  function stopBackgroundPreviewCallbacks() {
+    const video = videoRef.current;
+    if (video && previewFrameCallbackRef.current && 'cancelVideoFrameCallback' in video) {
+      video.cancelVideoFrameCallback(previewFrameCallbackRef.current);
+    }
+    if (previewAnimationFrameRef.current) cancelAnimationFrame(previewAnimationFrameRef.current);
+    previewFrameCallbackRef.current = 0;
+    previewAnimationFrameRef.current = 0;
+  }
+
+  function resetBackgroundPreview() {
+    stopBackgroundPreviewCallbacks();
+    backgroundPreviewRef.current = null;
+    backgroundPreviewRendererRef.current?.close();
+    backgroundPreviewRendererRef.current = null;
+    setBackgroundPreviewReady(false);
+  }
+
   function chooseVideo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
+    videoRef.current?.pause();
+    setSelectionPlaying(false);
+    resetBackgroundPreview();
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setSourceFile(file);
     setVideoUrl(URL.createObjectURL(file));
@@ -300,6 +354,8 @@ export default function Home() {
 
   function returnToTools() {
     videoRef.current?.pause();
+    setSelectionPlaying(false);
+    resetBackgroundPreview();
     setSelectedTool(null);
     setPhase('choose');
     setBox(null);
@@ -423,6 +479,8 @@ export default function Home() {
     const video = videoRef.current;
     if (!video) return;
     video.pause();
+    setSelectionPlaying(false);
+    resetBackgroundPreview();
     setPhase('select');
     setBox(null);
     setStats(null);
@@ -436,6 +494,23 @@ export default function Home() {
       ? '用手指緊貼框住要保留的單一舞者，或使用 AI 找人物'
       : '用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawFrame(null));
+  }
+
+  function toggleSelectionPlayback() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (selectionPlaying) {
+      video.pause();
+      return;
+    }
+    setBox(null);
+    setCandidates([]);
+    selectionRef.current = null;
+    setNotice('影片播放中；請暫停在主角清楚的畫面再框選');
+    void video.play().catch((error) => {
+      setSelectionPlaying(false);
+      setNotice('Safari 無法播放影片：' + (error instanceof Error ? error.message : String(error)));
+    });
   }
 
   function pointerPosition(event: ReactPointerEvent<HTMLCanvasElement>): [number, number] {
@@ -611,6 +686,12 @@ export default function Home() {
     const endTime = Math.min(video.duration, startTime + 3);
     const interval = 1 / 10;
     const results: TrackResult[] = [];
+    const previewPoints: TrackPoint[] = [{
+      time: startTime,
+      box: [...box] as Box,
+      score: 1,
+      accepted: true,
+    }];
     const started = eventClock();
 
     try {
@@ -628,6 +709,12 @@ export default function Home() {
         await seekTo(frameTime);
         const result = await trackerRef.current.update(video);
         results.push(result);
+        previewPoints.push({
+          time: frameTime,
+          box: [...result.box] as Box,
+          score: result.score,
+          accepted: result.accepted,
+        });
         frameIndex += 1;
         setBox(result.box);
         setCurrentScore(result.score);
@@ -649,16 +736,130 @@ export default function Home() {
         acceptedFrames: results.filter((item) => item.accepted).length,
       });
       setProgress(1);
-      setPhase('complete');
-      setNotice(selectedTool === 'remove-background'
-        ? '3 秒單一舞者追蹤測試完成；尚未進行去背'
-        : '3 秒 ViT 路徑測試完成；尚未進行影片輸出');
+      if (selectedTool === 'remove-background') {
+        backgroundPreviewRef.current = { startTime, endTime, path: previewPoints };
+        setNotice('3 秒追蹤完成；正在準備本機去背預覽…');
+        try {
+          if (!backgroundPreviewRendererRef.current) {
+            const { PersonBackgroundRenderer } = await import('../lib/person-background-removal');
+            backgroundPreviewRendererRef.current = await PersonBackgroundRenderer.create();
+          }
+          await seekTo(startTime);
+          setBox([...previewPoints[0].box] as Box);
+          drawFrame(previewPoints[0].box);
+          setBackgroundPreviewReady(true);
+          setPhase('complete');
+          setNotice('3 秒去背預覽已準備；請點「播放 3 秒去背預覽」');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setBackgroundPreviewReady(false);
+          setPhase('complete');
+          setNotice('3 秒追蹤完成，但去背預覽模型準備失敗：' + message);
+        }
+      } else {
+        setPhase('complete');
+        setNotice('3 秒 ViT 路徑測試完成；尚未進行影片輸出');
+      }
     } catch (error) {
+      backgroundPreviewRef.current = null;
+      setBackgroundPreviewReady(false);
       setPhase('select');
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
       drawFrame(box);
     }
+  }
+
+  function playBackgroundPreview() {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const preview = backgroundPreviewRef.current;
+    const renderer = backgroundPreviewRendererRef.current;
+    if (!video || !canvas || !preview || !renderer || !backgroundPreviewReady) {
+      setNotice('請先完成 3 秒追蹤，讓去背預覽準備完成');
+      return;
+    }
+
+    stopBackgroundPreviewCallbacks();
+    cancelRef.current = false;
+    renderer.reset();
+    video.pause();
+    video.currentTime = preview.startTime;
+    setPhase('previewing');
+    setProgress(0);
+    setNotice('正在播放 3 秒純黑背景預覽…');
+
+    let finished = false;
+    let cleanupListeners = () => {};
+    const duration = Math.max(0.001, preview.endTime - preview.startTime);
+
+    const finish = (error?: unknown, cancelled = false) => {
+      if (finished) return;
+      finished = true;
+      cleanupListeners();
+      video.pause();
+      stopBackgroundPreviewCallbacks();
+      setPhase('complete');
+      if (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setNotice('3 秒去背預覽失敗：' + message);
+      } else if (cancelled) {
+        setNotice('已取消 3 秒去背預覽');
+      } else {
+        setProgress(1);
+        setNotice('3 秒去背預覽完成；可重播或繼續追蹤完整影片');
+      }
+    };
+
+    const renderFrame = (mediaTime: number) => {
+      if (finished) return;
+      if (cancelRef.current) {
+        finish(undefined, true);
+        return;
+      }
+      try {
+        renderer.render(video, canvas, previewBoxAt(preview.path, mediaTime));
+        setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
+        if (mediaTime >= preview.endTime - 0.01) finish();
+      } catch (error) {
+        finish(error);
+      }
+    };
+
+    const onEnded = () => finish();
+    const onError = () => finish(new Error('Safari 無法播放預覽片段'));
+    const stopAtPreviewEnd = () => {
+      if (video.currentTime >= preview.endTime) finish();
+    };
+    video.addEventListener('ended', onEnded, { once: true });
+    video.addEventListener('error', onError, { once: true });
+    video.addEventListener('timeupdate', stopAtPreviewEnd);
+    cleanupListeners = () => {
+      video.removeEventListener('ended', onEnded);
+      video.removeEventListener('error', onError);
+      video.removeEventListener('timeupdate', stopAtPreviewEnd);
+    };
+
+    const requestVideoFrame = (video as unknown as {
+      requestVideoFrameCallback?: (callback: VideoFrameRequestCallback) => number;
+    }).requestVideoFrameCallback;
+    if (requestVideoFrame) {
+      const nextFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+        renderFrame(metadata.mediaTime);
+        if (!finished) previewFrameCallbackRef.current = requestVideoFrame.call(video, nextFrame);
+      };
+      previewFrameCallbackRef.current = requestVideoFrame.call(video, nextFrame);
+    } else {
+      const nextFrame = () => {
+        renderFrame(video.currentTime);
+        if (!finished) previewAnimationFrameRef.current = requestAnimationFrame(nextFrame);
+      };
+      previewAnimationFrameRef.current = requestAnimationFrame(nextFrame);
+    }
+
+    video.play().catch((error) => {
+      finish(error);
+    });
   }
 
   async function runFullTracking() {
@@ -865,7 +1066,7 @@ export default function Home() {
 
   function cancelTracking() {
     cancelRef.current = true;
-    setNotice(phase === 'exporting' ? '正在取消輸出…' : '正在取消追蹤…');
+    setNotice(phase === 'exporting' ? '正在取消輸出…' : phase === 'previewing' ? '正在取消預覽…' : '正在取消追蹤…');
   }
 
   const selectedChoice = TOOL_CHOICES.find((item) => item.id === selectedTool) ?? null;
@@ -928,35 +1129,54 @@ export default function Home() {
               <div className={'video-stage ' + (cropPreviewActive ? 'crop-preview' : '')} style={stageStyle}>
                 <video
                   ref={videoRef}
-                  className={phase === 'choose' || phase === 'tool-ready' || phase === 'exporting' ? '' : 'is-hidden'}
+                  className={phase === 'choose' || phase === 'tool-ready' || phase === 'exporting' || phase === 'select' ? '' : 'is-hidden'}
                   style={videoStyle}
                   src={videoUrl}
                   controls
                   playsInline
                   preload="metadata"
                   onLoadedMetadata={readMetadata}
+                  onPlay={() => {
+                    if (phase !== 'select') return;
+                    setSelectionPlaying(true);
+                    setBox(null);
+                    setCandidates([]);
+                    selectionRef.current = null;
+                    setNotice('影片播放中；請暫停在主角清楚的畫面再框選');
+                  }}
+                  onPause={() => {
+                    if (phase !== 'select') return;
+                    setSelectionPlaying(false);
+                    setNotice(selectedTool === 'remove-background'
+                      ? '已暫停；請框住要保留的單一舞者，或使用 AI 找人物'
+                      : '已暫停；請用手指框住要追蹤的人物或寵物');
+                    requestAnimationFrame(() => drawFrame(null));
+                  }}
+                  onSeeked={() => {
+                    if (phase === 'select' && videoRef.current?.paused) requestAnimationFrame(() => drawFrame(null));
+                  }}
                   onError={() => setNotice('Safari 無法解碼這支影片，請保留檔案供實機記錄')}
                 />
                 <canvas
                   ref={canvasRef}
-                  className={phase === 'choose' || phase === 'tool-ready' || phase === 'exporting' ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
+                  className={phase === 'choose' || phase === 'tool-ready' || phase === 'exporting' || (phase === 'select' && selectionPlaying) ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
                   onPointerDown={startBox}
                   onPointerMove={moveBox}
                   onPointerUp={finishBox}
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'exporting' ? (selectedTool === 'remove-background' ? 'MediaPipe 本機去背' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
+                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectionPlaying ? '播放中 · 暫停後框選' : selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'previewing' ? '3 秒純黑背景預覽' : phase === 'exporting' ? (selectedTool === 'remove-background' ? 'MediaPipe 本機去背' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
                 </span>
-                {(phase === 'tracking' || phase === 'exporting') && (
+                {(phase === 'tracking' || phase === 'previewing' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>{phase === 'exporting' ? '保留原聲' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
+                    <span>{phase === 'exporting' ? '保留原聲' : phase === 'previewing' ? '純黑背景預覽' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
                   </div>
                 )}
               </div>
               <div className="video-actions">
-                {phase !== 'tracking' && phase !== 'exporting' && (
+                {phase !== 'tracking' && phase !== 'previewing' && phase !== 'exporting' && (
                   <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
                 )}
                 {phase === 'tool-ready' && <button type="button" onClick={returnToTools}>取消此功能</button>}
@@ -970,25 +1190,31 @@ export default function Home() {
                 {phase === 'select' && (
                   <>
                     <button type="button" onClick={returnToTools}>返回功能選單</button>
-                    <button type="button" disabled={detecting} onClick={detectSubjects}>
+                    <button type="button" onClick={toggleSelectionPlayback}>
+                      {selectionPlaying ? '暫停並框選' : '播放找畫面'}
+                    </button>
+                    <button type="button" disabled={detecting || selectionPlaying} onClick={detectSubjects}>
                       {detecting ? 'AI 掃描中…' : selectedTool === 'remove-background' ? 'AI 尋找人物' : 'AI 尋找人物／寵物'}
                     </button>
-                    <button type="button" disabled={!box} onClick={runTracking}>
-                      測試 3 秒 ViT
+                    <button type="button" disabled={!box || selectionPlaying} onClick={runTracking}>
+                      {selectedTool === 'remove-background' ? '準備 3 秒去背預覽' : '測試 3 秒 ViT'}
                     </button>
-                    <button className="primary" type="button" disabled={!box} onClick={runFullTracking}>
+                    <button className="primary" type="button" disabled={!box || selectionPlaying} onClick={runFullTracking}>
                       追蹤完整影片
                     </button>
                   </>
                 )}
-                {(phase === 'tracking' || phase === 'exporting') && (
-                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : '取消追蹤'}</button>
+                {(phase === 'tracking' || phase === 'previewing' || phase === 'exporting') && (
+                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'previewing' ? '取消預覽' : '取消追蹤'}</button>
                 )}
                 {phase === 'complete' && (
                   <>
                     <button type="button" onClick={returnToTools}>返回功能選單</button>
                     <button type="button" onClick={enterSelection}>重新框選</button>
-                    <button className="primary" type="button" onClick={runFullTracking}>追蹤完整影片</button>
+                    {selectedTool === 'remove-background' && (
+                      <button className="primary" type="button" disabled={!backgroundPreviewReady} onClick={playBackgroundPreview}>播放 3 秒去背預覽</button>
+                    )}
+                    <button className={selectedTool === 'remove-background' ? '' : 'primary'} type="button" onClick={runFullTracking}>追蹤完整影片</button>
                   </>
                 )}
                 {phase === 'path-ready' && (
