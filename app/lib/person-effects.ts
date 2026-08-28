@@ -49,6 +49,8 @@ export type PersonMaskPreparationOptions = {
 };
 
 const SPRITE_SIZE = 256;
+const MATTE_PIXEL_BUDGET = 360 * 640;
+const MATTE_MAX_EDGE = 640;
 const PREPARE_INTERVAL = 1 / 30;
 const SNAPSHOT_INTERVAL = 1 / 15;
 
@@ -206,6 +208,16 @@ export class PersonEffectRenderer {
   private segmentMask(video: HTMLVideoElement, region: Rect): PreparedMask {
     const input = this.inputCanvas.getContext('2d', { alpha: false });
     if (!input) throw new Error('Safari 無法建立人物去背 Canvas');
+    const inputScale = Math.min(
+      Math.sqrt(MATTE_PIXEL_BUDGET / Math.max(1, region.width * region.height)),
+      MATTE_MAX_EDGE / Math.max(1, region.width, region.height),
+    );
+    const inputWidth = Math.max(1, Math.round(region.width * inputScale));
+    const inputHeight = Math.max(1, Math.round(region.height * inputScale));
+    if (this.inputCanvas.width !== inputWidth || this.inputCanvas.height !== inputHeight) {
+      this.inputCanvas.width = inputWidth;
+      this.inputCanvas.height = inputHeight;
+    }
     input.drawImage(
       video,
       region.x,
@@ -214,8 +226,8 @@ export class PersonEffectRenderer {
       region.height,
       0,
       0,
-      SPRITE_SIZE,
-      SPRITE_SIZE,
+      inputWidth,
+      inputHeight,
     );
     const result = this.segmenter.segment(this.inputCanvas);
     return {
