@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-stage1-effects-v8-5-original-background-1';
+const VERSION = 'nivitrack-stable-recovery-v1';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -28,10 +28,10 @@ const MODEL_ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    Promise.all([
-      caches.open(APP_CACHE).then((cache) => cache.addAll(APP_SHELL)),
-      caches.open(MODEL_CACHE).then((cache) => cache.addAll(MODEL_ASSETS)),
-    ]).then(() => self.skipWaiting()),
+    caches
+      .open(APP_CACHE)
+      .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => self.skipWaiting()),
   );
 });
 
