@@ -20,9 +20,12 @@ type PrepareOptions = {
   onProgress: (progress: number, frame: number, total: number) => void;
 };
 
-type WorkerReply = {
+const FRAME_CHANNEL = 'nivitrack-instance-segmenter-v1';
+
+type SegmenterReply = {
+  channel: typeof FRAME_CHANNEL;
   requestId: number;
-  type: 'ready' | 'result' | 'error';
+  type: 'ready' | 'result' | 'error' | 'bootstrap-error';
   delegate?: 'CPU' | 'GPU';
   width?: number;
   height?: number;
@@ -35,29 +38,39 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
-function workerRequest(
-  worker: Worker,
+function frameRequest(
+  frame: HTMLIFrameElement,
   requestId: number,
   message: object,
   transfer: Transferable[],
   isCancelled: () => boolean,
   timeoutMs: number,
 ) {
-  return new Promise<WorkerReply>((resolve, reject) => {
+  return new Promise<SegmenterReply>((resolve, reject) => {
+    const target = frame.contentWindow;
+    if (!target) {
+      reject(new Error('單人實例分割隔離頁面尚未就緒'));
+      return;
+    }
     let finished = false;
     const cleanup = () => {
       if (finished) return;
       finished = true;
       window.clearInterval(cancelPoll);
       window.clearTimeout(timeout);
-      worker.removeEventListener('message', onMessage);
-      worker.removeEventListener('error', onError);
+      window.removeEventListener('message', onMessage);
+      frame.removeEventListener('error', onError);
     };
     const fail = (error: Error) => {
       cleanup();
       reject(error);
     };
-    const onMessage = (event: MessageEvent<WorkerReply>) => {
+    const onMessage = (event: MessageEvent<SegmenterReply>) => {
+      if (event.source !== target || event.data?.channel !== FRAME_CHANNEL) return;
+      if (event.data.type === 'bootstrap-error') {
+        fail(new Error(event.data.message ?? '單人實例分割隔離頁面啟動失敗'));
+        return;
+      }
       if (event.data.requestId !== requestId) return;
       if (event.data.type === 'error') {
         fail(new Error(event.data.message ?? '單人實例分割失敗'));
@@ -66,12 +79,7 @@ function workerRequest(
       cleanup();
       resolve(event.data);
     };
-    const onError = (event: ErrorEvent) => {
-      const detail = event.message
-        ? '：' + event.message + (event.lineno ? '（第 ' + event.lineno + ' 行）' : '')
-        : '';
-      fail(new Error('單人實例分割 Worker 發生錯誤' + detail));
-    };
+    const onError = () => fail(new Error('單人實例分割隔離頁面載入失敗'));
     const cancelPoll = window.setInterval(() => {
       if (isCancelled()) fail(new Error('使用者已取消單人實例分割'));
     }, 100);
@@ -79,9 +87,56 @@ function workerRequest(
       () => fail(new Error('單人實例分割運算逾時')),
       timeoutMs,
     );
-    worker.addEventListener('message', onMessage);
-    worker.addEventListener('error', onError);
-    worker.postMessage({ requestId, ...message }, transfer);
+    window.addEventListener('message', onMessage);
+    frame.addEventListener('error', onError);
+    try {
+      target.postMessage(
+        { channel: FRAME_CHANNEL, requestId, ...message },
+        window.location.origin,
+        transfer,
+      );
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+function createSegmenterFrame(isCancelled: () => boolean) {
+  return new Promise<HTMLIFrameElement>((resolve, reject) => {
+    const frame = document.createElement('iframe');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.tabIndex = -1;
+    frame.style.cssText = 'position:fixed;width:1px;height:1px;left:-10px;top:-10px;opacity:0;pointer-events:none;border:0';
+    frame.src = new URL('interactive-segmenter-frame.html?v=1', document.baseURI).href;
+    let finished = false;
+    const cleanup = () => {
+      if (finished) return;
+      finished = true;
+      window.clearInterval(cancelPoll);
+      window.clearTimeout(timeout);
+      frame.removeEventListener('load', onLoad);
+      frame.removeEventListener('error', onError);
+    };
+    const fail = (error: Error) => {
+      cleanup();
+      frame.remove();
+      reject(error);
+    };
+    const onLoad = () => {
+      cleanup();
+      resolve(frame);
+    };
+    const onError = () => fail(new Error('單人實例分割隔離頁面載入失敗'));
+    const cancelPoll = window.setInterval(() => {
+      if (isCancelled()) fail(new Error('使用者已取消單人實例分割'));
+    }, 100);
+    const timeout = window.setTimeout(
+      () => fail(new Error('單人實例分割隔離頁面載入逾時')),
+      30000,
+    );
+    frame.addEventListener('load', onLoad);
+    frame.addEventListener('error', onError);
+    document.body.appendChild(frame);
   });
 }
 
@@ -140,8 +195,8 @@ export async function prepareInteractiveSubjectPreview(
   if (!video.videoWidth || !video.videoHeight || path.length < 2) {
     throw new Error('影片或追蹤路徑尚未準備好');
   }
-  if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
-    throw new Error('此 Safari 不支援隔離式單人分割 Worker');
+  if (typeof HTMLIFrameElement === 'undefined') {
+    throw new Error('此 Safari 不支援隔離式單人分割頁面');
   }
   const startTime = clamp(options.startTime, 0, video.duration);
   const endTime = clamp(options.endTime, startTime, Math.min(video.duration, startTime + 3));
@@ -153,22 +208,20 @@ export async function prepareInteractiveSubjectPreview(
   const inputCanvas = document.createElement('canvas');
   inputCanvas.width = INPUT_SIZE;
   inputCanvas.height = INPUT_SIZE;
-  const context = inputCanvas.getContext('2d', { alpha: false });
+  const context = inputCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
   if (!context) throw new Error('Safari 無法建立單人分割輸入畫布');
-  // MediaPipe's WASM loader uses importScripts when it runs inside a Worker.
-  // iOS Safari rejects importScripts in module workers, so keep this bundled,
-  // self-contained worker in classic mode.
-  const worker = new Worker(new URL('./interactive-subject-worker.ts', import.meta.url));
   const frames: ModnetPreviewFrame[] = [];
+  let frame: HTMLIFrameElement | null = null;
   let requestId = 1;
   let inferenceTotal = 0;
   const started = performance.now();
   try {
-    await workerRequest(worker, requestId++, {
+    frame = await createSegmenterFrame(options.isCancelled);
+    await frameRequest(frame, requestId++, {
       type: 'init',
       wasmRoot: new URL('mediapipe/', document.baseURI).href,
       modelUrl: new URL('models/interactive_segmentation.task', document.baseURI).href,
-    }, [], options.isCancelled, 90000);
+      }, [], options.isCancelled, 90000);
     for (let index = 0; index < times.length; index += 1) {
       if (options.isCancelled()) throw new Error('使用者已取消單人實例分割');
       const time = times[index];
@@ -197,12 +250,15 @@ export async function prepareInteractiveSubjectPreview(
         box[3],
       ];
       const prompts = promptsForBox(relativeBox, regionWidth, regionHeight);
-      const bitmap = await createImageBitmap(inputCanvas);
-      const reply = await workerRequest(worker, requestId++, {
+      const pixels = context.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE).data;
+      const buffer = pixels.buffer as ArrayBuffer;
+      const reply = await frameRequest(frame, requestId++, {
         type: 'segment',
-        bitmap,
+        width: INPUT_SIZE,
+        height: INPUT_SIZE,
+        buffer,
         ...prompts,
-      }, [bitmap], options.isCancelled, 60000);
+      }, [buffer], options.isCancelled, 60000);
       if (!reply.buffer || !reply.width || !reply.height) {
         throw new Error('單人實例分割沒有回傳遮罩');
       }
@@ -215,8 +271,11 @@ export async function prepareInteractiveSubjectPreview(
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
   } finally {
-    worker.postMessage({ type: 'close' });
-    worker.terminate();
+    frame?.contentWindow?.postMessage(
+      { channel: FRAME_CHANNEL, type: 'close' },
+      window.location.origin,
+    );
+    frame?.remove();
     inputCanvas.width = 1;
     inputCanvas.height = 1;
   }

@@ -44,9 +44,10 @@ contains separate encoder and decoder TFLite models. The tracking box produces
 positive torso strokes and negative surrounding points automatically; the user
 does not draw a brush stroke.
 
-The experiment runs at 5 mask frames per second in a dedicated Web Worker,
-closes every returned `MPMask`, terminates the worker before playback, and is
-not connected to formal export.
+The experiment runs at 5 mask frames per second in a hidden same-origin
+isolation frame because MediaPipe's WASM bootstrap is not reliable inside an
+iOS Safari Worker. It closes every returned `MPMask`, removes the isolation
+frame before playback, and is not connected to formal export.
 
 - Source: https://storage.googleapis.com/mediapipe-models/interactive_segmenter_v2/magic_touch/int8/1/interactive_segmentation.task
 - Official Web reference: https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/tasks/web/vision/README.md
