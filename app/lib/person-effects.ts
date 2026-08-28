@@ -63,6 +63,7 @@ export type PersonMaskPreparationOptions = {
   endTime: number;
   preserveFraming: boolean;
   retainSourceForCorrections?: boolean;
+  applyPersistentBackgroundExclusion?: boolean;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -226,6 +227,7 @@ export class PersonEffectRenderer {
   private nextCorrectionGroup = 0;
   private activeCorrectionGroup = 0;
   private preparedPreserveFraming = false;
+  private preparedUseBackgroundExclusion = true;
 
   private constructor(segmenter: MagicPoseMatte) {
     this.segmenter = segmenter;
@@ -337,7 +339,9 @@ export class PersonEffectRenderer {
     }
     this.fillShortLeadingBodyCoreGaps();
     this.stabilizePreparedBackward();
-    excludePersistentBackground(this.preparedMasks);
+    if (this.preparedUseBackgroundExclusion) {
+      excludePersistentBackground(this.preparedMasks);
+    }
     for (const prepared of this.preparedMasks) this.applyCorrections(prepared);
     this.resetPlayback();
   }
@@ -535,6 +539,7 @@ export class PersonEffectRenderer {
     const totalFrames = Math.max(1, Math.ceil((endTime - startTime) / PREPARE_INTERVAL));
     this.clearPrepared();
     this.preparedPreserveFraming = options.preserveFraming;
+    this.preparedUseBackgroundExclusion = options.applyPersistentBackgroundExclusion !== false;
     const previousWeight = options.preserveFraming ? 0.42 : 0.58;
     let previousPrepared: PreparedMask | null = null;
     video.pause();
@@ -570,7 +575,9 @@ export class PersonEffectRenderer {
       }
       this.fillShortLeadingBodyCoreGaps();
       this.stabilizePreparedBackward();
-      excludePersistentBackground(this.preparedMasks);
+      if (this.preparedUseBackgroundExclusion) {
+        excludePersistentBackground(this.preparedMasks);
+      }
       for (const prepared of this.preparedMasks) this.applyCorrections(prepared);
       options.onProgress(1);
     } catch (error) {

@@ -811,6 +811,7 @@ export default function Home() {
         endTime: testEnd,
         preserveFraming: false,
         retainSourceForCorrections: true,
+        applyPersistentBackgroundExclusion: false,
         onProgress: (next) => {
           setProgress(next * 0.9);
           setNotice('先逐格鎖定主角並去背 · ' + Math.round(next * 100) + '%');
