@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v11-audio-unlock';
+const VERSION = 'nivitrack-12-tools-v12-cancellable-export';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

@@ -1105,7 +1105,7 @@ export default function Home() {
       if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       if (operation.kind === 'remove-background') {
         setNotice('正在啟用原聲通道…');
-        await exporterRef.current.unlockAudioForExport();
+        await exporterRef.current.unlockMediaForExport();
         modnetPreviewTimelineRef.current?.close();
         modnetPreviewTimelineRef.current = null;
         setBackgroundPreviewReady(false);
@@ -1129,6 +1129,18 @@ export default function Home() {
         operation,
         codec,
         backgroundTimeline: exportTimeline ?? undefined,
+        onStage: operation.kind === 'remove-background'
+          ? (stage) => {
+              const label = stage === 'audio'
+                ? '確認原聲通道…'
+                : stage === 'recorder'
+                  ? '建立 MP4 編碼器…'
+                  : stage === 'seek'
+                    ? '影片定位回開頭…'
+                    : '等待影片第一個編碼影格…';
+              setNotice(label);
+            }
+          : undefined,
         onProgress: (next) => {
           const displayed = operation.kind === 'remove-background' ? 0.4 + next * 0.6 : next;
           setProgress(displayed);

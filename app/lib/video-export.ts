@@ -50,6 +50,7 @@ export type ExportOptions = {
   operation: ExportOperation;
   codec: 'h264' | 'hevc';
   backgroundTimeline?: ModnetPreviewTimeline;
+  onStage?: (stage: 'audio' | 'recorder' | 'seek' | 'playback') => void;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -284,6 +285,47 @@ export function getFilterCss(preset: FilterPreset, strength: number) {
 function even(value: number) {
   const rounded = Math.max(2, Math.round(value));
   return rounded % 2 === 0 ? rounded : rounded - 1;
+}
+
+function withTimeout<T>(operation: Promise<T>, milliseconds: number, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(message)), milliseconds);
+    operation.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+function withCancellation<T>(
+  operation: Promise<T>,
+  isCancelled: () => boolean,
+  message = '使用者已取消輸出',
+) {
+  return new Promise<T>((resolve, reject) => {
+    const poll = window.setInterval(() => {
+      if (!isCancelled()) return;
+      cleanup();
+      reject(new Error(message));
+    }, 100);
+    const cleanup = () => window.clearInterval(poll);
+    operation.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 function sourceOutputSize(video: HTMLVideoElement): [number, number] {
@@ -577,8 +619,18 @@ export class RealtimeVideoExporter {
     return this.destination!.stream.getAudioTracks();
   }
 
-  async unlockAudioForExport() {
-    await this.prepareAudio();
+  async unlockMediaForExport() {
+    const audioReady = this.prepareAudio();
+    const playbackReady = withTimeout(
+      this.video.play(),
+      6000,
+      'Safari 預先啟用影片播放逾時，請重新點一次輸出',
+    );
+    try {
+      await Promise.all([audioReady, playbackReady]);
+    } finally {
+      this.video.pause();
+    }
   }
 
   async export(
@@ -606,7 +658,9 @@ export class RealtimeVideoExporter {
       : null;
     const originalTime = this.video.currentTime;
     const originalRate = this.video.playbackRate;
-    const audioTracks = await this.prepareAudio();
+    options.onStage?.('audio');
+    const audioTracks = await withCancellation(this.prepareAudio(), options.isCancelled);
+    options.onStage?.('recorder');
     const canvasStream = canvas.captureStream(30);
     const stream = new MediaStream([
       ...canvasStream.getVideoTracks(),
@@ -637,15 +691,26 @@ export class RealtimeVideoExporter {
         backgroundRenderer = await Renderer.create();
       }
       this.video.pause();
-      await seek(this.video, 0);
+      options.onStage?.('seek');
+      await withCancellation(seek(this.video, 0), options.isCancelled);
       this.video.playbackRate = 1;
       drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer, backgroundRenderer, options.backgroundTimeline ?? null);
       recorder.start(1000);
       recorderStarted = true;
+      options.onStage?.('playback');
 
       await new Promise<void>((resolve, reject) => {
         let finished = false;
+        const playbackTimeout = window.setTimeout(
+          () => settle(new Error('Safari 啟動影片編碼播放逾時，請重新點一次輸出')),
+          10000,
+        );
+        const cancelPoll = window.setInterval(() => {
+          if (options.isCancelled()) settle(new Error('使用者已取消輸出'));
+        }, 100);
         const cleanup = () => {
+          window.clearTimeout(playbackTimeout);
+          window.clearInterval(cancelPoll);
           this.video.removeEventListener('ended', ended);
           this.video.removeEventListener('error', failed);
           if (frameCallback && 'cancelVideoFrameCallback' in this.video) {
@@ -661,6 +726,7 @@ export class RealtimeVideoExporter {
           else resolve();
         };
         const render = (mediaTime: number) => {
+          window.clearTimeout(playbackTimeout);
           if (options.isCancelled()) {
             this.video.pause();
             settle(new Error('使用者已取消輸出'));
@@ -685,6 +751,7 @@ export class RealtimeVideoExporter {
           animationFrame = requestAnimationFrame(animation);
         };
         const ended = () => {
+          window.clearTimeout(playbackTimeout);
           render(this.video.duration);
           settle();
         };
