@@ -358,6 +358,21 @@ export class PersonEffectRenderer {
     this.rebuildPreparedMasks();
   }
 
+  inspectPreparedMask(time: number) {
+    const prepared = this.preparedMaskAt(time);
+    if (!prepared || prepared.alpha.length === 0) return null;
+    let visible = 0;
+    let maximum = 0;
+    for (const value of prepared.alpha) {
+      if (value > 16) visible += 1;
+      maximum = Math.max(maximum, value);
+    }
+    return {
+      visibleRatio: visible / prepared.alpha.length,
+      maximum,
+    };
+  }
+
   paintCorrection(
     time: number,
     normalizedCanvasX: number,

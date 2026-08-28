@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-matte-safe256-white-v1';
+const VERSION = 'nivitrack-matte-preview-diagnostic-v1';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

@@ -89,6 +89,21 @@ function clampTime(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+function visiblePixelRatio(source: CanvasImageSource) {
+  const sample = document.createElement('canvas');
+  sample.width = 48;
+  sample.height = 48;
+  const context = sample.getContext('2d', { alpha: false, willReadFrequently: true });
+  if (!context) return 0;
+  context.drawImage(source, 0, 0, sample.width, sample.height);
+  const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+  let visible = 0;
+  for (let index = 0; index < pixels.length; index += 4) {
+    if (pixels[index] + pixels[index + 1] + pixels[index + 2] > 36) visible += 1;
+  }
+  return visible / (pixels.length / 4);
+}
+
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -825,7 +840,15 @@ export default function Home() {
       renderer.resetPlayback();
       renderer.render(video, previewCanvas, smoothedPath, testPreviewTime, subjectScale, personEffects);
       setShowEffectPreview(true);
-        setNotice('3 秒去背完成；請重播檢查人物是否穩定、背景是否可接受');
+      const mask = renderer.inspectPreparedMask(testPreviewTime);
+      const sourceRatio = visiblePixelRatio(video);
+      const previewRatio = visiblePixelRatio(previewCanvas);
+      const percent = (value: number) => Math.round(value * 100);
+      setNotice(
+        '3 秒診斷：來源 ' + percent(sourceRatio) + '%／遮罩 '
+        + (mask ? percent(mask.visibleRatio) + '%' : '無')
+        + '／預覽 ' + percent(previewRatio) + '%',
+      );
     } catch (error) {
       setShowEffectPreview(false);
       setEffectTestPassed(false);
