@@ -9,7 +9,6 @@ NiviTrack 是一個為 iPhone Safari 設計的本機影片追蹤 Web App。選�
 - Web App：<https://nilson0606.github.io/nivitrack-iphone/>
 - HTML 使用手冊：<https://nilson0606.github.io/nivitrack-iphone/manual.html>
 - 程式碼：<https://github.com/nilson0606/nivitrack-iphone>
-- 人物特效路線圖：[EFFECTS-ROADMAP.md](EFFECTS-ROADMAP.md)
 - 費用：免費，不需要 GitHub 帳號
 - 支援範圍：iPhone、iOS 26、Safari
 
@@ -81,18 +80,6 @@ NiviTrack 會直接讀取原始影片，不需要先轉成 MP4。
 6. 從 iPhone 分享選單選擇「儲存影片」或「儲存到檔案」。
 
 「HEVC 母片」的容器是 MP4，不是 MOV。若 HEVC 按鈕無法使用，請改用相容性最高的 H.264 MP4。
-
-## 可選人物去背
-
-所有影片都必須先完成整支 ViT 主角追蹤。去背採用已標記的堪用基準：主角框限制、MagicTouch＋Pose 人體核心保護、光流防閃與時間背景排除。它不使用 EdgeTAM，也不使用 ONNX WebGPU 去背。
-
-1. 完成整支影片的 ViT 追蹤。
-2. 在「穩定人物去背」開啟去背；若不要去背可直接輸出。
-3. 選擇 3 秒測試起點，點「測試 3 秒去背」。
-4. 重播結果，確認人物閃爍與背景殘留是否可接受。
-5. 滿意後再輸出相容 MP4 或 HEVC 母片；完整輸出保留原聲。
-
-去背固定為原色主角、純黑背景、無邊框、零分身。兩個人完全重疊、快速動作或背景物貼近身體時仍可能有少量殘留，是否堪用以 iPhone 實際結果為準。
 
 ## 處理下一支影片
 

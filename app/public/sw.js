@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-matte-preview-short-safe-v1';
+const VERSION = 'nivitrack-no-effects-stable-v2';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -8,14 +8,9 @@ const APP_SHELL = [
   APP_ENTRY,
   appAsset('manifest.webmanifest'),
   appAsset('og.png'),
-  appAsset('manual.html'),
 ];
 const MODEL_ASSETS = [
   appAsset('models/vittrack.onnx'),
-  appAsset('models/magic_touch.tflite'),
-  appAsset('models/pose_landmarker_full.task'),
-  appAsset('mediapipe/vision_wasm_internal.js'),
-  appAsset('mediapipe/vision_wasm_internal.wasm'),
   appAsset('models/ssdlite_mobilenet_v2/model.json'),
   appAsset('models/ssdlite_mobilenet_v2/group1-shard1of5'),
   appAsset('models/ssdlite_mobilenet_v2/group1-shard2of5'),
@@ -42,8 +37,9 @@ self.addEventListener('activate', (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            // Keep older app caches while an already-open Safari page may still
-            // reference its hashed JS/CSS. Only obsolete model caches are removed.
+            // Keep older app caches while already-open pages still reference their
+            // hashed CSS/JS files. Removing them during activation can leave Safari
+            // displaying only the unstyled server-rendered HTML after a reload.
             .filter((key) => key.startsWith('nivitrack-') && key.endsWith('-models') && key !== MODEL_CACHE)
             .map((key) => caches.delete(key)),
         ),
@@ -60,8 +56,8 @@ self.addEventListener('fetch', (event) => {
 
   if (request.mode === 'navigate') {
     event.respondWith(
-      // GitHub Pages replaces hashed assets on every deployment. Always bypass
-      // the HTTP cache for HTML so it cannot point at deleted asset names.
+      // GitHub Pages replaces hashed assets on every deployment. Always bypass the
+      // HTTP cache for HTML so a stale document never points at deleted asset names.
       fetch(request, { cache: 'no-store' })
         .then((response) => {
           if (response && response.ok && response.type === 'basic') {
@@ -84,8 +80,7 @@ self.addEventListener('fetch', (event) => {
       return fetch(request).then((response) => {
         if (!response || !response.ok || response.type !== 'basic') return response;
         const copy = response.clone();
-        const isModel = url.pathname.includes('/models/') || url.pathname.includes('/mediapipe/') || url.pathname.includes('/ort/');
-        caches.open(isModel ? MODEL_CACHE : APP_CACHE).then((cache) => cache.put(request, copy));
+        caches.open(APP_CACHE).then((cache) => cache.put(request, copy));
         return response;
       });
     }),

@@ -12,19 +12,11 @@ import type { ObjectDetection } from '@tensorflow-models/coco-ssd';
 import { Box, TrackResult, VitTracker } from '../lib/vit-tracker';
 import {
   AspectPreset,
-  configureOutputCanvas,
   getRecorderSupport,
   RealtimeVideoExporter,
   RecorderSupport,
-  smoothTrackPath,
   TrackPoint,
 } from '../lib/video-export';
-import {
-  DEFAULT_PERSON_EFFECTS,
-  MaskCorrectionMode,
-  PersonEffectOptions,
-  PersonEffectRenderer,
-} from '../lib/person-effects';
 
 type Capability = {
   label: string;
@@ -39,7 +31,7 @@ type VideoInfo = {
   resolution: string;
 };
 
-type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'effect-testing' | 'exporting';
+type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
 
 type TrackingStats = {
   frames: number;
@@ -62,8 +54,6 @@ type ExportInfo = {
   resolution: string;
 };
 
-type EffectTestWindow = { start: number; end: number };
-
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
@@ -85,25 +75,6 @@ function normalizeBox(start: [number, number], end: [number, number]): Box {
   ];
 }
 
-function clampTime(value: number, minimum: number, maximum: number) {
-  return Math.max(minimum, Math.min(maximum, value));
-}
-
-function visiblePixelRatio(source: CanvasImageSource) {
-  const sample = document.createElement('canvas');
-  sample.width = 48;
-  sample.height = 48;
-  const context = sample.getContext('2d', { alpha: false, willReadFrequently: true });
-  if (!context) return 0;
-  context.drawImage(source, 0, 0, sample.width, sample.height);
-  const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
-  let visible = 0;
-  for (let index = 0; index < pixels.length; index += 4) {
-    if (pixels[index] + pixels[index + 1] + pixels[index + 2] > 36) visible += 1;
-  }
-  return visible / (pixels.length / 4);
-}
-
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -114,12 +85,7 @@ export default function Home() {
   const detectorRef = useRef<ObjectDetection | null>(null);
   const selectionRef = useRef<{ time: number; box: Box } | null>(null);
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
-  const effectPreviewCanvasRef = useRef<HTMLCanvasElement>(null);
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
-  const personEffectRendererRef = useRef<PersonEffectRenderer | null>(null);
-  const correctionDrawingRef = useRef(false);
-  const effectReplayTokenRef = useRef(0);
-  const effectReplayMutedRef = useRef<boolean | null>(null);
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -144,16 +110,6 @@ export default function Home() {
   const [exportUrl, setExportUrl] = useState('');
   const [exportBlob, setExportBlob] = useState<Blob | null>(null);
   const [exportInfo, setExportInfo] = useState<ExportInfo | null>(null);
-  const [personEffects, setPersonEffects] = useState<PersonEffectOptions>(DEFAULT_PERSON_EFFECTS);
-  const [showEffectPreview, setShowEffectPreview] = useState(false);
-  const [effectTestPassed, setEffectTestPassed] = useState(false);
-  const [editingMask, setEditingMask] = useState(false);
-  const [correctionMode, setCorrectionMode] = useState<MaskCorrectionMode>('remove');
-  const [correctionBrush, setCorrectionBrush] = useState(28);
-  const [correctionCount, setCorrectionCount] = useState(0);
-  const [correctionTime, setCorrectionTime] = useState(0);
-  const [effectTestWindow, setEffectTestWindow] = useState<EffectTestWindow | null>(null);
-  const [replayingEffectTest, setReplayingEffectTest] = useState(false);
 
   useEffect(() => {
     const support = getRecorderSupport();
@@ -161,10 +117,9 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MagicTouch × Pose', available: typeof WebAssembly !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
-        { label: '時間穩定', detail: '光流防閃', available: true },
+        { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
         { label: '相容分享', detail: 'H.264 / AAC MP4', available: Boolean(support.h264) },
         { label: 'HEVC 母片', detail: 'HEVC / AAC', available: Boolean(support.hevc) },
         { label: '離線安裝', detail: 'Service Worker', available: 'serviceWorker' in navigator },
@@ -197,7 +152,6 @@ export default function Home() {
   useEffect(() => {
     return () => {
       void exporterRef.current?.dispose();
-      personEffectRendererRef.current?.close();
     };
   }, []);
 
@@ -205,49 +159,6 @@ export default function Home() {
     () => capabilities.filter((item) => item.available).length,
     [capabilities],
   );
-
-  function clearRenderedOutput() {
-    stopEffectReplay();
-    personEffectRendererRef.current?.clearPrepared();
-    correctionDrawingRef.current = false;
-    setEditingMask(false);
-    setEffectTestWindow(null);
-    setShowEffectPreview(false);
-    setEffectTestPassed(false);
-    setExportUrl('');
-    setExportBlob(null);
-    setExportInfo(null);
-  }
-
-  function stopEffectReplay() {
-    effectReplayTokenRef.current += 1;
-    const video = videoRef.current;
-    video?.pause();
-    if (video && effectReplayMutedRef.current !== null) {
-      video.muted = effectReplayMutedRef.current;
-    }
-    effectReplayMutedRef.current = null;
-    setReplayingEffectTest(false);
-  }
-
-  function updatePersonEffects(patch: Partial<PersonEffectOptions>) {
-    setPersonEffects((current) => ({ ...current, ...patch }));
-    clearRenderedOutput();
-  }
-
-  async function getPersonEffectRenderer() {
-    if (!personEffectRendererRef.current) {
-      const wasmBase = new URL('mediapipe/', document.baseURI).href;
-      const subjectModelUrl = new URL('models/magic_touch.tflite', document.baseURI).href;
-      const poseModelUrl = new URL('models/pose_landmarker_full.task', document.baseURI).href;
-      personEffectRendererRef.current = await PersonEffectRenderer.create(
-        wasmBase,
-        subjectModelUrl,
-        poseModelUrl,
-      );
-    }
-    return personEffectRendererRef.current;
-  }
 
   function openVideoPicker() {
     const input = inputRef.current;
@@ -271,13 +182,9 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
-    setShowEffectPreview(false);
-    setEffectTestPassed(false);
-    personEffectRendererRef.current?.reset();
-    setCorrectionCount(0);
     setProgress(0);
     setPhase('choose');
-    setNotice('正在讀取追蹤影片…');
+    setNotice('正在直接讀取原始影片…');
   }
 
   function readMetadata() {
@@ -352,10 +259,6 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
-    setShowEffectPreview(false);
-    setEffectTestPassed(false);
-    personEffectRendererRef.current?.reset();
-    setCorrectionCount(0);
     setNotice('用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawFrame(null));
   }
@@ -567,10 +470,6 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
-    setShowEffectPreview(false);
-    setEffectTestPassed(false);
-    personEffectRendererRef.current?.reset();
-    setCorrectionCount(0);
     setProgress(0);
     setCurrentScore(null);
 
@@ -656,292 +555,6 @@ export default function Home() {
     }
   }
 
-  function renderCorrectionPreview(at = videoRef.current?.currentTime ?? correctionTime) {
-    const video = videoRef.current;
-    const canvas = effectPreviewCanvasRef.current;
-    const renderer = personEffectRendererRef.current;
-    if (!video || !canvas || !renderer || trackPath.length < 2) return;
-    configureOutputCanvas(canvas, aspect);
-    renderer.render(
-      video,
-      canvas,
-      smoothTrackPath(trackPath, smoothness),
-      at,
-      subjectScale,
-      personEffects,
-    );
-    setShowEffectPreview(true);
-  }
-
-  function beginMaskCorrection() {
-    const video = videoRef.current;
-    const window = effectTestWindow;
-    if (!video || !window || !personEffectRendererRef.current) return;
-    video.pause();
-    const at = clampTime(video.currentTime, window.start, window.end);
-    setCorrectionTime(at);
-    setEditingMask(true);
-    void seekTo(at).then(() => renderCorrectionPreview(at)).catch((error) => {
-      setNotice(error instanceof Error ? error.message : String(error));
-    });
-    setNotice('修正主角：紅色移除誤入背景，綠色補回主角；閃爍由系統自動穩定');
-  }
-
-  function closeMaskCorrection() {
-    correctionDrawingRef.current = false;
-    personEffectRendererRef.current?.endCorrectionStroke();
-    setEditingMask(false);
-    setNotice(correctionCount > 0 ? '修正已保存，正式輸出時會自動套用' : '未加入人工修正');
-  }
-
-  function seekCorrectionPreview(at: number) {
-    const video = videoRef.current;
-    const window = effectTestWindow;
-    if (!video || !window) return;
-    const next = clampTime(at, window.start, window.end);
-    setCorrectionTime(next);
-    video.pause();
-    if (Math.abs(video.currentTime - next) < 0.001) {
-      renderCorrectionPreview(next);
-    } else {
-      video.currentTime = next;
-    }
-  }
-
-  function handleVideoSeeked() {
-    if (!editingMask) return;
-    const at = videoRef.current?.currentTime ?? correctionTime;
-    setCorrectionTime(at);
-    renderCorrectionPreview(at);
-  }
-
-  function paintMaskCorrection(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!editingMask || !correctionDrawingRef.current) return;
-    const canvas = effectPreviewCanvasRef.current;
-    const video = videoRef.current;
-    const renderer = personEffectRendererRef.current;
-    if (!canvas || !video || !renderer) return;
-    const bounds = canvas.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0) return;
-    const x = clampTime((event.clientX - bounds.left) / bounds.width, 0, 1);
-    const y = clampTime((event.clientY - bounds.top) / bounds.height, 0, 1);
-    const brushPixels = correctionBrush * canvas.width / bounds.width;
-    const count = renderer.paintCorrection(
-      video.currentTime,
-      x,
-      y,
-      brushPixels,
-      correctionMode,
-      video,
-      canvas,
-      smoothTrackPath(trackPath, smoothness),
-      subjectScale,
-    );
-    setCorrectionCount(count);
-    setExportUrl('');
-    setExportBlob(null);
-    setExportInfo(null);
-    renderCorrectionPreview(video.currentTime);
-  }
-
-  function startMaskCorrection(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!editingMask) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    correctionDrawingRef.current = true;
-    personEffectRendererRef.current?.beginCorrectionStroke();
-    paintMaskCorrection(event);
-  }
-
-  function finishMaskCorrection(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!editingMask) return;
-    correctionDrawingRef.current = false;
-    personEffectRendererRef.current?.endCorrectionStroke();
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }
-
-  function undoMaskCorrection() {
-    const count = personEffectRendererRef.current?.undoCorrection() ?? 0;
-    setCorrectionCount(count);
-    renderCorrectionPreview();
-    setNotice(count > 0 ? '已復原上一筆修正' : '所有人工修正已清除');
-  }
-
-  function clearMaskCorrections() {
-    personEffectRendererRef.current?.clearCorrections();
-    setCorrectionCount(0);
-    renderCorrectionPreview();
-    setNotice('人工修正已全部清除；保留自動時間穩定');
-  }
-
-  async function runEffectTest() {
-    const video = videoRef.current;
-    const previewCanvas = effectPreviewCanvasRef.current;
-    const selection = selectionRef.current;
-    if (!video || !previewCanvas || !selection || trackPath.length < 2) {
-      setNotice('請先完成整支影片的 ViT 追蹤');
-      return;
-    }
-    if (!personEffects.enabled) {
-      setNotice('請先開啟去背');
-      return;
-    }
-
-    clearRenderedOutput();
-    cancelRef.current = false;
-    setPhase('effect-testing');
-    setProgress(0);
-    setCurrentScore(null);
-    setNotice('正在載入本機指定主角去背模型與時間穩定…');
-    const testStart = Math.min(video.currentTime, Math.max(0, video.duration - 3));
-    const testEnd = Math.min(video.duration, testStart + 3);
-    const testPreviewTime = testStart + (testEnd - testStart) * 0.5;
-    const interval = 1 / 10;
-    const totalFrames = Math.max(1, Math.ceil((testEnd - testStart) / interval));
-
-    try {
-      const renderer = await getPersonEffectRenderer();
-      configureOutputCanvas(previewCanvas, aspect);
-      const smoothedPath = smoothTrackPath(trackPath, smoothness);
-      video.pause();
-
-      await renderer.prepare(video, smoothedPath, {
-        startTime: testStart,
-        endTime: testEnd,
-        preserveFraming: false,
-        retainSourceForCorrections: true,
-        applyPersistentBackgroundExclusion: false,
-        onProgress: (next) => {
-          setProgress(next * 0.9);
-          setNotice('先逐格鎖定主角並去背 · ' + Math.round(next * 100) + '%');
-        },
-        isCancelled: () => cancelRef.current,
-      });
-      renderer.resetPlayback();
-
-      for (let frame = 0; frame <= totalFrames; frame += 1) {
-        if (cancelRef.current) throw new Error('使用者已取消去背測試');
-        const at = Math.min(testEnd, testStart + frame * interval);
-        await seekTo(at);
-        renderer.render(video, previewCanvas, smoothedPath, at, subjectScale, personEffects);
-        setShowEffectPreview(true);
-        const next = frame / Math.max(1, totalFrames);
-        setProgress(0.9 + next * 0.1);
-        setNotice('產生去背預覽 · ' + Math.round(next * 100) + '%');
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      }
-
-      setProgress(1);
-      setEffectTestPassed(true);
-      setEffectTestWindow({ start: testStart, end: testEnd });
-      setCorrectionTime(testPreviewTime);
-      setPhase('path-ready');
-      await seekTo(testPreviewTime);
-      renderer.resetPlayback();
-      renderer.render(video, previewCanvas, smoothedPath, testPreviewTime, subjectScale, personEffects);
-      setShowEffectPreview(true);
-      const mask = renderer.inspectPreparedMask(testPreviewTime);
-      const sourceRatio = visiblePixelRatio(video);
-      const previewRatio = visiblePixelRatio(previewCanvas);
-      const percent = (value: number) => Math.round(value * 100);
-      setNotice(
-        '3 秒診斷：來源 ' + percent(sourceRatio) + '%／遮罩 '
-        + (mask ? percent(mask.visibleRatio) + '%' : '無')
-        + '／預覽 ' + percent(previewRatio) + '%',
-      );
-    } catch (error) {
-      setShowEffectPreview(false);
-      setEffectTestPassed(false);
-      setPhase('path-ready');
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      video.pause();
-      await seekTo(testPreviewTime).catch(() => undefined);
-    }
-  }
-
-  async function replayEffectTest() {
-    if (replayingEffectTest) {
-      stopEffectReplay();
-      setNotice('已停止重播 3 秒成果');
-      return;
-    }
-    const video = videoRef.current;
-    const previewCanvas = effectPreviewCanvasRef.current;
-    const renderer = personEffectRendererRef.current;
-    const window = effectTestWindow;
-    if (!video || !previewCanvas || !renderer || !window || trackPath.length < 2) {
-      setNotice('請先完成 3 秒去背測試');
-      return;
-    }
-
-    const replayToken = effectReplayTokenRef.current + 1;
-    effectReplayTokenRef.current = replayToken;
-    effectReplayMutedRef.current = video.muted;
-    video.muted = true;
-    setReplayingEffectTest(true);
-    setShowEffectPreview(true);
-    setNotice('正在重播 3 秒成果（不需重新計算）');
-
-    try {
-      const smoothedPath = smoothTrackPath(trackPath, smoothness);
-      video.pause();
-      await seekTo(window.start);
-      if (effectReplayTokenRef.current !== replayToken) return;
-      renderer.resetPlayback();
-      renderer.render(
-        video,
-        previewCanvas,
-        smoothedPath,
-        window.start,
-        subjectScale,
-        personEffects,
-      );
-      await video.play();
-
-      while (
-        effectReplayTokenRef.current === replayToken
-        && !video.paused
-        && video.currentTime < window.end
-      ) {
-        renderer.render(
-          video,
-          previewCanvas,
-          smoothedPath,
-          video.currentTime,
-          subjectScale,
-          personEffects,
-        );
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      }
-
-      if (effectReplayTokenRef.current !== replayToken) return;
-      video.pause();
-      const midpoint = window.start + (window.end - window.start) * 0.5;
-      await seekTo(midpoint);
-      renderer.resetPlayback();
-      renderer.render(
-        video,
-        previewCanvas,
-        smoothedPath,
-        midpoint,
-        subjectScale,
-        personEffects,
-      );
-      setNotice('3 秒成果重播完成');
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      if (effectReplayTokenRef.current === replayToken) {
-        if (effectReplayMutedRef.current !== null) {
-          video.muted = effectReplayMutedRef.current;
-        }
-        effectReplayMutedRef.current = null;
-        setReplayingEffectTest(false);
-      }
-    }
-  }
   async function exportVideo(codec: 'h264' | 'hevc') {
     const video = videoRef.current;
     const renderCanvas = renderCanvasRef.current;
@@ -949,50 +562,26 @@ export default function Home() {
       setNotice('請先完成整支影片的 ViT 追蹤');
       return;
     }
-    if (personEffects.enabled && !effectTestPassed) {
-      setNotice('請先完成 3 秒去背測試，再輸出完整影片');
-      return;
-    }
     cancelRef.current = false;
-    setShowEffectPreview(false);
     setPhase('exporting');
     setProgress(0);
     setNotice(codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
 
     try {
       if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
-      setNotice('正在啟動 Safari 音訊編碼…');
-      await exporterRef.current.primeAudio();
-      const effectRenderer = personEffects.enabled ? await getPersonEffectRenderer() : undefined;
-      if (effectRenderer) {
-        await effectRenderer.prepare(video, smoothTrackPath(trackPath, smoothness), {
-          startTime: 0,
-          endTime: video.duration,
-          preserveFraming: false,
-          onProgress: (next) => {
-            setProgress(next * 0.8);
-            setNotice('先完成整支影片的主角去背 · ' + Math.round(next * 100) + '%');
-          },
-          isCancelled: () => cancelRef.current,
-        });
-        effectRenderer.resetPlayback();
-        setNotice('主角去背完成，正在編碼…');
-      }
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         aspect,
         subjectScale,
         smoothness,
         codec,
-        effects: personEffects,
-        effectRenderer,
         onProgress: (next) => {
-          setProgress(personEffects.enabled ? 0.8 + next * 0.2 : next);
+          setProgress(next);
           setNotice('本機編碼中 · ' + Math.round(next * 100) + '%');
         },
         isCancelled: () => cancelRef.current,
       });
       const baseName = (sourceFile?.name ?? 'NiviTrack').replace(/\.[^.]+$/, '');
-      const name = baseName + '-NiviTrack' + (personEffects.enabled ? '-Matte' : '') + '-' + aspect.replace(':', 'x') + '.mp4';
+      const name = baseName + '-NiviTrack-' + aspect.replace(':', 'x') + '.mp4';
       setExportBlob(result.blob);
       setExportUrl(URL.createObjectURL(result.blob));
       setExportInfo({
@@ -1032,7 +621,7 @@ export default function Home() {
 
   function cancelTracking() {
     cancelRef.current = true;
-    setNotice(phase === 'exporting' ? '正在取消輸出…' : phase === 'effect-testing' ? '正在取消去背測試…' : '正在取消追蹤…');
+    setNotice(phase === 'exporting' ? '正在取消輸出…' : '正在取消追蹤…');
   }
 
   const step = phase === 'choose' ? 1 : phase === 'select' ? 2 : 3;
@@ -1049,11 +638,11 @@ export default function Home() {
       <section className="hero">
         <div className="eyebrow">IPHONE WEB APP · 技術原型</div>
         <h1>讓主角一直留在<span>畫面正中央。</span></h1>
-        <p>每支 MOV／HEVC／MP4 都必須先完成 ViT 主角追蹤；之後可選擇直接輸出，或在手機本機套用穩定去背。影片不會離開這台裝置。</p>
+        <p>選擇 iPhone 原始 MOV／HEVC，直接在手機裡辨識、追蹤與輸出。影片不會離開這台裝置。</p>
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
           <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>指定主角</span></div>
-          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤、去背與輸出</span></div>
+          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤與輸出</span></div>
         </div>
       </section>
 
@@ -1063,52 +652,42 @@ export default function Home() {
             <button className="picker" type="button" onClick={openVideoPicker}>
               <span className="picker-icon" aria-hidden="true">+</span>
               <strong>選擇一支影片</strong>
-              <small>先框選主角並完成 ViT 追蹤；去背可稍後選擇</small>
-              <em>選片並追蹤</em>
+              <small>支援「照片」與「檔案」中的 MOV、HEVC、MP4</small>
+              <em>選擇影片</em>
             </button>
           ) : (
             <>
               <div className="video-stage">
                 <video
                   ref={videoRef}
-                  className={phase === 'choose' || phase === 'exporting' || (phase === 'effect-testing' && !showEffectPreview) ? '' : 'is-hidden'}
+                  className={phase === 'choose' || phase === 'exporting' ? '' : 'is-hidden'}
                   src={videoUrl}
                   controls
                   playsInline
                   preload="metadata"
                   onLoadedMetadata={readMetadata}
-                  onSeeked={handleVideoSeeked}
                   onError={() => setNotice('Safari 無法解碼這支影片，請保留檔案供實機記錄')}
                 />
                 <canvas
                   ref={canvasRef}
-                  className={phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
+                  className={phase === 'choose' || phase === 'exporting' ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
                   onPointerDown={startBox}
                   onPointerMove={moveBox}
                   onPointerUp={finishBox}
                   onPointerCancel={finishBox}
                 />
-                <canvas
-                  ref={effectPreviewCanvasRef}
-                  className={(showEffectPreview ? 'effect-preview-canvas' : 'effect-preview-canvas is-hidden') + (editingMask ? ' editing-mask' : '')}
-                  aria-label="3 秒人物去背預覽"
-                  onPointerDown={startMaskCorrection}
-                  onPointerMove={paintMaskCorrection}
-                  onPointerUp={finishMaskCorrection}
-                  onPointerCancel={finishMaskCorrection}
-                />
                 <span className="source-badge">
-                  {phase === 'choose' ? '影片本機解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒去背測試' : editingMask ? (correctionMode === 'remove' ? '紅色筆刷 · 移除背景' : '綠色筆刷 · 補回主角') : showEffectPreview ? '穩定去背預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
                 </span>
-                {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
+                {(phase === 'tracking' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>{phase === 'effect-testing' ? '人物去背＋光流防閃' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
+                    <span>score {currentScore === null ? '—' : currentScore.toFixed(3)}</span>
                   </div>
                 )}
               </div>
               <div className="video-actions">
-                {phase !== 'tracking' && phase !== 'effect-testing' && phase !== 'exporting' && (
+                {phase !== 'tracking' && phase !== 'exporting' && (
                   <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
                 )}
                 {phase === 'choose' && (
@@ -1130,8 +709,8 @@ export default function Home() {
                     </button>
                   </>
                 )}
-                {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
-                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'effect-testing' ? '取消去背測試' : '取消追蹤'}</button>
+                {(phase === 'tracking' || phase === 'exporting') && (
+                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : '取消追蹤'}</button>
                 )}
                 {phase === 'complete' && (
                   <>
@@ -1143,79 +722,11 @@ export default function Home() {
                   <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
                 )}
               </div>
-              {phase === 'path-ready' && effectTestPassed && showEffectPreview && effectTestWindow && (
-                <section className={'mask-correction-panel ' + (editingMask ? 'is-editing' : '')}>
-                  <div className="mask-correction-heading">
-                    <div>
-                      <span>Full Pose 人體包絡＋光流防閃已套用</span>
-                      <strong>智慧去背完成</strong>
-                    </div>
-                    {!editingMask ? (
-                      <button type="button" onClick={beginMaskCorrection}>修正主角（最後手段）</button>
-                    ) : (
-                      <b>{correctionCount} 筆修正</b>
-                    )}
-                  </div>
-                  {!editingMask ? (
-                    <>
-                      <p>正常情況直接輸出，不需要手修；只有仍看見明顯誤入物或主角缺角時才開啟修正。</p>
-                      <div className="correction-actions">
-                        <button className="primary" type="button" onClick={() => void replayEffectTest()}>
-                          {replayingEffectTest ? '停止重播' : '▶ 重播 3 秒成果'}
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <label className="correction-timeline">
-                        <span><b>選擇錯誤畫面</b><em>{correctionTime.toFixed(1)} 秒</em></span>
-                        <input
-                          type="range"
-                          min={effectTestWindow.start}
-                          max={effectTestWindow.end}
-                          step="0.033333"
-                          value={correctionTime}
-                          onChange={(event) => seekCorrectionPreview(Number(event.target.value))}
-                        />
-                      </label>
-                      <div className="correction-tools" aria-label="主角修正工具">
-                        <button
-                          className={correctionMode === 'remove' ? 'selected remove' : ''}
-                          type="button"
-                          onClick={() => setCorrectionMode('remove')}
-                        >移除背景</button>
-                        <button
-                          className={correctionMode === 'keep' ? 'selected keep' : ''}
-                          type="button"
-                          onClick={() => setCorrectionMode('keep')}
-                        >補回主角</button>
-                      </div>
-                      <label className="correction-brush">
-                        <span><b>筆刷大小</b><em>{correctionBrush}px</em></span>
-                        <input
-                          type="range"
-                          min="12"
-                          max="72"
-                          step="4"
-                          value={correctionBrush}
-                          onChange={(event) => setCorrectionBrush(Number(event.target.value))}
-                        />
-                      </label>
-                      <p>直接在上方畫面塗抹。移除用於風扇、路人及其他背景；補回用於主角被吃掉的部分。</p>
-                      <div className="correction-actions">
-                        <button type="button" disabled={correctionCount === 0} onClick={undoMaskCorrection}>復原上一筆</button>
-                        <button type="button" disabled={correctionCount === 0} onClick={clearMaskCorrections}>全部清除</button>
-                        <button className="primary" type="button" onClick={closeMaskCorrection}>完成修正</button>
-                      </div>
-                    </>
-                  )}
-                </section>
-              )}
-              {(phase === 'path-ready' || phase === 'effect-testing' || phase === 'exporting') && trackPath.length > 1 && (
+              {(phase === 'path-ready' || phase === 'exporting') && trackPath.length > 1 && (
                 <section className="export-panel">
                   <div className="export-heading">
                     <div>
-                      <span>完整 ViT 路徑已就緒</span>
+                      <span>完整路徑已就緒</span>
                       <strong>選擇輸出構圖</strong>
                     </div>
                     <b>{trackPath.length} 點</b>
@@ -1228,7 +739,7 @@ export default function Home() {
                         type="button"
                         key={preset}
                         disabled={phase === 'exporting'}
-                        onClick={() => { setAspect(preset); clearRenderedOutput(); }}
+                        onClick={() => setAspect(preset)}
                       >
                         {preset}
                       </button>
@@ -1243,7 +754,7 @@ export default function Home() {
                       max="80"
                       value={Math.round(subjectScale * 100)}
                       disabled={phase === 'exporting'}
-                      onChange={(event) => { setSubjectScale(Number(event.target.value) / 100); clearRenderedOutput(); }}
+                      onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
                     />
                   </label>
 
@@ -1255,52 +766,22 @@ export default function Home() {
                       max="100"
                       value={Math.round(smoothness * 100)}
                       disabled={phase === 'exporting'}
-                      onChange={(event) => { setSmoothness(Number(event.target.value) / 100); clearRenderedOutput(); }}
+                      onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
                     />
                   </label>
 
-                  <div className="effect-lab">
-                    <div className="effect-heading">
-                      <div>
-                        <span>可選功能</span>
-                        <strong>穩定人物去背</strong>
-                      </div>
-                      <button
-                        className={personEffects.enabled ? 'selected' : ''}
-                        type="button"
-                        disabled={phase !== 'path-ready'}
-                        onClick={() => updatePersonEffects({ enabled: !personEffects.enabled })}
-                      >
-                        {personEffects.enabled ? '已開啟去背' : '去背效果'}
-                      </button>
-                    </div>
-                    <p className="effect-note">ViT 追蹤維持原樣。開啟後保留原色主角、背景轉成純黑，並用粗白邊遮住部分輪廓毛邊；MagicTouch＋Pose 負責主角遮罩，光流降低逐幀閃爍。</p>
-
-                    {personEffects.enabled && (
-                      <>
-                        <button
-                          className={'effect-test-button ' + (effectTestPassed ? 'passed' : '')}
-                          type="button"
-                          disabled={phase !== 'path-ready'}
-                          onClick={() => void runEffectTest()}
-                        >
-                          {effectTestPassed ? '✓ 3 秒去背測試完成' : '測試 3 秒去背'}
-                        </button>
-                      </>
-                    )}
-                  </div>
                   <div className="export-buttons">
                     <button
                       className="primary"
                       type="button"
-                      disabled={phase !== 'path-ready' || !recorderSupport.h264 || (personEffects.enabled && !effectTestPassed)}
+                      disabled={phase === 'exporting' || !recorderSupport.h264}
                       onClick={() => void exportVideo('h264')}
                     >
                       輸出相容 MP4
                     </button>
                     <button
                       type="button"
-                      disabled={phase !== 'path-ready' || !recorderSupport.hevc || (personEffects.enabled && !effectTestPassed)}
+                      disabled={phase === 'exporting' || !recorderSupport.hevc}
                       onClick={() => void exportVideo('hevc')}
                     >
                       輸出 HEVC 母片（MP4）
@@ -1335,7 +816,7 @@ export default function Home() {
 
         <aside className="side-panel">
           <div className="status-card">
-            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 8}</b></div>
+            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 7}</b></div>
             <div className="capability-list">
               {capabilities.length === 0 ? <p className="checking">正在檢查 Safari…</p> : capabilities.map((item) => (
                 <div className="capability" key={item.label}>
