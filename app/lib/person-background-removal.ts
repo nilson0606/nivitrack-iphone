@@ -10,7 +10,7 @@ import type { Box } from './vit-tracker';
 const LOW_CONFIDENCE_LIMIT = 0.12;
 const MAX_MISSED_FRAMES = 12;
 const MAX_MISSED_POSE_FRAMES = 6;
-const MAX_INCOMPLETE_BAND_FRAMES = 4;
+const MAX_INCOMPLETE_BAND_FRAMES = 1;
 const INFERENCE_SIZE = 256;
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -578,7 +578,7 @@ export function preserveSuddenSubjectLoss(
 
     if (suddenlyIncomplete && priorIncompleteFrames < MAX_INCOMPLETE_BAND_FRAMES) {
       const nextIncompleteFrames = priorIncompleteFrames + 1;
-      const retention = 1 - nextIncompleteFrames * 0.1;
+      const retention = 0.82;
       incompleteBandFrames[band] = nextIncompleteFrames;
       guardedBands += 1;
       for (let y = bandTop; y < Math.min(bottom, bandBottom); y += 1) {

@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v14-subject-completeness';
+const VERSION = 'nivitrack-12-tools-v15-50ms-mask-release';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

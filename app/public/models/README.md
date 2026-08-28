@@ -19,9 +19,9 @@ downsamples stored timeline masks to 256 x 256, and releases the session before
 playback or media encoding.
 
 Export generation also checks the tracked dancer in upper, middle, and lower
-body bands. A band that collapses for only a few mask frames is restored from
-the most recent reliable mask, while persistent changes are accepted after a
-short guard window to avoid permanent ghosting.
+body bands. A band that suddenly collapses receives one short, time-based
+50 ms release from the most recent reliable mask. Persistent changes are then
+accepted immediately to avoid a delayed silhouette during fast movement.
 
 - Source revision: https://huggingface.co/Xenova/modnet/tree/fa2fa546052fba4c08921230a26cc69a333fca12
 - Upstream project: https://github.com/ZHKKKe/MODNet

@@ -13,6 +13,8 @@ import { interpolateBox, type TrackPoint } from './video-export';
 const INFERENCE_SIZE = 384;
 const MASK_SIZE = 256;
 const PREVIEW_FPS = 10;
+const COMPLETENESS_FADE_SECONDS = 0.05;
+const TEMPORAL_HISTORY_WEIGHT = 0.08;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -46,7 +48,25 @@ function downsampleAlpha(source: Float32Array) {
 type ModnetPreviewFrame = {
   time: number;
   alpha: Uint8ClampedArray;
+  guard?: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    bandMask: number;
+  };
 };
+
+function guardRegion(box: Box, sourceWidth: number, sourceHeight: number, bandMask: number) {
+  if (!bandMask) return undefined;
+  return {
+    left: clamp(Math.floor((box[0] / sourceWidth) * MASK_SIZE), 0, MASK_SIZE - 1),
+    right: clamp(Math.ceil(((box[0] + box[2]) / sourceWidth) * MASK_SIZE), 1, MASK_SIZE),
+    top: clamp(Math.floor((box[1] / sourceHeight) * MASK_SIZE), 0, MASK_SIZE - 1),
+    bottom: clamp(Math.ceil(((box[1] + box[3]) / sourceHeight) * MASK_SIZE), 1, MASK_SIZE),
+    bandMask,
+  };
+}
 
 export type ModnetPreviewStats = {
   frames: number;
@@ -179,7 +199,10 @@ class ModnetPreviewGenerator {
           this.missedFrames,
         );
         this.missedFrames = recovered.missedFrames;
-        let current = recovered.alpha;
+        const current = recovered.fresh
+          ? new Float32Array(recovered.alpha)
+          : new Float32Array(plane);
+        let guardedBandMask = 0;
         if (recovered.fresh) {
           const preserved = preserveSuddenSubjectLoss(
             current,
@@ -190,17 +213,37 @@ class ModnetPreviewGenerator {
             regionHeight,
             this.completenessState,
           );
-          current = preserved.alpha;
+          guardedBandMask = preserved.state.incompleteBandFrames.reduce(
+            (mask, frames, band) => frames > 0 ? mask | (1 << band) : mask,
+            0,
+          );
           this.completenessState = preserved.state;
+        } else if (this.missedFrames === 1 && this.previousAlpha?.length === plane) {
+          guardedBandMask = 0b111;
+        } else if (this.missedFrames > 1) {
+          this.completenessState = {
+            referenceAlpha: null,
+            incompleteBandFrames: [0, 0, 0],
+          };
         }
         if (this.previousAlpha?.length === current.length && recovered.fresh) {
           for (let index = 0; index < current.length; index += 1) {
-            current[index] = current[index] * 0.78 + this.previousAlpha[index] * 0.22;
+            current[index] = current[index] * (1 - TEMPORAL_HISTORY_WEIGHT)
+              + this.previousAlpha[index] * TEMPORAL_HISTORY_WEIGHT;
           }
         }
         this.previousAlpha = new Float32Array(current);
         const alpha = downsampleAlpha(current);
-        return { alpha, inferenceMs };
+        const guard = recovered.fresh
+          ? guardRegion(relativeBox, regionWidth, regionHeight, guardedBandMask)
+          : guardedBandMask ? {
+            left: 0,
+            right: MASK_SIZE,
+            top: 0,
+            bottom: MASK_SIZE,
+            bandMask: guardedBandMask,
+          } : undefined;
+        return { alpha, guard, inferenceMs };
       } finally {
         Object.values(outputs).forEach((tensor) => tensor.dispose());
       }
@@ -264,6 +307,25 @@ export class ModnetPreviewTimeline {
       this.mixedAlpha[index] = Math.round(
         before.alpha[index] * (1 - amount) + after.alpha[index] * amount,
       );
+    }
+    const guard = before.guard;
+    const previous = this.frames[low - 1];
+    const guardAge = time - before.time;
+    if (guard && previous && guardAge >= 0 && guardAge < COMPLETENESS_FADE_SECONDS) {
+      const retention = 0.82 * (1 - guardAge / COMPLETENESS_FADE_SECONDS);
+      const bandHeight = Math.max(1, guard.bottom - guard.top);
+      for (let y = guard.top; y < guard.bottom; y += 1) {
+        const band = Math.min(2, Math.floor(((y - guard.top) / bandHeight) * 3));
+        if ((guard.bandMask & (1 << band)) === 0) continue;
+        const row = y * MASK_SIZE;
+        for (let x = guard.left; x < guard.right; x += 1) {
+          const index = row + x;
+          this.mixedAlpha[index] = Math.max(
+            this.mixedAlpha[index],
+            Math.round(previous.alpha[index] * retention),
+          );
+        }
+      }
     }
     return this.mixedAlpha;
   }
@@ -380,7 +442,7 @@ export async function prepareModnetPreview(
       await waitForDecodedFrame(video);
       const result = await generator.infer(video, interpolateBox(path, time));
       inferenceTotal += result.inferenceMs;
-      frames.push({ time, alpha: result.alpha });
+      frames.push({ time, alpha: result.alpha, guard: result.guard });
       options.onProgress((index + 1) / times.length, index + 1, times.length);
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
@@ -390,9 +452,9 @@ export async function prepareModnetPreview(
   return {
     timeline: new ModnetPreviewTimeline(frames),
     stats: {
-      frames: frames.length,
+      frames: times.length,
       elapsedMs: performance.now() - started,
-      averageInferenceMs: inferenceTotal / Math.max(1, frames.length),
+      averageInferenceMs: inferenceTotal / Math.max(1, times.length),
     } satisfies ModnetPreviewStats,
   };
 }

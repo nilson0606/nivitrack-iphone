@@ -247,18 +247,15 @@ function testPartialSubjectLossRecovery() {
     maskHeight,
     initialState,
   );
-  let expired = recovered;
-  for (let frame = 0; frame < 4; frame += 1) {
-    expired = preserveSuddenSubjectLoss(
-      missingTop,
-      maskWidth,
-      maskHeight,
-      [3, 1, 6, 10],
-      maskWidth,
-      maskHeight,
-      expired.state,
-    );
-  }
+  const expired = preserveSuddenSubjectLoss(
+    missingTop,
+    maskWidth,
+    maskHeight,
+    [3, 1, 6, 10],
+    maskWidth,
+    maskHeight,
+    recovered.state,
+  );
   return {
     topTemporarilyPreserved: recovered.alpha[2 * maskWidth + 5] > 0.7,
     lowerBodyUnchanged: recovered.alpha[9 * maskWidth + 5] === missingTop[9 * maskWidth + 5],
