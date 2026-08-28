@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v12-cancellable-export';
+const VERSION = 'nivitrack-12-tools-v13-modnet-384';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

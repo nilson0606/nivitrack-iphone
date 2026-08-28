@@ -8,11 +8,37 @@ import {
 import type { Box } from './vit-tracker';
 import { interpolateBox, type TrackPoint } from './video-export';
 
-const MODEL_SIZE = 256;
+const INFERENCE_SIZE = 384;
+const MASK_SIZE = 256;
 const PREVIEW_FPS = 10;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function downsampleAlpha(source: Float32Array) {
+  const alpha = new Uint8ClampedArray(MASK_SIZE * MASK_SIZE);
+  const scale = INFERENCE_SIZE / MASK_SIZE;
+  for (let y = 0; y < MASK_SIZE; y += 1) {
+    const sourceY = (y + 0.5) * scale - 0.5;
+    const top = clamp(Math.floor(sourceY), 0, INFERENCE_SIZE - 1);
+    const bottom = Math.min(INFERENCE_SIZE - 1, top + 1);
+    const mixY = clamp(sourceY - top, 0, 1);
+    for (let x = 0; x < MASK_SIZE; x += 1) {
+      const sourceX = (x + 0.5) * scale - 0.5;
+      const left = clamp(Math.floor(sourceX), 0, INFERENCE_SIZE - 1);
+      const right = Math.min(INFERENCE_SIZE - 1, left + 1);
+      const mixX = clamp(sourceX - left, 0, 1);
+      const topValue = source[top * INFERENCE_SIZE + left] * (1 - mixX)
+        + source[top * INFERENCE_SIZE + right] * mixX;
+      const bottomValue = source[bottom * INFERENCE_SIZE + left] * (1 - mixX)
+        + source[bottom * INFERENCE_SIZE + right] * mixX;
+      alpha[y * MASK_SIZE + x] = Math.round(
+        clamp(topValue * (1 - mixY) + bottomValue * mixY, 0, 1) * 255,
+      );
+    }
+  }
+  return alpha;
 }
 
 type ModnetPreviewFrame = {
@@ -61,14 +87,14 @@ async function waitForDecodedFrame(video: HTMLVideoElement) {
 class ModnetPreviewGenerator {
   private readonly session: ort.InferenceSession;
   private readonly inputCanvas = document.createElement('canvas');
-  private readonly inputData = new Float32Array(1 * 3 * MODEL_SIZE * MODEL_SIZE);
+  private readonly inputData = new Float32Array(1 * 3 * INFERENCE_SIZE * INFERENCE_SIZE);
   private previousAlpha: Float32Array | null = null;
   private missedFrames = 0;
 
   private constructor(session: ort.InferenceSession) {
     this.session = session;
-    this.inputCanvas.width = MODEL_SIZE;
-    this.inputCanvas.height = MODEL_SIZE;
+    this.inputCanvas.width = INFERENCE_SIZE;
+    this.inputCanvas.height = INFERENCE_SIZE;
   }
 
   static async create() {
@@ -103,11 +129,11 @@ class ModnetPreviewGenerator {
       regionHeight,
       0,
       0,
-      MODEL_SIZE,
-      MODEL_SIZE,
+      INFERENCE_SIZE,
+      INFERENCE_SIZE,
     );
-    const rgba = context.getImageData(0, 0, MODEL_SIZE, MODEL_SIZE).data;
-    const plane = MODEL_SIZE * MODEL_SIZE;
+    const rgba = context.getImageData(0, 0, INFERENCE_SIZE, INFERENCE_SIZE).data;
+    const plane = INFERENCE_SIZE * INFERENCE_SIZE;
     for (let index = 0; index < plane; index += 1) {
       const pixel = index * 4;
       this.inputData[index] = rgba[pixel] / 127.5 - 1;
@@ -115,14 +141,14 @@ class ModnetPreviewGenerator {
       this.inputData[plane * 2 + index] = rgba[pixel + 2] / 127.5 - 1;
     }
 
-    const input = new ort.Tensor('float32', this.inputData, [1, 3, MODEL_SIZE, MODEL_SIZE]);
+    const input = new ort.Tensor('float32', this.inputData, [1, 3, INFERENCE_SIZE, INFERENCE_SIZE]);
     const started = performance.now();
     try {
       const outputs = await this.session.run({ [this.session.inputNames[0]]: input });
       try {
         const inferenceMs = performance.now() - started;
         const output = outputs[this.session.outputNames[0]];
-        if (!output || output.dims.at(-1) !== MODEL_SIZE || output.dims.at(-2) !== MODEL_SIZE) {
+        if (!output || output.dims.at(-1) !== INFERENCE_SIZE || output.dims.at(-2) !== INFERENCE_SIZE) {
           throw new Error('MODNet 輸出尺寸不正確');
         }
         const confidence = output.data as Float32Array;
@@ -134,8 +160,8 @@ class ModnetPreviewGenerator {
         ];
         const selected = selectModnetTrackedAlpha(
           confidence,
-          MODEL_SIZE,
-          MODEL_SIZE,
+          INFERENCE_SIZE,
+          INFERENCE_SIZE,
           relativeBox,
           regionWidth,
           regionHeight,
@@ -154,10 +180,7 @@ class ModnetPreviewGenerator {
           }
         }
         this.previousAlpha = new Float32Array(current);
-        const alpha = new Uint8ClampedArray(plane);
-        for (let index = 0; index < plane; index += 1) {
-          alpha[index] = Math.round(clamp(current[index], 0, 1) * 255);
-        }
+        const alpha = downsampleAlpha(current);
         return { alpha, inferenceMs };
       } finally {
         Object.values(outputs).forEach((tensor) => tensor.dispose());
@@ -179,7 +202,7 @@ export class ModnetPreviewTimeline {
   private readonly frames: ModnetPreviewFrame[];
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
-  private readonly mixedAlpha = new Uint8ClampedArray(MODEL_SIZE * MODEL_SIZE);
+  private readonly mixedAlpha = new Uint8ClampedArray(MASK_SIZE * MASK_SIZE);
   private readonly imageData: ImageData;
 
   constructor(frames: ModnetPreviewFrame[]) {
@@ -187,11 +210,11 @@ export class ModnetPreviewTimeline {
     this.frames = frames;
     this.startTime = frames[0].time;
     this.endTime = frames[frames.length - 1].time;
-    this.maskCanvas.width = MODEL_SIZE;
-    this.maskCanvas.height = MODEL_SIZE;
+    this.maskCanvas.width = MASK_SIZE;
+    this.maskCanvas.height = MASK_SIZE;
     const context = this.maskCanvas.getContext('2d', { alpha: true });
     if (!context) throw new Error('Safari 無法建立 MODNet 遮罩畫布');
-    this.imageData = context.createImageData(MODEL_SIZE, MODEL_SIZE);
+    this.imageData = context.createImageData(MASK_SIZE, MASK_SIZE);
     for (let index = 0; index < this.mixedAlpha.length; index += 1) {
       const pixel = index * 4;
       this.imageData.data[pixel] = 255;

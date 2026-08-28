@@ -13,7 +13,7 @@ const session = await ort.InferenceSession.create(model, {
   executionMode: 'sequential',
   graphOptimizationLevel: 'all',
 });
-const size = 256;
+const size = 384;
 const values = new Float32Array(1 * 3 * size * size);
 const input = new ort.Tensor('float32', values, [1, 3, size, size]);
 let output;
