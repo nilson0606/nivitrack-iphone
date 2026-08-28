@@ -20,14 +20,10 @@ import {
   TrackPoint,
 } from '../lib/video-export';
 import {
-  BackgroundEffect,
-  CloneLayout,
   DEFAULT_PERSON_EFFECTS,
   MaskCorrectionMode,
-  OutlineEffect,
   PersonEffectOptions,
   PersonEffectRenderer,
-  SubjectEffect,
 } from '../lib/person-effects';
 
 type Capability = {
@@ -153,7 +149,7 @@ export default function Home() {
         { label: '人物去背', detail: 'MagicTouch × Pose', available: typeof WebAssembly !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
-        { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
+        { label: '時間穩定', detail: '光流防閃', available: true },
         { label: '相容分享', detail: 'H.264 / AAC MP4', available: Boolean(support.h264) },
         { label: 'HEVC 母片', detail: 'HEVC / AAC', available: Boolean(support.hevc) },
         { label: '離線安裝', detail: 'Service Worker', available: 'serviceWorker' in navigator },
@@ -266,7 +262,7 @@ export default function Home() {
     setCorrectionCount(0);
     setProgress(0);
     setPhase('choose');
-    setNotice('正在直接讀取原始影片…');
+    setNotice('正在讀取追蹤影片…');
   }
 
   function readMetadata() {
@@ -774,7 +770,7 @@ export default function Home() {
       return;
     }
     if (!personEffects.enabled) {
-      setNotice('請先開啟 Stage 1 人物特效');
+      setNotice('請先開啟去背');
       return;
     }
 
@@ -810,14 +806,14 @@ export default function Home() {
       renderer.resetPlayback();
 
       for (let frame = 0; frame <= totalFrames; frame += 1) {
-        if (cancelRef.current) throw new Error('使用者已取消特效測試');
+        if (cancelRef.current) throw new Error('使用者已取消去背測試');
         const at = Math.min(testEnd, testStart + frame * interval);
         await seekTo(at);
         renderer.render(video, previewCanvas, smoothedPath, at, subjectScale, personEffects);
         setShowEffectPreview(true);
         const next = frame / Math.max(1, totalFrames);
         setProgress(0.9 + next * 0.1);
-        setNotice('套用特效測試 · ' + Math.round(next * 100) + '%');
+        setNotice('產生去背預覽 · ' + Math.round(next * 100) + '%');
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
 
@@ -830,7 +826,7 @@ export default function Home() {
       renderer.resetPlayback();
       renderer.render(video, previewCanvas, smoothedPath, testPreviewTime, subjectScale, personEffects);
       setShowEffectPreview(true);
-      setNotice('3 秒自動去背完成；請先重播檢查人物與背景');
+        setNotice('3 秒去背完成；請重播檢查人物是否穩定、背景是否可接受');
     } catch (error) {
       setShowEffectPreview(false);
       setEffectTestPassed(false);
@@ -853,7 +849,7 @@ export default function Home() {
     const renderer = personEffectRendererRef.current;
     const window = effectTestWindow;
     if (!video || !previewCanvas || !renderer || !window || trackPath.length < 2) {
-      setNotice('請先完成 3 秒特效測試');
+      setNotice('請先完成 3 秒去背測試');
       return;
     }
 
@@ -931,7 +927,7 @@ export default function Home() {
       return;
     }
     if (personEffects.enabled && !effectTestPassed) {
-      setNotice('請先完成 3 秒特效測試，再輸出完整影片');
+      setNotice('請先完成 3 秒去背測試，再輸出完整影片');
       return;
     }
     cancelRef.current = false;
@@ -957,7 +953,7 @@ export default function Home() {
           isCancelled: () => cancelRef.current,
         });
         effectRenderer.resetPlayback();
-        setNotice('主角去背完成，正在套用特效與編碼…');
+        setNotice('主角去背完成，正在編碼…');
       }
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         aspect,
@@ -973,7 +969,7 @@ export default function Home() {
         isCancelled: () => cancelRef.current,
       });
       const baseName = (sourceFile?.name ?? 'NiviTrack').replace(/\.[^.]+$/, '');
-      const name = baseName + '-NiviTrack' + (personEffects.enabled ? '-FX' : '') + '-' + aspect.replace(':', 'x') + '.mp4';
+      const name = baseName + '-NiviTrack' + (personEffects.enabled ? '-Matte' : '') + '-' + aspect.replace(':', 'x') + '.mp4';
       setExportBlob(result.blob);
       setExportUrl(URL.createObjectURL(result.blob));
       setExportInfo({
@@ -1013,7 +1009,7 @@ export default function Home() {
 
   function cancelTracking() {
     cancelRef.current = true;
-    setNotice(phase === 'exporting' ? '正在取消輸出…' : phase === 'effect-testing' ? '正在取消特效測試…' : '正在取消追蹤…');
+    setNotice(phase === 'exporting' ? '正在取消輸出…' : phase === 'effect-testing' ? '正在取消去背測試…' : '正在取消追蹤…');
   }
 
   const step = phase === 'choose' ? 1 : phase === 'select' ? 2 : 3;
@@ -1030,11 +1026,11 @@ export default function Home() {
       <section className="hero">
         <div className="eyebrow">IPHONE WEB APP · 技術原型</div>
         <h1>讓主角一直留在<span>畫面正中央。</span></h1>
-        <p>選擇 iPhone 原始 MOV／HEVC，直接在手機裡辨識、追蹤與輸出。影片不會離開這台裝置。</p>
+        <p>每支 MOV／HEVC／MP4 都必須先完成 ViT 主角追蹤；之後可選擇直接輸出，或在手機本機套用穩定去背。影片不會離開這台裝置。</p>
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
           <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>指定主角</span></div>
-          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤與輸出</span></div>
+          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤、去背與輸出</span></div>
         </div>
       </section>
 
@@ -1044,8 +1040,8 @@ export default function Home() {
             <button className="picker" type="button" onClick={openVideoPicker}>
               <span className="picker-icon" aria-hidden="true">+</span>
               <strong>選擇一支影片</strong>
-              <small>支援「照片」與「檔案」中的 MOV、HEVC、MP4</small>
-              <em>選擇影片</em>
+              <small>先框選主角並完成 ViT 追蹤；去背可稍後選擇</small>
+              <em>選片並追蹤</em>
             </button>
           ) : (
             <>
@@ -1072,19 +1068,19 @@ export default function Home() {
                 <canvas
                   ref={effectPreviewCanvasRef}
                   className={(showEffectPreview ? 'effect-preview-canvas' : 'effect-preview-canvas is-hidden') + (editingMask ? ' editing-mask' : '')}
-                  aria-label="3 秒人物特效預覽"
+                  aria-label="3 秒人物去背預覽"
                   onPointerDown={startMaskCorrection}
                   onPointerMove={paintMaskCorrection}
                   onPointerUp={finishMaskCorrection}
                   onPointerCancel={finishMaskCorrection}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '影片本機解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒人物特效測試' : editingMask ? (correctionMode === 'remove' ? '紅色筆刷 · 移除背景' : '綠色筆刷 · 補回主角') : showEffectPreview ? 'Stage 1 特效預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '影片本機解碼' : phase === 'select' ? '手指框選主角' : phase === 'effect-testing' ? '3 秒去背測試' : editingMask ? (correctionMode === 'remove' ? '紅色筆刷 · 移除背景' : '綠色筆刷 · 補回主角') : showEffectPreview ? '穩定去背預覽' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>{phase === 'effect-testing' ? '人物去背＋延遲分身' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
+                    <span>{phase === 'effect-testing' ? '人物去背＋光流防閃' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
                   </div>
                 )}
               </div>
@@ -1112,7 +1108,7 @@ export default function Home() {
                   </>
                 )}
                 {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
-                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'effect-testing' ? '取消特效測試' : '取消追蹤'}</button>
+                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'effect-testing' ? '取消去背測試' : '取消追蹤'}</button>
                 )}
                 {phase === 'complete' && (
                   <>
@@ -1196,7 +1192,7 @@ export default function Home() {
                 <section className="export-panel">
                   <div className="export-heading">
                     <div>
-                      <span>完整路徑已就緒</span>
+                      <span>完整 ViT 路徑已就緒</span>
                       <strong>選擇輸出構圖</strong>
                     </div>
                     <b>{trackPath.length} 點</b>
@@ -1243,8 +1239,8 @@ export default function Home() {
                   <div className="effect-lab">
                     <div className="effect-heading">
                       <div>
-                        <span>STAGE 1</span>
-                        <strong>人物去背與延遲分身</strong>
+                        <span>可選功能</span>
+                        <strong>穩定人物去背</strong>
                       </div>
                       <button
                         className={personEffects.enabled ? 'selected' : ''}
@@ -1252,146 +1248,20 @@ export default function Home() {
                         disabled={phase !== 'path-ready'}
                         onClick={() => updatePersonEffects({ enabled: !personEffects.enabled })}
                       >
-                        {personEffects.enabled ? '已開啟' : '開啟特效'}
+                        {personEffects.enabled ? '已開啟去背' : '跳過去背'}
                       </button>
                     </div>
-                    <p className="effect-note">ViT 追蹤維持原樣；框內使用 MagicTouch＋Pose 去背，骨架保護人體核心，再以光流延續前後遮罩與移動中的背景記憶。所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">ViT 追蹤維持原樣。開啟後只做一件事：保留原色主角、背景轉成純黑；MagicTouch＋Pose 負責主角遮罩，光流降低逐幀閃爍。沒有分身、邊框或其他特效。</p>
 
                     {personEffects.enabled && (
                       <>
-                        <div className="effect-group">
-                          <span>背景</span>
-                          <div className="effect-options three">
-                            {([['original', '原始'], ['black', '純黑'], ['blur', '模糊']] as Array<[BackgroundEffect, string]>).map(([value, label]) => (
-                              <button
-                                className={personEffects.background === value ? 'selected' : ''}
-                                type="button"
-                                key={value}
-                                disabled={phase !== 'path-ready'}
-                                onClick={() => updatePersonEffects({ background: value })}
-                              >{label}</button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="effect-group">
-                          <span>主角</span>
-                          <div className="effect-options three">
-                            {([['original', '原色'], ['blue', '藍色剪影'], ['black', '黑色剪影']] as Array<[SubjectEffect, string]>).map(([value, label]) => (
-                              <button
-                                className={personEffects.subject === value ? 'selected' : ''}
-                                type="button"
-                                key={value}
-                                disabled={phase !== 'path-ready'}
-                                onClick={() => updatePersonEffects({ subject: value })}
-                              >{label}</button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="effect-group">
-                          <span>邊框</span>
-                          <div className="effect-options three">
-                            {([['white', '白邊'], ['neon', '霓虹光'], ['none', '無邊框']] as Array<[OutlineEffect, string]>).map(([value, label]) => (
-                              <button
-                                className={personEffects.outline === value ? 'selected' : ''}
-                                type="button"
-                                key={value}
-                                disabled={phase !== 'path-ready'}
-                                onClick={() => updatePersonEffects({ outline: value })}
-                              >{label}</button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="effect-group">
-                          <span>分身排列</span>
-                          <div className="effect-options two">
-                            {([['trail', '前後殘影'], ['lineup', '左右並排']] as Array<[CloneLayout, string]>).map(([value, label]) => (
-                              <button
-                                className={personEffects.cloneLayout === value ? 'selected' : ''}
-                                type="button"
-                                key={value}
-                                disabled={phase !== 'path-ready'}
-                                onClick={() => updatePersonEffects({ cloneLayout: value })}
-                              >{label}</button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="effect-group">
-                          <span>分身數量</span>
-                          <div className="effect-options five">
-                            {[0, 1, 2, 3, 4].map((count) => (
-                              <button
-                                className={personEffects.cloneCount === count ? 'selected' : ''}
-                                type="button"
-                                key={count}
-                                disabled={phase !== 'path-ready'}
-                                onClick={() => updatePersonEffects({ cloneCount: count })}
-                              >{count}</button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <label className="range-control">
-                          <span><b>分身延遲</b><em>{personEffects.cloneDelay.toFixed(1)} 秒</em></span>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            step="5"
-                            value={Math.round(personEffects.cloneDelay * 100)}
-                            disabled={phase !== 'path-ready' || personEffects.cloneCount === 0}
-                            onChange={(event) => updatePersonEffects({ cloneDelay: Number(event.target.value) / 100 })}
-                          />
-                        </label>
-
-                        <label className="range-control">
-                          <span><b>分身透明度</b><em>{Math.round(personEffects.cloneOpacity * 100)}%</em></span>
-                          <input
-                            type="range"
-                            min="10"
-                            max="100"
-                            step="5"
-                            value={Math.round(personEffects.cloneOpacity * 100)}
-                            disabled={phase !== 'path-ready' || personEffects.cloneCount === 0}
-                            onChange={(event) => updatePersonEffects({ cloneOpacity: Number(event.target.value) / 100 })}
-                          />
-                        </label>
-
-                        <div className="color-control">
-                          <label>
-                            <span>分身顏色</span>
-                            <input
-                              type="color"
-                              value={personEffects.cloneColor}
-                              disabled={phase !== 'path-ready' || personEffects.cloneCount === 0}
-                              onChange={(event) => updatePersonEffects({ cloneColor: event.target.value })}
-                            />
-                          </label>
-                          <div className="color-swatches" aria-label="快速選擇分身顏色">
-                            {['#165dff', '#ff2d55', '#35d292', '#d9f06f', '#9b5cff'].map((color) => (
-                              <button
-                                className={personEffects.cloneColor === color ? 'selected' : ''}
-                                style={{ backgroundColor: color }}
-                                type="button"
-                                key={color}
-                                disabled={phase !== 'path-ready' || personEffects.cloneCount === 0}
-                                aria-label={'選擇 ' + color}
-                                onClick={() => updatePersonEffects({ cloneColor: color })}
-                              />
-                            ))}
-                          </div>
-                        </div>
-
                         <button
                           className={'effect-test-button ' + (effectTestPassed ? 'passed' : '')}
                           type="button"
                           disabled={phase !== 'path-ready'}
                           onClick={() => void runEffectTest()}
                         >
-                          {effectTestPassed ? '✓ 3 秒特效測試完成' : '測試 3 秒特效'}
+                          {effectTestPassed ? '✓ 3 秒去背測試完成' : '測試 3 秒去背'}
                         </button>
                       </>
                     )}

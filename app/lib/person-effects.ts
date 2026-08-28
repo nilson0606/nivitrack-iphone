@@ -28,10 +28,10 @@ export const DEFAULT_PERSON_EFFECTS: PersonEffectOptions = {
   preserveFraming: false,
   background: 'black',
   subject: 'original',
-  outline: 'white',
+  outline: 'none',
   cloneLayout: 'trail',
-  cloneCount: 1,
-  cloneDelay: 0.4,
+  cloneCount: 0,
+  cloneDelay: 0,
   cloneOpacity: 0.72,
   cloneColor: '#165dff',
 };
