@@ -1,4 +1,4 @@
-import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
+import { FilesetResolver, ImageSegmenter, PoseLandmarker } from '@mediapipe/tasks-vision';
 
 import type { Box } from './vit-tracker';
 
@@ -13,6 +13,59 @@ function clamp(value: number, minimum: number, maximum: number) {
 function smoothstep(edge0: number, edge1: number, value: number) {
   const amount = clamp((value - edge0) / Math.max(0.0001, edge1 - edge0), 0, 1);
   return amount * amount * (3 - 2 * amount);
+}
+
+export function constrainSubjectConfidenceToPose(
+  confidence: Float32Array,
+  width: number,
+  height: number,
+  poseConfidence: Float32Array,
+  poseWidth: number,
+  poseHeight: number,
+) {
+  if (confidence.length !== width * height || poseConfidence.length !== poseWidth * poseHeight) {
+    throw new Error('MediaPipe 人體姿態遮罩尺寸不正確');
+  }
+
+  // The pose mask is a body prior, not the final matte. Expand it slightly so
+  // fast limbs, hair and loose clothing still use the finer selfie mask edge.
+  const radius = Math.max(2, Math.round(Math.max(poseWidth, poseHeight) * 0.012));
+  const horizontal = new Float32Array(poseConfidence.length);
+  const expanded = new Float32Array(poseConfidence.length);
+  for (let y = 0; y < poseHeight; y += 1) {
+    const row = y * poseWidth;
+    for (let x = 0; x < poseWidth; x += 1) {
+      let maximum = 0;
+      for (let offset = -radius; offset <= radius; offset += 1) {
+        const sampleX = clamp(x + offset, 0, poseWidth - 1);
+        maximum = Math.max(maximum, poseConfidence[row + sampleX]);
+      }
+      horizontal[row + x] = maximum;
+    }
+  }
+  for (let y = 0; y < poseHeight; y += 1) {
+    for (let x = 0; x < poseWidth; x += 1) {
+      let maximum = 0;
+      for (let offset = -radius; offset <= radius; offset += 1) {
+        const sampleY = clamp(y + offset, 0, poseHeight - 1);
+        maximum = Math.max(maximum, horizontal[sampleY * poseWidth + x]);
+      }
+      expanded[y * poseWidth + x] = maximum;
+    }
+  }
+
+  const constrained = new Float32Array(confidence.length);
+  for (let y = 0; y < height; y += 1) {
+    const poseY = clamp(Math.floor(((y + 0.5) / height) * poseHeight), 0, poseHeight - 1);
+    for (let x = 0; x < width; x += 1) {
+      const poseX = clamp(Math.floor(((x + 0.5) / width) * poseWidth), 0, poseWidth - 1);
+      const bodyPrior = smoothstep(0.08, 0.5, expanded[poseY * poseWidth + poseX]);
+      // A very small floor keeps anti-aliased body edges recoverable, but pushes
+      // confident non-body regions below the existing subject threshold.
+      constrained[y * width + x] = confidence[y * width + x] * (0.035 + bodyPrior * 0.965);
+    }
+  }
+  return constrained;
 }
 
 export function tightenTrackedSubjectEdges(alpha: Float32Array, width: number, height: number) {
@@ -241,6 +294,7 @@ export function stabilizeTrackedSubjectAlpha(
 
 export class PersonBackgroundRenderer {
   private readonly segmenter: ImageSegmenter;
+  private readonly poseLandmarker: PoseLandmarker;
   private readonly inferenceCanvas = document.createElement('canvas');
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
@@ -249,30 +303,55 @@ export class PersonBackgroundRenderer {
   private timestamp = 0;
   private missedFrames = 0;
 
-  private constructor(segmenter: ImageSegmenter) {
+  private constructor(segmenter: ImageSegmenter, poseLandmarker: PoseLandmarker) {
     this.segmenter = segmenter;
+    this.poseLandmarker = poseLandmarker;
   }
 
   static async create() {
     const wasmRoot = new URL('mediapipe/', document.baseURI).href;
     const modelUrl = new URL('models/selfie_segmenter.tflite', document.baseURI).href;
+    const poseModelUrl = new URL('models/pose_landmarker_lite.task', document.baseURI).href;
     const fileset = await FilesetResolver.forVisionTasks(wasmRoot);
-    const canvas = document.createElement('canvas');
-    const common = {
+    const segmenterCanvas = document.createElement('canvas');
+    const segmenterOptions = {
       baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' as const },
       runningMode: 'VIDEO' as const,
       outputConfidenceMasks: true,
       outputCategoryMask: false,
-      canvas,
+      canvas: segmenterCanvas,
     };
+    let segmenter: ImageSegmenter;
     try {
-      return new PersonBackgroundRenderer(await ImageSegmenter.createFromOptions(fileset, common));
+      segmenter = await ImageSegmenter.createFromOptions(fileset, segmenterOptions);
     } catch {
-      return new PersonBackgroundRenderer(await ImageSegmenter.createFromOptions(fileset, {
-        ...common,
+      segmenter = await ImageSegmenter.createFromOptions(fileset, {
+        ...segmenterOptions,
         baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' },
-      }));
+      });
     }
+
+    const poseCanvas = document.createElement('canvas');
+    const poseOptions = {
+      baseOptions: { modelAssetPath: poseModelUrl, delegate: 'GPU' as const },
+      runningMode: 'VIDEO' as const,
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.35,
+      minPosePresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+      outputSegmentationMasks: true,
+      canvas: poseCanvas,
+    };
+    let poseLandmarker: PoseLandmarker;
+    try {
+      poseLandmarker = await PoseLandmarker.createFromOptions(fileset, poseOptions);
+    } catch {
+      poseLandmarker = await PoseLandmarker.createFromOptions(fileset, {
+        ...poseOptions,
+        baseOptions: { modelAssetPath: poseModelUrl, delegate: 'CPU' },
+      });
+    }
+    return new PersonBackgroundRenderer(segmenter, poseLandmarker);
   }
 
   render(video: HTMLVideoElement, outputCanvas: HTMLCanvasElement, box: Box, crop?: Box) {
@@ -303,6 +382,10 @@ export class PersonBackgroundRenderer {
     );
     this.timestamp += 1;
     let currentAlpha: Float32Array | null = null;
+    let personConfidence: Float32Array | null = null;
+    let poseConfidence: Float32Array | null = null;
+    let poseWidth = inferenceWidth;
+    let poseHeight = inferenceHeight;
     let maskWidth = inferenceWidth;
     let maskHeight = inferenceHeight;
     const relativeBox: Box = [
@@ -317,15 +400,37 @@ export class PersonBackgroundRenderer {
       if (!mask) return;
       maskWidth = mask.width;
       maskHeight = mask.height;
+      personConfidence = new Float32Array(mask.getAsFloat32Array());
+    });
+
+    this.poseLandmarker.detectForVideo(this.inferenceCanvas, this.timestamp, (result) => {
+      const mask = result.segmentationMasks?.[0];
+      if (!mask) return;
+      poseWidth = mask.width;
+      poseHeight = mask.height;
+      poseConfidence = new Float32Array(mask.getAsFloat32Array());
+    });
+
+    if (personConfidence) {
+      const constrainedConfidence = poseConfidence
+        ? constrainSubjectConfidenceToPose(
+          personConfidence,
+          maskWidth,
+          maskHeight,
+          poseConfidence,
+          poseWidth,
+          poseHeight,
+        )
+        : personConfidence;
       currentAlpha = selectTrackedSubjectAlpha(
-        mask.getAsFloat32Array(),
+        constrainedConfidence,
         maskWidth,
         maskHeight,
         relativeBox,
         regionWidth,
         regionHeight,
       );
-    });
+    }
 
     const recovered = recoverTrackedSubjectAlpha(
       currentAlpha,
@@ -406,6 +511,7 @@ export class PersonBackgroundRenderer {
 
   close() {
     this.segmenter.close();
+    this.poseLandmarker.close();
     this.previousAlpha = null;
     this.pendingAlpha = null;
   }

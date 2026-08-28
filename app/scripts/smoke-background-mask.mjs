@@ -1,4 +1,5 @@
 import {
+  constrainSubjectConfidenceToPose,
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
   stabilizeTrackedSubjectAlpha,
@@ -61,6 +62,41 @@ function testNarrowBackgroundBridge() {
     for (let x = 0; x < width; x += 1) {
       if ((alpha?.[y * width + x] ?? 0) <= 0.1) continue;
       if (x <= 8) dancer += 1;
+      if (x >= 10) backgroundObject += 1;
+    }
+  }
+  return { dancer, backgroundObject };
+}
+
+function testBroadBackgroundOverlap() {
+  const personMask = new Float32Array(width * height);
+  const poseMask = new Float32Array(width * height);
+  for (let y = 1; y <= 8; y += 1) {
+    for (let x = 3; x <= 7; x += 1) {
+      personMask[y * width + x] = 0.92;
+      poseMask[y * width + x] = 0.96;
+    }
+  }
+  // Simulate a broad, high-confidence background region that directly overlaps
+  // the subject matte and therefore cannot be removed by connectivity alone.
+  for (let y = 1; y <= 7; y += 1) {
+    for (let x = 8; x <= 13; x += 1) personMask[y * width + x] = 0.88;
+  }
+  const constrained = constrainSubjectConfidenceToPose(
+    personMask,
+    width,
+    height,
+    poseMask,
+    width,
+    height,
+  );
+  const alpha = selectTrackedSubjectAlpha(constrained, width, height, [10, 0, 70, 50], 100, 50);
+  let dancer = 0;
+  let backgroundObject = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if ((alpha?.[y * width + x] ?? 0) <= 0.1) continue;
+      if (x <= 7) dancer += 1;
       if (x >= 10) backgroundObject += 1;
     }
   }
@@ -141,6 +177,7 @@ function testAdjustableFraming() {
 const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
 const narrowBackgroundBridge = testNarrowBackgroundBridge();
+const broadBackgroundOverlap = testBroadBackgroundOverlap();
 const lowConfidence = testLowConfidenceDancer();
 const recovery = testMissingFrameRecovery();
 const region = testTrackedRegion();
@@ -150,6 +187,7 @@ const framing = testAdjustableFraming();
 const pass = separated.selected > 0 && separated.leaked === 0
   && touching.selected > 0 && touching.leaked === 0
   && narrowBackgroundBridge.dancer > 0 && narrowBackgroundBridge.backgroundObject === 0
+  && broadBackgroundOverlap.dancer > 0 && broadBackgroundOverlap.backgroundObject === 0
   && lowConfidence.selected > 0 && lowConfidence.leaked === 0
   && recovery.firstMissingIsBlack
   && recovery.temporaryMissingRetained
@@ -168,6 +206,7 @@ console.log(JSON.stringify({
   separated,
   touching,
   narrowBackgroundBridge,
+  broadBackgroundOverlap,
   lowConfidence,
   recovery,
   region,
