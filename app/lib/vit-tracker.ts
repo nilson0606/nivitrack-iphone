@@ -129,6 +129,7 @@ export class VitTracker {
 
   initialize(source: CanvasImageSource, box: Box) {
     const prepared = cropToTensor(source, box, 2, TEMPLATE_SIZE);
+    this.template?.dispose();
     this.template = prepared.tensor;
     this.lastBox = box.map((value) => Math.trunc(value)) as Box;
   }
@@ -141,52 +142,65 @@ export class VitTracker {
     const previous = [...this.lastBox] as Box;
     const prepared = cropToTensor(source, previous, 4, SEARCH_SIZE);
     const started = performance.now();
-    const output = await this.session.run({
-      template: this.template,
-      search: prepared.tensor,
-    });
+    const output = await this.session
+      .run({
+        template: this.template,
+        search: prepared.tensor,
+      })
+      .finally(() => prepared.tensor.dispose());
     const inferenceMs = performance.now() - started;
 
-    const confidence = output.output1.data as Float32Array;
-    const sizeMap = output.output2.data as Float32Array;
-    const offsetMap = output.output3.data as Float32Array;
-    let bestIndex = 0;
-    let bestScore = Number.NEGATIVE_INFINITY;
+    try {
+      const confidence = output.output1.data as Float32Array;
+      const sizeMap = output.output2.data as Float32Array;
+      const offsetMap = output.output3.data as Float32Array;
+      let bestIndex = 0;
+      let bestScore = Number.NEGATIVE_INFINITY;
 
-    for (let index = 0; index < MAP_SIZE * MAP_SIZE; index += 1) {
-      const score = confidence[index] * this.hanning[index];
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = index;
+      for (let index = 0; index < MAP_SIZE * MAP_SIZE; index += 1) {
+        const score = confidence[index] * this.hanning[index];
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = index;
+        }
       }
-    }
 
-    if (bestScore >= this.scoreThreshold) {
-      const mapX = bestIndex % MAP_SIZE;
-      const mapY = Math.floor(bestIndex / MAP_SIZE);
-      const centerX = (mapX + offsetMap[bestIndex]) / MAP_SIZE;
-      const centerY =
-        (mapY + offsetMap[MAP_SIZE * MAP_SIZE + bestIndex]) / MAP_SIZE;
-      const width = sizeMap[bestIndex];
-      const height = sizeMap[MAP_SIZE * MAP_SIZE + bestIndex];
-      const cropX =
-        previous[0] + Math.trunc((previous[2] - prepared.cropSize) / 2);
-      const cropY =
-        previous[1] + Math.trunc((previous[3] - prepared.cropSize) / 2);
-      const nextBox: Box = [
-        Math.floor((centerX - width / 2) * prepared.cropSize + cropX),
-        Math.floor((centerY - height / 2) * prepared.cropSize + cropY),
-        Math.floor(width * prepared.cropSize),
-        Math.floor(height * prepared.cropSize),
-      ];
-      this.lastBox = nextBox;
-    }
+      if (bestScore >= this.scoreThreshold) {
+        const mapX = bestIndex % MAP_SIZE;
+        const mapY = Math.floor(bestIndex / MAP_SIZE);
+        const centerX = (mapX + offsetMap[bestIndex]) / MAP_SIZE;
+        const centerY =
+          (mapY + offsetMap[MAP_SIZE * MAP_SIZE + bestIndex]) / MAP_SIZE;
+        const width = sizeMap[bestIndex];
+        const height = sizeMap[MAP_SIZE * MAP_SIZE + bestIndex];
+        const cropX =
+          previous[0] + Math.trunc((previous[2] - prepared.cropSize) / 2);
+        const cropY =
+          previous[1] + Math.trunc((previous[3] - prepared.cropSize) / 2);
+        const nextBox: Box = [
+          Math.floor((centerX - width / 2) * prepared.cropSize + cropX),
+          Math.floor((centerY - height / 2) * prepared.cropSize + cropY),
+          Math.floor(width * prepared.cropSize),
+          Math.floor(height * prepared.cropSize),
+        ];
+        this.lastBox = nextBox;
+      }
 
-    return {
-      box: [...this.lastBox] as Box,
-      score: bestScore,
-      accepted: bestScore >= this.scoreThreshold,
-      inferenceMs,
-    };
+      return {
+        box: [...this.lastBox] as Box,
+        score: bestScore,
+        accepted: bestScore >= this.scoreThreshold,
+        inferenceMs,
+      };
+    } finally {
+      Object.values(output).forEach((tensor) => tensor.dispose());
+    }
+  }
+
+  async close() {
+    this.template?.dispose();
+    this.template = null;
+    this.lastBox = null;
+    await this.session.release();
   }
 }

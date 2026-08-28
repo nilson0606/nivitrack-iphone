@@ -216,6 +216,8 @@ export default function Home() {
     return () => {
       void exporterRef.current?.dispose();
       void backgroundSegmenterRef.current?.close();
+      void trackerRef.current?.close();
+      detectorRef.current?.dispose();
     };
   }, []);
 
@@ -245,6 +247,24 @@ export default function Home() {
     await segmenter?.close();
   }
 
+  async function releaseTracker() {
+    const tracker = trackerRef.current;
+    trackerRef.current = null;
+    await tracker?.close();
+  }
+
+  function releaseDetector() {
+    const detector = detectorRef.current;
+    detectorRef.current = null;
+    detector?.dispose();
+  }
+
+  async function releaseUpstreamModels() {
+    await releaseTracker();
+    releaseDetector();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
   function chooseVideo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -263,6 +283,7 @@ export default function Home() {
     setBackgroundMode('original');
     resetBackgroundRemoval();
     void releaseBackgroundSegmenter();
+    void releaseUpstreamModels();
     setProgress(0);
     setPhase('choose');
     setNotice('正在直接讀取原始影片…');
@@ -628,6 +649,7 @@ export default function Home() {
       await seekTo(selection.time);
       setBox(selection.box);
       drawFrame(selection.box);
+      await releaseUpstreamModels();
       setNotice('完整 ViT 路徑已建立；可調整構圖並輸出影片');
     } catch (error) {
       setPhase('select');
@@ -641,6 +663,7 @@ export default function Home() {
 
   async function getBackgroundSegmenter() {
     if (backgroundSegmenterRef.current) return backgroundSegmenterRef.current;
+    await releaseUpstreamModels();
     const { EdgeTamOnnxSegmenter } = await import('../lib/edgetam-onnx-segmenter');
     const modelBaseUrl = new URL('models/edgetam-onnx/', document.baseURI).href;
     const wasmBaseUrl = new URL('ort/', document.baseURI).href;
@@ -819,6 +842,7 @@ export default function Home() {
             startTime: 0,
             endTime: video.duration,
             anchorTime: selectionRef.current?.time ?? 0,
+            reuseAnchor: true,
             seekTo,
             isCancelled: () => cancelRef.current,
             onProgress: (next, frame, total) => {

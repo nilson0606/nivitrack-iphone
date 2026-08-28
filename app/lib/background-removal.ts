@@ -20,6 +20,7 @@ export type PrepareBackgroundRemovalOptions = {
   startTime: number;
   endTime: number;
   anchorTime: number;
+  reuseAnchor?: boolean;
   onProgress: (progress: number, frame: number, total: number) => void;
   isCancelled: () => boolean;
   seekTo: (time: number) => Promise<void>;
@@ -183,7 +184,7 @@ export async function prepareBackgroundRemoval(
   times.sort((left, right) => left - right);
   const forwardTimes = times.filter((time) => time > anchorTime + 0.001);
   const backwardTimes = times.filter((time) => time < anchorTime - 0.001).reverse();
-  const totalWork = 1 + forwardTimes.length + (backwardTimes.length > 0 ? 1 + backwardTimes.length : 0);
+  const totalWork = 1 + forwardTimes.length + backwardTimes.length;
   const frames: BackgroundMaskFrame[] = [];
   let inferenceTotal = 0;
   let inferenceCount = 0;
@@ -191,15 +192,21 @@ export async function prepareBackgroundRemoval(
   const started = performance.now();
 
   if (options.isCancelled()) throw new Error('使用者已取消去背');
-  await options.seekTo(anchorTime);
   const firstBox = interpolateBox(path, anchorTime);
-  let mask = await segmenter.start(
-    video,
-    normalizedPromptBox(firstBox, video.videoWidth, video.videoHeight),
-  );
+  const reuseAnchor = Boolean(options.reuseAnchor && segmenter.hasAnchor());
+  let mask: EdgeTamMask;
+  if (reuseAnchor) {
+    mask = segmenter.resetToAnchor();
+  } else {
+    await options.seekTo(anchorTime);
+    mask = await segmenter.start(
+      video,
+      normalizedPromptBox(firstBox, video.videoWidth, video.videoHeight),
+    );
+    inferenceTotal += mask.inferenceMs;
+    inferenceCount += 1;
+  }
   frames.push(storeMask(anchorTime, mask));
-  inferenceTotal += mask.inferenceMs;
-  inferenceCount += 1;
   completedWork += 1;
   options.onProgress(completedWork / totalWork, frames.length, times.length);
 
@@ -217,15 +224,7 @@ export async function prepareBackgroundRemoval(
 
   if (backwardTimes.length > 0) {
     if (options.isCancelled()) throw new Error('使用者已取消去背');
-    await options.seekTo(anchorTime);
-    mask = await segmenter.start(
-      video,
-      normalizedPromptBox(firstBox, video.videoWidth, video.videoHeight),
-    );
-    inferenceTotal += mask.inferenceMs;
-    inferenceCount += 1;
-    completedWork += 1;
-    options.onProgress(completedWork / totalWork, frames.length, times.length);
+    mask = segmenter.resetToAnchor();
     for (const time of backwardTimes) {
       if (options.isCancelled()) throw new Error('使用者已取消去背');
       await options.seekTo(time);

@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-background-removal-v2';
+const VERSION = 'nivitrack-background-removal-low-memory-v2';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -38,8 +38,7 @@ self.addEventListener('activate', (event) => {
         Promise.all(
           keys
             // Keep older app caches while already-open pages still reference their
-            // hashed CSS/JS files. Removing them during activation can leave Safari
-            // displaying only the unstyled server-rendered HTML after a reload.
+            // hashed CSS/JS files. Only obsolete model caches are removed here.
             .filter((key) => key.startsWith('nivitrack-') && key.endsWith('-models') && key !== MODEL_CACHE)
             .map((key) => caches.delete(key)),
         ),

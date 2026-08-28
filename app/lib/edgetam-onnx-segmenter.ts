@@ -29,6 +29,14 @@ type ObjectPointer = {
   values: Float32Array;
 };
 
+type SegmenterState = {
+  frameIndex: number;
+  previousArea: number;
+  previousCentroid: [number, number] | null;
+  spatialBank: SpatialMemory[];
+  pointerBank: ObjectPointer[];
+};
+
 type GpuNavigator = Navigator & {
   gpu?: {
     requestAdapter(): Promise<{
@@ -59,46 +67,6 @@ async function readFloats(url: string, expectedLength: number) {
     throw new Error('去背模型常數長度錯誤：' + values.length + ' / ' + expectedLength);
   }
   return new Float32Array(values);
-}
-
-async function fetchModelBytes(
-  url: string,
-  onProgress?: (progress: number) => void,
-  isCancelled?: () => boolean,
-) {
-  if (isCancelled?.()) throw new Error('使用者已取消去背');
-  const response = await fetch(url);
-  if (!response.ok) throw new Error('無法下載去背模型：HTTP ' + response.status);
-  const total = Number(response.headers.get('content-length')) || 0;
-  if (!response.body) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (isCancelled?.()) throw new Error('使用者已取消去背');
-    onProgress?.(1);
-    return bytes;
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  while (true) {
-    if (isCancelled?.()) {
-      await reader.cancel();
-      throw new Error('使用者已取消去背');
-    }
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    if (total > 0) onProgress?.(Math.min(1, received / total));
-  }
-  const bytes = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  onProgress?.(1);
-  return bytes;
 }
 
 export async function assertEdgeTamWebGpuSupport() {
@@ -284,31 +252,38 @@ function alphaFromLogits(logits: Float32Array) {
 }
 
 export class EdgeTamOnnxSegmenter {
-  private readonly startSession: ort.InferenceSession;
-  private readonly trackSession: ort.InferenceSession;
+  private startSession: ort.InferenceSession | null = null;
+  private trackSession: ort.InferenceSession | null = null;
+  private readonly modelBaseUrl: string;
   private readonly prompt: Float32Array;
   private readonly temporalPositions: Float32Array;
+  private readonly onProgress?: EdgeTamLoadProgress;
+  private readonly isCancelled?: () => boolean;
   private readonly inputCanvas = document.createElement('canvas');
   private readonly inputContext: CanvasRenderingContext2D;
-  private readonly startInput = new Float32Array(START_INPUT_VALUES);
-  private readonly trackInput = new Float32Array(TRACK_INPUT_VALUES);
+  private startInput: Float32Array | null = null;
+  private trackInput: Float32Array | null = null;
   private readonly spatialBank: SpatialMemory[] = [];
   private readonly pointerBank: ObjectPointer[] = [];
   private frameIndex = -1;
   private previousArea = 0;
   private previousCentroid: [number, number] | null = null;
+  private anchorState: SegmenterState | null = null;
+  private anchorMask: EdgeTamMask | null = null;
   private selfTested = false;
 
   private constructor(
-    startSession: ort.InferenceSession,
-    trackSession: ort.InferenceSession,
+    modelBaseUrl: string,
     prompt: Float32Array,
     temporalPositions: Float32Array,
+    onProgress?: EdgeTamLoadProgress,
+    isCancelled?: () => boolean,
   ) {
-    this.startSession = startSession;
-    this.trackSession = trackSession;
+    this.modelBaseUrl = modelBaseUrl;
     this.prompt = prompt;
     this.temporalPositions = temporalPositions;
+    this.onProgress = onProgress;
+    this.isCancelled = isCancelled;
     this.inputCanvas.width = SIZE;
     this.inputCanvas.height = SIZE;
     const context = this.inputCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
@@ -334,50 +309,119 @@ export class EdgeTamOnnxSegmenter {
       readFloats(assetUrl(modelBaseUrl, 'mtpe.bin'), NMM * MEM_CHANNELS),
     ]);
 
-    // ORT WebGPU session compilation must be sequential on Safari.
-    let lastStartPercent = -1;
-    let startBytes: Uint8Array | null = await fetchModelBytes(assetUrl(modelBaseUrl, 'start.onnx'), (progress) => {
-      const percent = Math.round(progress * 100);
-      if (percent === lastStartPercent) return;
-      lastStartPercent = percent;
-      onProgress?.(0.05 + progress * 0.27, '下載首幀去背模型 · ' + percent + '%');
-    }, isCancelled);
-    onProgress?.(0.34, '編譯首幀去背');
-    const startSession = await ort.InferenceSession.create(startBytes, {
+    onProgress?.(0.05, '去背常數就緒；尚未載入大型模型');
+    return new EdgeTamOnnxSegmenter(modelBaseUrl, prompt, temporalPositions, onProgress, isCancelled);
+  }
+
+  private checkCancelled() {
+    if (this.isCancelled?.()) throw new Error('使用者已取消去背');
+  }
+
+  private assertSingleSession() {
+    if (this.startSession && this.trackSession) {
+      throw new Error('記憶體保護啟動：去背模型不可同時存在');
+    }
+  }
+
+  private async yieldAfterRelease() {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
+  private async releaseStartSession() {
+    this.startInput = null;
+    const session = this.startSession;
+    this.startSession = null;
+    if (session) {
+      await session.release();
+      await this.yieldAfterRelease();
+    }
+  }
+
+  private async releaseTrackSession() {
+    this.trackInput = null;
+    const session = this.trackSession;
+    this.trackSession = null;
+    if (session) {
+      await session.release();
+      await this.yieldAfterRelease();
+    }
+  }
+
+  private async createSession(file: 'start.onnx' | 'track.onnx', progress: number, label: string) {
+    this.checkCancelled();
+    this.onProgress?.(progress, label);
+    // Give ORT the URL instead of assembling model chunks in JavaScript. ORT can
+    // fetch/compile one graph directly while Safari has only one model session.
+    return ort.InferenceSession.create(assetUrl(this.modelBaseUrl, file), {
       executionProviders: ['webgpu'],
       graphOptimizationLevel: 'all',
       executionMode: 'sequential',
     });
-    startBytes = null;
-    try {
-      let lastTrackPercent = -1;
-      let trackBytes: Uint8Array | null = await fetchModelBytes(assetUrl(modelBaseUrl, 'track.onnx'), (progress) => {
-        const percent = Math.round(progress * 100);
-        if (percent === lastTrackPercent) return;
-        lastTrackPercent = percent;
-        onProgress?.(0.48 + progress * 0.35, '下載連續去背模型 · ' + percent + '%');
-      }, isCancelled);
-      onProgress?.(0.86, '編譯連續去背');
-      const trackSession = await ort.InferenceSession.create(trackBytes, {
-        executionProviders: ['webgpu'],
-        graphOptimizationLevel: 'all',
-        executionMode: 'sequential',
-      });
-      trackBytes = null;
-      onProgress?.(1, '去背模型就緒');
-      return new EdgeTamOnnxSegmenter(startSession, trackSession, prompt, temporalPositions);
-    } catch (error) {
-      await startSession.release();
-      throw error;
-    }
   }
 
-  reset() {
+  private async ensureStartSession() {
+    if (this.startSession) return this.startSession;
+    await this.releaseTrackSession();
+    this.startSession = await this.createSession('start.onnx', 0.08, '載入與編譯首幀去背模型');
+    this.assertSingleSession();
+    this.startInput = new Float32Array(START_INPUT_VALUES);
+    return this.startSession;
+  }
+
+  private async ensureTrackSession() {
+    if (this.trackSession) return this.trackSession;
+    this.onProgress?.(0.43, '釋放首幀模型');
+    await this.releaseStartSession();
+    this.trackSession = await this.createSession('track.onnx', 0.48, '載入與編譯連續去背模型');
+    this.assertSingleSession();
+    this.trackInput = new Float32Array(TRACK_INPUT_VALUES);
+    this.onProgress?.(1, '去背模型就緒');
+    return this.trackSession;
+  }
+
+  private resetTrackingState() {
     this.frameIndex = -1;
     this.previousArea = 0;
     this.previousCentroid = null;
     this.spatialBank.length = 0;
     this.pointerBank.length = 0;
+  }
+
+  reset() {
+    this.resetTrackingState();
+    this.anchorState = null;
+    this.anchorMask = null;
+  }
+
+  private captureState(): SegmenterState {
+    return {
+      frameIndex: this.frameIndex,
+      previousArea: this.previousArea,
+      previousCentroid: this.previousCentroid ? [...this.previousCentroid] as [number, number] : null,
+      spatialBank: this.spatialBank.map((item) => ({ ...item })),
+      pointerBank: this.pointerBank.map((item) => ({ ...item })),
+    };
+  }
+
+  private restoreState(state: SegmenterState) {
+    this.frameIndex = state.frameIndex;
+    this.previousArea = state.previousArea;
+    this.previousCentroid = state.previousCentroid ? [...state.previousCentroid] as [number, number] : null;
+    this.spatialBank.splice(0, this.spatialBank.length, ...state.spatialBank.map((item) => ({ ...item })));
+    this.pointerBank.splice(0, this.pointerBank.length, ...state.pointerBank.map((item) => ({ ...item })));
+  }
+
+  hasAnchor() {
+    return Boolean(this.anchorState && this.anchorMask && this.trackSession);
+  }
+
+  resetToAnchor() {
+    if (!this.anchorState || !this.anchorMask) throw new Error('去背模型沒有可重用的主角起始狀態');
+    this.restoreState(this.anchorState);
+    return {
+      ...this.anchorMask,
+      alpha: new Uint8ClampedArray(this.anchorMask.alpha),
+    } satisfies EdgeTamMask;
   }
 
   private preprocess(image: CanvasImageSource, destination: Float32Array) {
@@ -432,11 +476,13 @@ export class EdgeTamOnnxSegmenter {
 
   private assembleMemory(frame: number) {
     if (this.spatialBank.length === 0) throw new Error('去背模型尚未指定主角');
+    const trackInput = this.trackInput;
+    if (!trackInput) throw new Error('連續去背模型尚未準備好');
     const memoryOffset = IMAGE_VALUES;
     const positionOffset = memoryOffset + MEMORY_VALUES;
     const keyMaskOffset = positionOffset + MEMORY_VALUES;
-    this.trackInput.fill(0, memoryOffset, keyMaskOffset);
-    this.trackInput.fill(-1e9, keyMaskOffset);
+    trackInput.fill(0, memoryOffset, keyMaskOffset);
+    trackInput.fill(-1e9, keyMaskOffset);
 
     const conditioningFrame = this.spatialBank[0].frame;
     const spatial: Array<{ item: SpatialMemory; temporalIndex: number }> = [
@@ -451,17 +497,17 @@ export class EdgeTamOnnxSegmenter {
 
     spatial.forEach(({ item, temporalIndex }, slot) => {
       const base = slot * SPATIAL_VALUES;
-      this.trackInput.set(item.values, memoryOffset + base);
+      trackInput.set(item.values, memoryOffset + base);
       for (let token = 0; token < SPATIAL_TOKENS; token += 1) {
         const tokenBase = base + token * MEM_CHANNELS;
         for (let channel = 0; channel < MEM_CHANNELS; channel += 1) {
-          this.trackInput[positionOffset + tokenBase + channel] =
+          trackInput[positionOffset + tokenBase + channel] =
             item.positions[token * MEM_CHANNELS + channel]
             + this.temporalPositions[temporalIndex * MEM_CHANNELS + channel];
         }
       }
     });
-    this.trackInput.fill(0, keyMaskOffset, keyMaskOffset + spatial.length * SPATIAL_TOKENS);
+    trackInput.fill(0, keyMaskOffset, keyMaskOffset + spatial.length * SPATIAL_TOKENS);
 
     const recentPointers = [...this.pointerBank]
       .sort((left, right) => right.frame - left.frame)
@@ -472,12 +518,12 @@ export class EdgeTamOnnxSegmenter {
       const position = this.sinePosition(frame - pointer.frame);
       for (let token = 0; token < 4; token += 1) {
         const destination = pointerBase + pointerToken * MEM_CHANNELS;
-        this.trackInput.set(
+        trackInput.set(
           pointer.values.subarray(token * MEM_CHANNELS, (token + 1) * MEM_CHANNELS),
           memoryOffset + destination,
         );
-        this.trackInput.set(position, positionOffset + destination);
-        this.trackInput[keyMaskOffset + NMM * SPATIAL_TOKENS + pointerToken] = 0;
+        trackInput.set(position, positionOffset + destination);
+        trackInput[keyMaskOffset + NMM * SPATIAL_TOKENS + pointerToken] = 0;
         pointerToken += 1;
       }
     }
@@ -555,15 +601,18 @@ export class EdgeTamOnnxSegmenter {
 
   async start(image: CanvasImageSource, normalizedBox: [number, number, number, number]) {
     this.reset();
-    this.preprocess(image, this.startInput);
-    this.startInput.set(this.boxSparse(normalizedBox), IMAGE_VALUES);
+    const startSession = await this.ensureStartSession();
+    const startInput = this.startInput;
+    if (!startInput) throw new Error('首幀去背模型尚未準備好');
+    this.preprocess(image, startInput);
+    startInput.set(this.boxSparse(normalizedBox), IMAGE_VALUES);
 
     // The failed LiteRT build changed results when the same frame was run twice.
     // Verify determinism on the real first frame before accepting any mask.
-    const first = await this.run(this.startSession, this.startInput);
+    const first = await this.run(startSession, startInput);
     let accepted = first;
     if (!this.selfTested) {
-      const repeated = await this.run(this.startSession, this.startInput);
+      const repeated = await this.run(startSession, startInput);
       let maxDelta = 0;
       for (let index = 0; index < MASK_VALUES; index += 1) {
         maxDelta = Math.max(maxDelta, Math.abs(first.values[index] - repeated.values[index]));
@@ -579,21 +628,29 @@ export class EdgeTamOnnxSegmenter {
       (normalizedBox[0] + normalizedBox[2] / 2) * MASK_SIZE,
       (normalizedBox[1] + normalizedBox[3] / 2) * MASK_SIZE,
     ];
-    return this.storeOutput(this.frameIndex, accepted.values, accepted.inferenceMs, seed);
+    const mask = this.storeOutput(this.frameIndex, accepted.values, accepted.inferenceMs, seed);
+    this.anchorState = this.captureState();
+    this.anchorMask = { ...mask, alpha: new Uint8ClampedArray(mask.alpha) };
+    this.startInput = null;
+    await this.ensureTrackSession();
+    return mask;
   }
 
   async track(image: CanvasImageSource) {
     if (this.frameIndex < 0) throw new Error('去背模型尚未指定主角');
+    const trackSession = await this.ensureTrackSession();
+    const trackInput = this.trackInput;
+    if (!trackInput) throw new Error('連續去背模型尚未準備好');
     this.frameIndex += 1;
-    this.preprocess(image, this.trackInput);
+    this.preprocess(image, trackInput);
     this.assembleMemory(this.frameIndex);
-    const output = await this.run(this.trackSession, this.trackInput);
+    const output = await this.run(trackSession, trackInput);
     return this.storeOutput(this.frameIndex, output.values, output.inferenceMs);
   }
 
   async close() {
     this.reset();
-    await this.startSession.release();
-    await this.trackSession.release();
+    await this.releaseStartSession();
+    await this.releaseTrackSession();
   }
 }
