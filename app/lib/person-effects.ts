@@ -368,15 +368,12 @@ export class PersonEffectRenderer {
     canvas: HTMLCanvasElement,
     path: TrackPoint[],
     subjectScale: number,
-    options: PersonEffectOptions,
   ) {
     const prepared = this.preparedMaskAt(time);
     if (!prepared || canvas.width <= 0 || canvas.height <= 0) return this.correctionCount;
     if (this.activeCorrectionGroup === 0) this.beginCorrectionStroke();
 
-    const crop = options.preserveFraming
-      ? framingCrop(video, canvas)
-      : cameraCrop(video, canvas, path, time, subjectScale);
+    const crop = cameraCrop(video, canvas, path, time, subjectScale);
     const sourceX = crop.x + clamp(normalizedCanvasX, 0, 1) * crop.width;
     const sourceY = crop.y + clamp(normalizedCanvasY, 0, 1) * crop.height;
     const x = (sourceX - prepared.region.x) / prepared.region.width;

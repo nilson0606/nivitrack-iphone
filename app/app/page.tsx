@@ -721,7 +721,6 @@ export default function Home() {
       canvas,
       smoothTrackPath(trackPath, smoothness),
       subjectScale,
-      personEffects,
     );
     setCorrectionCount(count);
     setExportUrl('');
