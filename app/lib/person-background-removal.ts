@@ -1,9 +1,15 @@
-import { FilesetResolver, ImageSegmenter, PoseLandmarker } from '@mediapipe/tasks-vision';
+import {
+  FilesetResolver,
+  ImageSegmenter,
+  PoseLandmarker,
+  type NormalizedLandmark,
+} from '@mediapipe/tasks-vision';
 
 import type { Box } from './vit-tracker';
 
 const LOW_CONFIDENCE_LIMIT = 0.12;
 const MAX_MISSED_FRAMES = 12;
+const MAX_MISSED_POSE_FRAMES = 6;
 const INFERENCE_SIZE = 256;
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -13,6 +19,158 @@ function clamp(value: number, minimum: number, maximum: number) {
 function smoothstep(edge0: number, edge1: number, value: number) {
   const amount = clamp((value - edge0) / Math.max(0.0001, edge1 - edge0), 0, 1);
   return amount * amount * (3 - 2 * amount);
+}
+
+type EnvelopePoint = { x: number; y: number };
+
+function pointDistance(first: EnvelopePoint, second: EnvelopePoint) {
+  return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+function midpoint(first: EnvelopePoint, second: EnvelopePoint): EnvelopePoint {
+  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+}
+
+export function createPoseBodyEnvelope(
+  landmarks: Pick<NormalizedLandmark, 'x' | 'y' | 'visibility'>[],
+  width: number,
+  height: number,
+  tightness: number,
+) {
+  if (landmarks.length < 33 || width < 2 || height < 2) return null;
+  const point = (index: number, minimumVisibility = 0.08): EnvelopePoint | null => {
+    const landmark = landmarks[index];
+    if (!landmark
+      || !Number.isFinite(landmark.x)
+      || !Number.isFinite(landmark.y)
+      || (landmark.visibility ?? 1) < minimumVisibility
+      || landmark.x < -0.25
+      || landmark.x > 1.25
+      || landmark.y < -0.25
+      || landmark.y > 1.25) {
+      return null;
+    }
+    return { x: landmark.x * width, y: landmark.y * height };
+  };
+
+  const leftShoulder = point(11, 0.04);
+  const rightShoulder = point(12, 0.04);
+  const leftHip = point(23, 0.04);
+  const rightHip = point(24, 0.04);
+  if (!leftShoulder || !rightShoulder || !leftHip || !rightHip) return null;
+
+  const shoulderCenter = midpoint(leftShoulder, rightShoulder);
+  const hipCenter = midpoint(leftHip, rightHip);
+  const shoulderWidth = pointDistance(leftShoulder, rightShoulder);
+  const hipWidth = pointDistance(leftHip, rightHip);
+  const torsoLength = pointDistance(shoulderCenter, hipCenter);
+  const bodyUnit = Math.max(8, shoulderWidth, hipWidth, torsoLength * 0.72);
+  const amount = clamp(tightness, 0, 1);
+  const looseness = 1 - amount;
+  const envelope = new Float32Array(width * height);
+
+  const addCapsule = (start: EnvelopePoint | null, end: EnvelopePoint | null, radius: number) => {
+    if (!start || !end || radius <= 0) return;
+    const minimumX = clamp(Math.floor(Math.min(start.x, end.x) - radius * 1.12), 0, width - 1);
+    const maximumX = clamp(Math.ceil(Math.max(start.x, end.x) + radius * 1.12), 0, width - 1);
+    const minimumY = clamp(Math.floor(Math.min(start.y, end.y) - radius * 1.12), 0, height - 1);
+    const maximumY = clamp(Math.ceil(Math.max(start.y, end.y) + radius * 1.12), 0, height - 1);
+    const deltaX = end.x - start.x;
+    const deltaY = end.y - start.y;
+    const lengthSquared = deltaX * deltaX + deltaY * deltaY;
+    for (let y = minimumY; y <= maximumY; y += 1) {
+      for (let x = minimumX; x <= maximumX; x += 1) {
+        const projection = lengthSquared > 0
+          ? clamp(((x - start.x) * deltaX + (y - start.y) * deltaY) / lengthSquared, 0, 1)
+          : 0;
+        const closestX = start.x + deltaX * projection;
+        const closestY = start.y + deltaY * projection;
+        const normalizedDistance = Math.hypot(x - closestX, y - closestY) / radius;
+        const membership = 1 - smoothstep(0.82, 1.1, normalizedDistance);
+        const index = y * width + x;
+        if (membership > envelope[index]) envelope[index] = membership;
+      }
+    }
+  };
+
+  const addEllipse = (center: EnvelopePoint | null, radiusX: number, radiusY: number) => {
+    if (!center || radiusX <= 0 || radiusY <= 0) return;
+    const minimumX = clamp(Math.floor(center.x - radiusX * 1.12), 0, width - 1);
+    const maximumX = clamp(Math.ceil(center.x + radiusX * 1.12), 0, width - 1);
+    const minimumY = clamp(Math.floor(center.y - radiusY * 1.12), 0, height - 1);
+    const maximumY = clamp(Math.ceil(center.y + radiusY * 1.12), 0, height - 1);
+    for (let y = minimumY; y <= maximumY; y += 1) {
+      for (let x = minimumX; x <= maximumX; x += 1) {
+        const normalizedDistance = Math.hypot(
+          (x - center.x) / radiusX,
+          (y - center.y) / radiusY,
+        );
+        const membership = 1 - smoothstep(0.82, 1.1, normalizedDistance);
+        const index = y * width + x;
+        if (membership > envelope[index]) envelope[index] = membership;
+      }
+    }
+  };
+
+  const nose = point(0);
+  const leftEar = point(7);
+  const rightEar = point(8);
+  const visibleHeadPoints = [nose, leftEar, rightEar].filter((item): item is EnvelopePoint => Boolean(item));
+  const headCenter = visibleHeadPoints.length > 0
+    ? {
+      x: visibleHeadPoints.reduce((sum, item) => sum + item.x, 0) / visibleHeadPoints.length,
+      y: visibleHeadPoints.reduce((sum, item) => sum + item.y, 0) / visibleHeadPoints.length,
+    }
+    : { x: shoulderCenter.x, y: shoulderCenter.y - torsoLength * 0.42 };
+
+  addEllipse(
+    headCenter,
+    bodyUnit * (0.3 + looseness * 0.11),
+    bodyUnit * (0.39 + looseness * 0.13),
+  );
+  addCapsule(headCenter, shoulderCenter, bodyUnit * (0.18 + looseness * 0.09));
+  addCapsule(
+    shoulderCenter,
+    hipCenter,
+    Math.max(shoulderWidth, hipWidth) * (0.47 + looseness * 0.2),
+  );
+  addCapsule(leftShoulder, rightShoulder, bodyUnit * (0.16 + looseness * 0.08));
+  addCapsule(leftHip, rightHip, bodyUnit * (0.18 + looseness * 0.08));
+
+  const limbSegments: Array<[number, number, number, number]> = [
+    [11, 13, 0.19, 0.09],
+    [12, 14, 0.19, 0.09],
+    [13, 15, 0.15, 0.08],
+    [14, 16, 0.15, 0.08],
+    [15, 19, 0.13, 0.07],
+    [16, 20, 0.13, 0.07],
+    [23, 25, 0.23, 0.1],
+    [24, 26, 0.23, 0.1],
+    [25, 27, 0.18, 0.08],
+    [26, 28, 0.18, 0.08],
+    [27, 31, 0.14, 0.07],
+    [28, 32, 0.14, 0.07],
+  ];
+  for (const [startIndex, endIndex, baseRadius, looseRadius] of limbSegments) {
+    addCapsule(
+      point(startIndex),
+      point(endIndex),
+      bodyUnit * (baseRadius + looseness * looseRadius),
+    );
+  }
+  return envelope;
+}
+
+export function constrainAlphaToBodyEnvelope(
+  alpha: Float32Array,
+  envelope: Float32Array,
+) {
+  if (alpha.length !== envelope.length) throw new Error('人體骨架範圍尺寸不正確');
+  const constrained = new Float32Array(alpha.length);
+  for (let index = 0; index < alpha.length; index += 1) {
+    constrained[index] = alpha[index] * envelope[index];
+  }
+  return constrained;
 }
 
 export function constrainSubjectConfidenceToPose(
@@ -330,6 +488,8 @@ export class PersonBackgroundRenderer {
   private timestamp = 0;
   private missedFrames = 0;
   private poseEnabled = true;
+  private previousPoseEnvelope: Float32Array | null = null;
+  private missedPoseFrames = 0;
 
   private constructor(segmenter: ImageSegmenter, poseLandmarker: PoseLandmarker) {
     this.segmenter = segmenter;
@@ -367,7 +527,7 @@ export class PersonBackgroundRenderer {
       minPoseDetectionConfidence: 0.35,
       minPosePresenceConfidence: 0.35,
       minTrackingConfidence: 0.35,
-      outputSegmentationMasks: true,
+      outputSegmentationMasks: false,
       canvas: poseCanvas,
     };
     let poseLandmarker: PoseLandmarker;
@@ -382,7 +542,13 @@ export class PersonBackgroundRenderer {
     return new PersonBackgroundRenderer(segmenter, poseLandmarker);
   }
 
-  render(video: HTMLVideoElement, outputCanvas: HTMLCanvasElement, box: Box, crop?: Box) {
+  render(
+    video: HTMLVideoElement,
+    outputCanvas: HTMLCanvasElement,
+    box: Box,
+    crop?: Box,
+    bodyTightness = 0.62,
+  ) {
     if (!video.videoWidth || !video.videoHeight) return;
     const [regionX, regionY, regionWidth, regionHeight] = trackedSubjectRegion(
       box,
@@ -411,9 +577,7 @@ export class PersonBackgroundRenderer {
     this.timestamp += 1;
     let currentAlpha: Float32Array | null = null;
     let personConfidence: Float32Array | null = null;
-    let poseConfidence: Float32Array | null = null;
-    let poseWidth = inferenceWidth;
-    let poseHeight = inferenceHeight;
+    let poseLandmarks: NormalizedLandmark[] | null = null;
     let maskWidth = inferenceWidth;
     let maskHeight = inferenceHeight;
     const relativeBox: Box = [
@@ -434,11 +598,7 @@ export class PersonBackgroundRenderer {
     if (this.poseEnabled) {
       try {
         this.poseLandmarker.detectForVideo(this.inferenceCanvas, this.timestamp, (result) => {
-          const mask = result.segmentationMasks?.[0];
-          if (!mask) return;
-          poseWidth = mask.width;
-          poseHeight = mask.height;
-          poseConfidence = new Float32Array(mask.getAsFloat32Array());
+          poseLandmarks = result.landmarks?.[0] ?? null;
         });
       } catch {
         // Some Safari/WebGL combinations can initialize both tasks but reject
@@ -458,22 +618,23 @@ export class PersonBackgroundRenderer {
         regionHeight,
       );
       let poseAlpha: Float32Array | null = null;
-      if (poseConfidence) {
-        const constrainedConfidence = constrainSubjectConfidenceToPose(
-          personConfidence,
-          maskWidth,
-          maskHeight,
-          poseConfidence,
-          poseWidth,
-          poseHeight,
-        );
-        poseAlpha = selectTrackedSubjectAlpha(
-          constrainedConfidence,
-          maskWidth,
-          maskHeight,
-          relativeBox,
-          regionWidth,
-          regionHeight,
+      let poseEnvelope: Float32Array | null = poseLandmarks
+        ? createPoseBodyEnvelope(poseLandmarks, maskWidth, maskHeight, bodyTightness)
+        : null;
+      if (poseEnvelope) {
+        this.previousPoseEnvelope = new Float32Array(poseEnvelope);
+        this.missedPoseFrames = 0;
+      } else {
+        this.missedPoseFrames += 1;
+        if (this.previousPoseEnvelope?.length === maskWidth * maskHeight
+          && this.missedPoseFrames <= MAX_MISSED_POSE_FRAMES) {
+          poseEnvelope = this.previousPoseEnvelope;
+        }
+      }
+      if (fallbackAlpha && poseEnvelope) {
+        poseAlpha = constrainAlphaToBodyEnvelope(
+          fallbackAlpha,
+          poseEnvelope,
         );
       }
       currentAlpha = preferUsablePoseAlpha(poseAlpha, fallbackAlpha);
@@ -561,11 +722,14 @@ export class PersonBackgroundRenderer {
     this.poseLandmarker.close();
     this.previousAlpha = null;
     this.pendingAlpha = null;
+    this.previousPoseEnvelope = null;
   }
 
   reset() {
     this.previousAlpha = null;
     this.pendingAlpha = null;
     this.missedFrames = 0;
+    this.previousPoseEnvelope = null;
+    this.missedPoseFrames = 0;
   }
 }

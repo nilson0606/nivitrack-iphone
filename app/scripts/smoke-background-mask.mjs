@@ -1,5 +1,7 @@
 import {
+  constrainAlphaToBodyEnvelope,
   constrainSubjectConfidenceToPose,
+  createPoseBodyEnvelope,
   preferUsablePoseAlpha,
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
@@ -117,6 +119,50 @@ function testBroadBackgroundOverlap() {
   };
 }
 
+function testPoseBodyEnvelope() {
+  const landmarks = Array.from({ length: 33 }, () => ({
+    x: 0.5,
+    y: 0.5,
+    visibility: 0,
+  }));
+  const set = (index, x, y) => {
+    landmarks[index] = { x, y, visibility: 1 };
+  };
+  set(0, 0.5, 0.14);
+  set(7, 0.45, 0.17);
+  set(8, 0.55, 0.17);
+  set(11, 0.4, 0.3);
+  set(12, 0.6, 0.3);
+  set(13, 0.31, 0.45);
+  set(14, 0.69, 0.45);
+  set(15, 0.25, 0.6);
+  set(16, 0.75, 0.6);
+  set(19, 0.23, 0.64);
+  set(20, 0.77, 0.64);
+  set(23, 0.43, 0.55);
+  set(24, 0.57, 0.55);
+  set(25, 0.4, 0.75);
+  set(26, 0.6, 0.75);
+  set(27, 0.38, 0.92);
+  set(28, 0.62, 0.92);
+  set(31, 0.34, 0.96);
+  set(32, 0.66, 0.96);
+
+  const loose = createPoseBodyEnvelope(landmarks, 100, 100, 0);
+  const tight = createPoseBodyEnvelope(landmarks, 100, 100, 1);
+  const fallback = new Float32Array(10000).fill(1);
+  const constrained = tight ? constrainAlphaToBodyEnvelope(fallback, tight) : null;
+  const loosePixels = loose?.filter((value) => value > 0.1).length ?? 0;
+  const tightPixels = tight?.filter((value) => value > 0.1).length ?? 0;
+  return {
+    torsoRetained: (constrained?.[45 * 100 + 50] ?? 0) > 0.8,
+    distantBackgroundRemoved: (constrained?.[45 * 100 + 90] ?? 1) === 0,
+    tightnessShrinksEnvelope: loosePixels > tightPixels && tightPixels > 0,
+    usableEnvelopePreferred: preferUsablePoseAlpha(constrained, fallback) === constrained,
+    invalidPoseRejected: createPoseBodyEnvelope([], 100, 100, 0.5) === null,
+  };
+}
+
 function testInvalidPoseFallback() {
   const fallback = new Float32Array(100).fill(0.8);
   const emptyPose = new Float32Array(100);
@@ -204,6 +250,7 @@ const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
 const narrowBackgroundBridge = testNarrowBackgroundBridge();
 const broadBackgroundOverlap = testBroadBackgroundOverlap();
+const poseBodyEnvelope = testPoseBodyEnvelope();
 const invalidPoseFallback = testInvalidPoseFallback();
 const lowConfidence = testLowConfidenceDancer();
 const recovery = testMissingFrameRecovery();
@@ -217,6 +264,11 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && broadBackgroundOverlap.dancer > 0
   && broadBackgroundOverlap.backgroundObject === 0
   && broadBackgroundOverlap.usableConstraintPreferred
+  && poseBodyEnvelope.torsoRetained
+  && poseBodyEnvelope.distantBackgroundRemoved
+  && poseBodyEnvelope.tightnessShrinksEnvelope
+  && poseBodyEnvelope.usableEnvelopePreferred
+  && poseBodyEnvelope.invalidPoseRejected
   && invalidPoseFallback.emptyFallsBack
   && invalidPoseFallback.tinyFallsBack
   && invalidPoseFallback.missingFallsBack
@@ -239,6 +291,7 @@ console.log(JSON.stringify({
   touching,
   narrowBackgroundBridge,
   broadBackgroundOverlap,
+  poseBodyEnvelope,
   invalidPoseFallback,
   lowConfidence,
   recovery,

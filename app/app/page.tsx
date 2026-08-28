@@ -191,6 +191,7 @@ export default function Home() {
   const [aspect, setAspect] = useState<AspectPreset>('9:16');
   const [subjectScale, setSubjectScale] = useState(0.55);
   const [smoothness, setSmoothness] = useState(0.72);
+  const [bodyTightness, setBodyTightness] = useState(0.62);
   const [recorderSupport, setRecorderSupport] = useState<RecorderSupport>({
     h264: null,
     hevc: null,
@@ -205,7 +206,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MediaPipe 本機分割', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
+        { label: '人物去背', detail: 'MediaPipe 姿態＋分割', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -305,6 +306,7 @@ export default function Home() {
     setAspect('9:16');
     setSubjectScale(0.55);
     setSmoothness(0.72);
+    setBodyTightness(0.62);
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
@@ -826,7 +828,13 @@ export default function Home() {
         return;
       }
       try {
-        renderer.render(video, canvas, previewBoxAt(preview.path, mediaTime));
+        renderer.render(
+          video,
+          canvas,
+          previewBoxAt(preview.path, mediaTime),
+          undefined,
+          bodyTightness,
+        );
         setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
         if (mediaTime >= preview.endTime - 0.01) finish();
       } catch (error) {
@@ -1026,7 +1034,13 @@ export default function Home() {
     } else if (selectedTool === 'track') {
       operation = { kind: 'track', aspect, subjectScale, smoothness };
     } else if (selectedTool === 'remove-background') {
-      operation = { kind: 'remove-background', aspect, subjectScale, smoothness };
+      operation = {
+        kind: 'remove-background',
+        aspect,
+        subjectScale,
+        smoothness,
+        bodyTightness,
+      };
     }
     if (!video || !renderCanvas || !operation) {
       setNotice('請先選擇一項後製功能');
@@ -1262,6 +1276,18 @@ export default function Home() {
                   </>
                 )}
               </div>
+              {phase === 'complete' && selectedTool === 'remove-background' && (
+                <label className="range-control">
+                  <span><b>去背收緊度</b><em>{Math.round(bodyTightness * 100)}%</em></span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={Math.round(bodyTightness * 100)}
+                    onChange={(event) => setBodyTightness(Number(event.target.value) / 100)}
+                  />
+                </label>
+              )}
               {(phase === 'choose' || phase === 'tool-ready') && videoInfo && (
                 <section className="tool-panel" aria-label="選擇一項影片後製功能">
                   <div className="tool-heading">
@@ -1428,6 +1454,20 @@ export default function Home() {
                     />
                   </label>
 
+                  {selectedTool === 'remove-background' && (
+                    <label className="range-control">
+                      <span><b>去背收緊度</b><em>{Math.round(bodyTightness * 100)}%</em></span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={Math.round(bodyTightness * 100)}
+                        disabled={phase === 'exporting'}
+                        onChange={(event) => setBodyTightness(Number(event.target.value) / 100)}
+                      />
+                    </label>
+                  )}
+
                   <div className="export-buttons">
                     <button
                       className="primary"
@@ -1454,7 +1494,7 @@ export default function Home() {
 
                   {selectedTool === 'remove-background' && (
                     <p className="export-note">
-                      遮罩會柔性內縮並抑制單幀閃漏；推論、去背、放大置中與原聲合成都只在這台 iPhone 執行。主角手持物品會視為背景移除。
+                      人體骨架範圍會依收緊度限制去背遮罩並抑制單幀閃漏；推論、去背、放大置中與原聲合成都只在這台 iPhone 執行。主角手持物品會視為背景移除。
                     </p>
                   )}
 

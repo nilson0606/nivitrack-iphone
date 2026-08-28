@@ -30,6 +30,7 @@ export type ExportOperation =
       aspect: AspectPreset;
       subjectScale: number;
       smoothness: number;
+      bodyTightness: number;
     };
 
 export type TrackPoint = {
@@ -495,7 +496,7 @@ function drawOutputFrame(
       canvas.width / canvas.height,
       operation.subjectScale,
     );
-    backgroundRenderer.render(video, canvas, trackedBox, crop);
+    backgroundRenderer.render(video, canvas, trackedBox, crop, operation.bodyTightness);
     return;
   }
   if (!filterRenderer) throw new Error('濾鏡輸出器尚未就緒');
