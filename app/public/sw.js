@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-background-removal-candidate-v1';
+const VERSION = 'nivitrack-background-removal-v2';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -37,7 +37,10 @@ self.addEventListener('activate', (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key.startsWith('nivitrack-') && key !== APP_CACHE && key !== MODEL_CACHE)
+            // Keep older app caches while already-open pages still reference their
+            // hashed CSS/JS files. Removing them during activation can leave Safari
+            // displaying only the unstyled server-rendered HTML after a reload.
+            .filter((key) => key.startsWith('nivitrack-') && key.endsWith('-models') && key !== MODEL_CACHE)
             .map((key) => caches.delete(key)),
         ),
       )
@@ -53,7 +56,9 @@ self.addEventListener('fetch', (event) => {
 
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request)
+      // GitHub Pages replaces hashed assets on every deployment. Always bypass the
+      // HTTP cache for HTML so a stale document never points at deleted asset names.
+      fetch(request, { cache: 'no-store' })
         .then((response) => {
           if (response && response.ok && response.type === 'basic') {
             const copy = response.clone();
