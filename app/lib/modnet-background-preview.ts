@@ -1,9 +1,11 @@
 import * as ort from 'onnxruntime-web/wasm';
 
 import {
+  preserveSuddenSubjectLoss,
   recoverTrackedSubjectAlpha,
   selectModnetTrackedAlpha,
   trackedSubjectRegion,
+  type SubjectCompletenessState,
 } from './person-background-removal';
 import type { Box } from './vit-tracker';
 import { interpolateBox, type TrackPoint } from './video-export';
@@ -90,6 +92,10 @@ class ModnetPreviewGenerator {
   private readonly inputData = new Float32Array(1 * 3 * INFERENCE_SIZE * INFERENCE_SIZE);
   private previousAlpha: Float32Array | null = null;
   private missedFrames = 0;
+  private completenessState: SubjectCompletenessState = {
+    referenceAlpha: null,
+    incompleteBandFrames: [0, 0, 0],
+  };
 
   private constructor(session: ort.InferenceSession) {
     this.session = session;
@@ -173,7 +179,20 @@ class ModnetPreviewGenerator {
           this.missedFrames,
         );
         this.missedFrames = recovered.missedFrames;
-        const current = recovered.alpha;
+        let current = recovered.alpha;
+        if (recovered.fresh) {
+          const preserved = preserveSuddenSubjectLoss(
+            current,
+            INFERENCE_SIZE,
+            INFERENCE_SIZE,
+            relativeBox,
+            regionWidth,
+            regionHeight,
+            this.completenessState,
+          );
+          current = preserved.alpha;
+          this.completenessState = preserved.state;
+        }
         if (this.previousAlpha?.length === current.length && recovered.fresh) {
           for (let index = 0; index < current.length; index += 1) {
             current[index] = current[index] * 0.78 + this.previousAlpha[index] * 0.22;
@@ -192,6 +211,10 @@ class ModnetPreviewGenerator {
 
   async close() {
     this.previousAlpha = null;
+    this.completenessState = {
+      referenceAlpha: null,
+      incompleteBandFrames: [0, 0, 0],
+    };
     await this.session.release();
   }
 }

@@ -10,6 +10,7 @@ import type { Box } from './vit-tracker';
 const LOW_CONFIDENCE_LIMIT = 0.12;
 const MAX_MISSED_FRAMES = 12;
 const MAX_MISSED_POSE_FRAMES = 6;
+const MAX_INCOMPLETE_BAND_FRAMES = 4;
 const INFERENCE_SIZE = 256;
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -509,6 +510,93 @@ export function recoverTrackedSubjectAlpha(
     }
   }
   return { alpha, missedFrames: nextMissedFrames, fresh: false };
+}
+
+export type SubjectCompletenessState = {
+  referenceAlpha: Float32Array | null;
+  incompleteBandFrames: [number, number, number];
+};
+
+export function preserveSuddenSubjectLoss(
+  currentAlpha: Float32Array,
+  maskWidth: number,
+  maskHeight: number,
+  box: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+  state: SubjectCompletenessState,
+) {
+  const pixelCount = maskWidth * maskHeight;
+  if (currentAlpha.length !== pixelCount) throw new Error('人物完整度遮罩尺寸不正確');
+  const previous = state.referenceAlpha;
+  if (previous?.length !== pixelCount) {
+    return {
+      alpha: new Float32Array(currentAlpha),
+      state: {
+        referenceAlpha: new Float32Array(currentAlpha),
+        incompleteBandFrames: [0, 0, 0] as [number, number, number],
+      },
+      guardedBands: 0,
+    };
+  }
+
+  const [boxX, boxY, boxWidth, boxHeight] = box;
+  const left = clamp(Math.floor((boxX / sourceWidth) * maskWidth), 0, maskWidth - 1);
+  const right = clamp(Math.ceil(((boxX + boxWidth) / sourceWidth) * maskWidth), left + 1, maskWidth);
+  const top = clamp(Math.floor((boxY / sourceHeight) * maskHeight), 0, maskHeight - 1);
+  const bottom = clamp(Math.ceil(((boxY + boxHeight) / sourceHeight) * maskHeight), top + 1, maskHeight);
+  const output = new Float32Array(currentAlpha);
+  const reference = new Float32Array(currentAlpha);
+  const incompleteBandFrames: [number, number, number] = [0, 0, 0];
+  let guardedBands = 0;
+
+  for (let band = 0; band < 3; band += 1) {
+    const bandTop = Math.floor(top + ((bottom - top) * band) / 3);
+    const bandBottom = Math.max(bandTop + 1, Math.floor(top + ((bottom - top) * (band + 1)) / 3));
+    let previousMass = 0;
+    let currentMass = 0;
+    let overlapMass = 0;
+    for (let y = bandTop; y < Math.min(bottom, bandBottom); y += 1) {
+      const row = y * maskWidth;
+      for (let x = left; x < right; x += 1) {
+        const index = row + x;
+        const oldValue = previous[index];
+        const newValue = currentAlpha[index];
+        previousMass += oldValue;
+        currentMass += newValue;
+        overlapMass += Math.min(oldValue, newValue);
+      }
+    }
+
+    const bandArea = Math.max(1, (Math.min(bottom, bandBottom) - bandTop) * (right - left));
+    const priorWasUsable = previousMass / bandArea >= 0.035;
+    const massRatio = currentMass / Math.max(0.001, previousMass);
+    const overlapRatio = overlapMass / Math.max(0.001, previousMass);
+    const suddenlyIncomplete = priorWasUsable
+      && (massRatio < 0.46 || (massRatio < 0.78 && overlapRatio < 0.22));
+    const priorIncompleteFrames = state.incompleteBandFrames[band] ?? 0;
+
+    if (suddenlyIncomplete && priorIncompleteFrames < MAX_INCOMPLETE_BAND_FRAMES) {
+      const nextIncompleteFrames = priorIncompleteFrames + 1;
+      const retention = 1 - nextIncompleteFrames * 0.1;
+      incompleteBandFrames[band] = nextIncompleteFrames;
+      guardedBands += 1;
+      for (let y = bandTop; y < Math.min(bottom, bandBottom); y += 1) {
+        const row = y * maskWidth;
+        for (let x = left; x < right; x += 1) {
+          const index = row + x;
+          output[index] = Math.max(currentAlpha[index], previous[index] * retention);
+          reference[index] = previous[index];
+        }
+      }
+    }
+  }
+
+  return {
+    alpha: output,
+    state: { referenceAlpha: reference, incompleteBandFrames },
+    guardedBands,
+  };
 }
 
 export function stabilizeTrackedSubjectAlpha(

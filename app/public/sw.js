@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v13-modnet-384';
+const VERSION = 'nivitrack-12-tools-v14-subject-completeness';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

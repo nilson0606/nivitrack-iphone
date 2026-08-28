@@ -3,6 +3,7 @@ import {
   constrainSubjectConfidenceToPose,
   createPoseBodyEnvelope,
   preferUsablePoseAlpha,
+  preserveSuddenSubjectLoss,
   recoverTrackedSubjectAlpha,
   selectModnetTrackedAlpha,
   selectTrackedSubjectAlpha,
@@ -222,6 +223,49 @@ function testMissingFrameRecovery() {
   };
 }
 
+function testPartialSubjectLossRecovery() {
+  const maskWidth = 12;
+  const maskHeight = 12;
+  const full = new Float32Array(maskWidth * maskHeight);
+  for (let y = 1; y <= 10; y += 1) {
+    for (let x = 4; x <= 7; x += 1) full[y * maskWidth + x] = 0.9;
+  }
+  const missingTop = new Float32Array(full);
+  for (let y = 1; y <= 4; y += 1) {
+    for (let x = 4; x <= 7; x += 1) missingTop[y * maskWidth + x] = 0;
+  }
+  const initialState = {
+    referenceAlpha: new Float32Array(full),
+    incompleteBandFrames: [0, 0, 0],
+  };
+  const recovered = preserveSuddenSubjectLoss(
+    missingTop,
+    maskWidth,
+    maskHeight,
+    [3, 1, 6, 10],
+    maskWidth,
+    maskHeight,
+    initialState,
+  );
+  let expired = recovered;
+  for (let frame = 0; frame < 4; frame += 1) {
+    expired = preserveSuddenSubjectLoss(
+      missingTop,
+      maskWidth,
+      maskHeight,
+      [3, 1, 6, 10],
+      maskWidth,
+      maskHeight,
+      expired.state,
+    );
+  }
+  return {
+    topTemporarilyPreserved: recovered.alpha[2 * maskWidth + 5] > 0.7,
+    lowerBodyUnchanged: recovered.alpha[9 * maskWidth + 5] === missingTop[9 * maskWidth + 5],
+    persistentLossEventuallyAccepted: expired.alpha[2 * maskWidth + 5] === 0,
+  };
+}
+
 function testTrackedRegion() {
   const box = [30, 20, 40, 80];
   const region = trackedSubjectRegion(box, 100, 200);
@@ -277,6 +321,7 @@ const invalidPoseFallback = testInvalidPoseFallback();
 const lowConfidence = testLowConfidenceDancer();
 const softModnet = testSoftModnetDancer();
 const recovery = testMissingFrameRecovery();
+const partialLoss = testPartialSubjectLossRecovery();
 const region = testTrackedRegion();
 const temporal = testTemporalStability();
 const edges = testEdgeTightening();
@@ -300,6 +345,9 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && recovery.firstMissingIsBlack
   && recovery.temporaryMissingRetained
   && recovery.expiredIsBlack
+  && partialLoss.topTemporarilyPreserved
+  && partialLoss.lowerBodyUnchanged
+  && partialLoss.persistentLossEventuallyAccepted
   && region.containsBox
   && region.cropped
   && temporal.oneFrameLeakRejected
@@ -320,6 +368,7 @@ console.log(JSON.stringify({
   lowConfidence,
   softModnet,
   recovery,
+  partialLoss,
   region,
   temporal,
   edges,

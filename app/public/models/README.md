@@ -18,6 +18,11 @@ WebApp runs it locally with ONNX Runtime Web at 384 x 384, one frame at a time,
 downsamples stored timeline masks to 256 x 256, and releases the session before
 playback or media encoding.
 
+Export generation also checks the tracked dancer in upper, middle, and lower
+body bands. A band that collapses for only a few mask frames is restored from
+the most recent reliable mask, while persistent changes are accepted after a
+short guard window to avoid permanent ghosting.
+
 - Source revision: https://huggingface.co/Xenova/modnet/tree/fa2fa546052fba4c08921230a26cc69a333fca12
 - Upstream project: https://github.com/ZHKKKe/MODNet
 - License: Apache License 2.0
