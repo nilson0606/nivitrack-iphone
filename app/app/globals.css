@@ -319,6 +319,63 @@ footer p span { margin-right: 7px; color: #20a866; }
   gap: 8px;
   margin-top: 16px;
 }
+.background-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 16px;
+}
+.background-options button {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: white;
+  padding: 13px;
+  color: var(--ink);
+  text-align: left;
+}
+.background-options button strong { font-size: 12px; }
+.background-options button span { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.background-options button.selected {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: white;
+}
+.background-options button.selected span { color: #c8d2cb; }
+.background-options button:disabled { opacity: .42; }
+.background-tools {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  border: 1px solid #dce5d7;
+  border-radius: 14px;
+  background: #eef4e9;
+  padding: 13px;
+}
+.background-tools > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.background-tools > div:first-child strong { font-size: 12px; }
+.background-tools > div:first-child span { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.background-tools > div:last-child { display: flex; gap: 7px; }
+.background-tools button {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: white;
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 750;
+}
+.background-tools button.primary { border-color: var(--ink); background: var(--ink); color: white; }
+.background-tools button:disabled { opacity: .42; }
 .aspect-options button,
 .export-buttons button,
 .export-result button {
@@ -424,6 +481,9 @@ footer p span { margin-right: 7px; color: #20a866; }
   .video-panel { min-height: 380px; border-radius: 22px; }
   .video-actions button { flex: 1 1 auto; }
   .export-buttons { grid-template-columns: 1fr; }
+  .background-options { grid-template-columns: 1fr; }
+  .background-tools { grid-template-columns: 1fr; }
+  .background-tools > div:last-child { display: grid; grid-template-columns: 1fr 1fr; }
   .picker { min-height: 354px; }
   .video-stage { min-height: 310px; }
   .side-panel { display: grid; grid-template-columns: 1fr; }

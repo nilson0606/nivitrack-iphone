@@ -14,11 +14,26 @@ export type RecorderSupport = {
   hevc: string | null;
 };
 
+export type FrameMatteRenderer = {
+  draw(
+    video: HTMLVideoElement,
+    outputContext: CanvasRenderingContext2D,
+    cropX: number,
+    cropY: number,
+    cropWidth: number,
+    cropHeight: number,
+    outputWidth: number,
+    outputHeight: number,
+    time: number,
+  ): void;
+};
+
 export type ExportOptions = {
   aspect: AspectPreset;
   subjectScale: number;
   smoothness: number;
   codec: 'h264' | 'hevc';
+  matte?: FrameMatteRenderer;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -66,7 +81,7 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
-function interpolateBox(path: TrackPoint[], time: number): Box {
+export function interpolateBox(path: TrackPoint[], time: number): Box {
   if (path.length === 0) return [0, 0, 1, 1];
   if (time <= path[0].time) return [...path[0].box] as Box;
   const last = path[path.length - 1];
@@ -109,12 +124,13 @@ export function smoothTrackPath(path: TrackPoint[], smoothness: number) {
   return result;
 }
 
-function drawOutputFrame(
+export function drawOutputFrame(
   video: HTMLVideoElement,
   canvas: HTMLCanvasElement,
   path: TrackPoint[],
   time: number,
   subjectScale: number,
+  matte?: FrameMatteRenderer,
 ) {
   const context = canvas.getContext('2d', { alpha: false });
   if (!context || !video.videoWidth || !video.videoHeight) return;
@@ -134,6 +150,20 @@ function drawOutputFrame(
 
   context.fillStyle = '#000';
   context.fillRect(0, 0, canvas.width, canvas.height);
+  if (matte) {
+    matte.draw(
+      video,
+      context,
+      cropX,
+      cropY,
+      cropWidth,
+      cropHeight,
+      canvas.width,
+      canvas.height,
+      time,
+    );
+    return;
+  }
   context.drawImage(
     video,
     cropX,
@@ -245,7 +275,7 @@ export class RealtimeVideoExporter {
       this.video.pause();
       await seek(this.video, 0);
       this.video.playbackRate = 1;
-      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.subjectScale);
+      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.subjectScale, options.matte);
       recorder.start(1000);
       recorderStarted = true;
 
@@ -272,7 +302,7 @@ export class RealtimeVideoExporter {
             settle(new Error('使用者已取消輸出'));
             return false;
           }
-          drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.subjectScale);
+          drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.subjectScale, options.matte);
           options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
           return true;
         };

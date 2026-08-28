@@ -7,75 +7,64 @@
 「直接執行」的定義：
 
 - 選片、主角指定、ViT 追蹤、置中／縮放與影片輸出都在 iPhone 完成。
-- 實際使用時不依賴 Windows 電腦、Node.js、Python、OpenCV 伺服器或區網電腦。
+- 實際使用時只依賴 iPhone Safari／主畫面 Web App，不需要任何外部處理服務。
 - 不把影片上傳到雲端運算。
 - 可以從 iPhone「照片」或「檔案」選擇影片。
 - 必須直接讀取並處理 iPhone 原始 MOV／HEVC；不得要求使用者先轉成 H.264。
 - 完成影片可儲存到「檔案」、分享或加入照片；所有輸出都在 iPhone 內產生。
 - 預設本機母片輸出為 iPhone 原生取向的 MOV／HEVC＋AAC。
 - 只有使用者選擇「相容分享」時，才另外輸出 MP4／H.264＋AAC。
-- 最終理想型態是可安裝到主畫面的 Web App／PWA；若純 Web 無法達到可接受的追蹤、影片編碼或記憶體表現，必須用實測證據說明，再提出原生 Swift／Core ML 版本，不可暗中改用電腦或雲端後端。
+- 產品型態是可安裝到主畫面的 Web App／PWA；任何能力限制都必須用真實 iPhone 實測說明，不可暗中改用雲端後端。
 
 使用者接下來會在新 Codex 對話繼續此工作。
 
-## 2. 唯讀技術參考
+## 2. iPhone 版唯一來源
 
-Windows 實作位於隔壁的 `D:\nivitrack\`，不在本 iPhone 專案的開發範圍內。只可讀取其演算法、模型與既有行為作為參考，不需維護 Windows 版，也不得修改或刪除該目錄內的任何內容。
+本文件只描述目前 iPhone Web App；不包含或維護其他平台版本。
 
-與 iPhone 版直接相關的唯讀參考：
+- `app/app/page.tsx`：手機操作流程與狀態。
+- `app/lib/vit-tracker.ts` 與 `app/public/models/vittrack.onnx`：必要的主角追蹤。
+- `app/lib/video-export.ts`：置中、縮放、音訊保留與影片輸出。
+- `app/lib/background-removal.ts` 與 `app/lib/edgetam-onnx-segmenter.ts`：追蹤完成後可選擇的本機去背。
+- `app/public/manual.html`：手機使用手冊。
 
-- `D:\nivitrack\nivitrack.html`：現有介面與瀏覽器端初始辨識。
-- `D:\nivitrack\opencv_tracker.py`：已驗證的 OpenCV ViT 逐幀追蹤邏輯。
-- `D:\nivitrack\vendor\models\object_tracking_vittrack_2023sep.onnx`：OpenCV ViT Tracker ONNX 模型。
-- `D:\nivitrack\public\models\ssdlite_mobilenet_v2\`：COCO-SSD／SSDLite 初始物件辨識模型。
-- `D:\nivitrack\NiviTrack-使用手冊.md` 與 `D:\nivitrack\NiviTrack-使用手冊.html`：現有操作行為參考。
-
-現有實作已驗證的產品行為：
-
-- 載入 MP4、WebM，以及將 MOV／HEVC 轉為 H.264 MP4。
-- 使用 SSDLite MobileNet V2（COCO-SSD）找出人物、狗與貓。
-- 對整張畫面與四個重疊區域做初始掃描，改善後排人物漏檢。
-- 點擊辨識框，或直接拖曳框住未被辨識的任何人物／寵物。
-- 將使用者選定的 bbox 交給 OpenCV ViT Tracker。
-- 逐幀產生追蹤路徑，平滑置中並依 9:16、1:1、16:9 構圖。
-- 以 H.264／AAC、30 FPS、高畫質 MP4 輸出。
+目前產品流程：選片、停格、框選主角、完整 ViT 追蹤，再由使用者選擇保留原始背景或去背黑底。ViT 不可跳過，去背可以跳過。
 
 ## 3. 已驗證的重要行為
 
-曾使用來源影片：
+曾以一支 HEVC、1920×1080、30 FPS、約 15.33 秒的本機影片驗證；影片只供分析，不得形成特定物品、人物位置或檔名規則。
 
-`C:\Users\User\Downloads\IMG_6887.MOV`
-
-來源為 HEVC、1920×1080、30 FPS、約 15.33 秒。
-
-ViT 測試結果：
+既有 ViT 追蹤測試結果：
 
 - 460 幀零失敗。
 - 平均 score 約 0.7155，最後 score 約 0.6322。
 - 最後三秒仍是原先選定的女性主角。
 - 輸出為 H.264 1080×1920、30 FPS、約 15.33 秒，含 AAC 音訊。
 
-先前的 CSRT 版本會在最後約兩秒換人；已改為 OpenCV 官方 ViT Tracker。不要退回 CSRT。
+目前以 `app/lib/vit-tracker.ts` 為唯一追蹤實作；不可替換成會自動換主角的追蹤器。
+
+目前去背候選版測試結果：
+
+- 從使用者指定的停格影格向影片前後雙向延續遮罩。
+- 230 幀全部完成，平均推論約 71 ms／幀。
+- 遮罩前景面積為 431～911，最大相鄰變化約 19%，未出現整片背景突然被選中的情況。
+- 以上是本機 WebGPU 驗證數據；在正式發布前仍須以真實 iPhone Safari 做一次最終驗收。
 
 ## 4. 絕對不能做的事
 
 - 不得依影片時間、人物位置或衣服顏色寫死規則。
-- 不得只針對 `IMG_6887.MOV` 修補。
+- 不得只針對單一測試影片或某一種背景物品修補。
 - 不得自動改追畫面中最大的人。
 - 不得把 SSD 漏檢誤認為 ViT 追蹤失敗。
 - 不得在開始追蹤前把整支 MOV 預先轉成 H.264；追蹤應直接取得 iPhone 原生解碼後的影格。
 - 不得把 H.264 當成唯一或預設本機輸出；H.264 是相容分享用格式。
-- 不得修改或刪除隔壁唯讀參考專案 `D:\nivitrack\` 內的任何內容。
+- 不得修改或刪除目前 iPhone 專案以外的任何內容。
 - 不得未經使用者同意發布網站、建立雲端影片儲存或上傳影片。
-- 不得宣稱「iPhone 可用」卻仍要求旁邊有一台電腦處理。
+- 不得宣稱「iPhone 可用」卻仍要求外部裝置協助處理。
 
 ## 5. iPhone 專案邊界
 
-所有新建與修改都必須在 iPhone 專案內進行：
-
-`D:\nivitrack_iphone\`
-
-`D:\nivitrack\` 僅供讀取與對照，不是交付目標或可編輯工作區。
+所有新建與修改都必須留在本 iPhone 專案儲存庫。其他專案不屬於交付範圍，也不可編輯或刪除。
 
 ## 6. 第一階段：先做有證據的技術可行性研究
 
@@ -108,7 +97,7 @@ ViT 測試結果：
 5. 對 2～5 秒片段執行 ViT 追蹤。
 6. 在畫面上畫出每幀 bbox 與 score。
 7. 顯示 FPS、每幀推論時間、記憶體錯誤及取消按鈕。
-8. 將同一段片的 JavaScript 路徑與 `opencv_tracker.py` 參考路徑比較。
+8. 以固定影格序列檢查相同輸入是否得到穩定、可重現的追蹤路徑。
 
 只有這個原型在真實 iPhone 上證明不會換人，才進入完整輸出。
 
@@ -124,7 +113,7 @@ ViT 測試結果：
 - bbox clip、尺度更新、template／state 是否更新。
 - score 的解析與失敗處理。
 
-請先讀 `opencv_tracker.py`，再查 OpenCV TrackerVit 的官方實作或來源，逐項移植。建立 Python 與 JavaScript 的固定 frame-by-frame 對照測試，允許極小浮點差異，但不能只靠肉眼說相似。
+建立 JavaScript 固定 frame-by-frame 測試，檢查 tensor、bbox、score 與每幀結果；允許極小浮點差異，但不能只靠肉眼說相似。
 
 ## 9. 完整 iPhone 版必須保留的產品行為
 
@@ -164,7 +153,7 @@ ViT 測試結果：
 4. 音訊盡量直接 remux；無法 remux 才重編碼。
 5. 使用 chunk／stream 或分段處理，避免 1080p 長影片造成記憶體崩潰。
 
-如果純 Web 無法可靠輸出 H.264／AAC MP4，請將「原生 Swift App + Core ML／Vision／AVFoundation」列為正式替代方案，並清楚比較，而不是回到電腦後端。
+若 Safari 無法可靠輸出指定格式，必須清楚顯示限制與可用的本機相容格式，不可改走遠端後端。
 
 ## 11. PWA 與隱私
 
@@ -199,14 +188,14 @@ ViT 測試結果：
 - 輸出 codec、解析度、FPS、時長與音訊。
 - 是否從頭到尾保持同一主角。
 
-## 13. 新對話的第一個行動
+## 13. 目前版本與下一個行動
 
-1. 先閱讀本 handoff，並以唯讀方式參考 `D:\nivitrack\opencv_tracker.py`、`D:\nivitrack\nivitrack.html` 與模型。
-2. 檢查工作樹，保留所有現有修改；不要 reset 或刪除。
-3. 查最新官方 iOS Safari／WebKit、ONNX Runtime Web、影片編碼支援。
-4. 寫出可行性決策與最小原型架構。
-5. 在 `D:\nivitrack_iphone\` 建立第一個可跑的短片追蹤原型。
-6. 沒有真實 iPhone 測試證據前，不要宣布完成。
+- `stable-no-effects-v1` 是使用者已確認的無特效穩定基準，不得破壞。
+- 去背候選工作位於 `codex/background-removal-v1`，尚未取代公開版。
+- 正式流程固定為：選片 → 停格 → 框主角 → 完整 ViT 追蹤 → 選擇原始背景或去背黑底。
+- ViT 追蹤不可跳過；去背可以跳過。選原始背景時必須走原本穩定輸出路徑。
+- 去背只在使用者選擇後才載入 EdgeTAM；先做 3 秒預覽，通過後才允許完整去背輸出。
+- 未經使用者同意不得部署；部署後只做一次真實 iPhone Safari 驗收。
 
 ## 14. 使用者偏好
 

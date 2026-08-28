@@ -136,7 +136,7 @@
       <h1>從選片到輸出，照著做就好。</h1>
       <p>NiviTrack 直接讀取 iPhone 裡的 MOV、HEVC 或 MP4，追蹤指定主角並輸出置中構圖的影片。影片不會上傳。</p>
       <div class="hero-actions"><a class="app-link" href="./">立即開啟 NiviTrack</a></div>
-      <div class="notice"><strong>支援範圍：</strong>iPhone、iOS 26、Safari。本專案不支援 Windows PC。</div>
+      <div class="notice"><strong>支援範圍：</strong>iPhone、iOS 26、Safari。影片與 AI 處理都留在手機上。</div>
     </div>
     <nav class="toc" aria-label="手冊目錄">
       <a href="#install">安裝到主畫面</a>
@@ -167,8 +167,9 @@
           <div class="step"><b>3</b><div><strong>指定主角</strong><p>點「進入主角選取」，用手指完整框住人物或寵物。也可點「AI 尋找人物／寵物」。</p></div></div>
           <div class="step"><b>4</b><div><strong>先測試 3 秒</strong><p>點「測試 3 秒 ViT」，確認框線能跟著主角。這一步只測試，不會輸出影片。</p></div></div>
           <div class="step"><b>5</b><div><strong>追蹤完整影片</strong><p>測試正常後點「追蹤完整影片」，等待顯示「完整 ViT 路徑已建立」。</p></div></div>
+          <div class="step"><b>6</b><div><strong>選擇背景</strong><p>選「原始背景」可直接輸出；選「去背黑底」則先完成 3 秒去背預覽，滿意後再輸出完整影片。</p></div></div>
         </div>
-        <p class="tip">追蹤及輸出期間，請保持 NiviTrack 在前景，不要鎖定螢幕或切換到其他 App。</p>
+        <p class="tip"><strong>ViT 完整追蹤一定要做；去背可以跳過。</strong>追蹤、去背及輸出期間，請保持 NiviTrack 在前景，不要鎖定螢幕或切換到其他 App。</p>
       </section>
       <section id="export">
         <h2>構圖、輸出與儲存</h2>
@@ -178,6 +179,8 @@
           <div class="option"><strong>16:9</strong><span>橫式影片</span></div>
         </div>
         <ul>
+          <li><strong>原始背景：</strong>跳過去背，使用原本的穩定輸出。</li>
+          <li><strong>去背黑底：</strong>第一次需下載較大的本機模型；先測 3 秒，通過後才完整處理。</li>
           <li><strong>主角大小：</strong>數值越大，主角在成品中越大。</li>
           <li><strong>置中柔順度：</strong>數值越高，鏡頭移動越平順。</li>
           <li><strong>建議預設：</strong>9:16、主角大小 55%、置中柔順度 72%。</li>
@@ -221,6 +224,7 @@
         <details open><summary>一直顯示「正在檢查 Safari…」</summary><div>從多工畫面將 NiviTrack 往上滑關閉，確認網路正常，再由主畫面重新開啟。若仍未恢復，再關閉並開啟一次。</div></details>
         <details><summary>影片畫面是黑的</summary><div>先按播放，確認 Safari 能解碼影片。看得到畫面後，暫停在主角清楚的位置，再進入主角選取。</div></details>
         <details><summary>追蹤框跑掉</summary><div>重新框選主角。選擇主角輪廓清楚的畫面，完整框住主角並減少背景，避開嚴重遮擋。先通過 3 秒測試，再做完整追蹤。</div></details>
+        <details><summary>去背按鈕不能使用或去背失敗</summary><div>確認「裝置能力」中的「主角去背」有勾選。去背需要 Safari WebGPU FP16；不支援或遮罩異常時仍可切回「原始背景」輸出，系統不會自動產生黑畫面成品。</div></details>
         <details><summary>輸出中斷或沒有聲音</summary><div>保持 NiviTrack 在前景、確認電量與儲存空間充足，並優先使用「輸出相容 MP4」。仍有問題時，關閉 App 後重新開啟再處理。</div></details>
         <details><summary>主畫面的功能沒有更新</summary><div>從多工畫面完全關閉 NiviTrack，再由主畫面重新開啟。網址和主畫面圖示都不需要更換。</div></details>
       </section>
