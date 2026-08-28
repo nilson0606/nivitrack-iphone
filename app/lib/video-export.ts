@@ -16,6 +16,7 @@ export type ExportOperation =
       centerX: number;
       centerY: number;
       zoom: number;
+      selectionBox?: Box;
     }
   | {
       kind: 'track';
@@ -69,6 +70,168 @@ const OUTPUT_SIZES: Record<AspectPreset, [number, number]> = {
   '16:9': [1280, 720],
 };
 
+const FILTER_INDEX: Record<FilterPreset, number> = {
+  vivid: 0,
+  soft: 1,
+  cinematic: 2,
+  warm: 3,
+  mono: 4,
+  vintage: 5,
+};
+
+const FILTER_VERTEX_SHADER = `
+attribute vec2 a_position;
+attribute vec2 a_texCoord;
+varying vec2 v_texCoord;
+void main() {
+  gl_Position = vec4(a_position, 0.0, 1.0);
+  v_texCoord = a_texCoord;
+}`;
+
+const FILTER_FRAGMENT_SHADER = `
+precision mediump float;
+varying vec2 v_texCoord;
+uniform sampler2D u_image;
+uniform float u_strength;
+uniform int u_preset;
+
+vec3 adjustSaturation(vec3 color, float amount) {
+  float gray = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  return mix(vec3(gray), color, amount);
+}
+
+vec3 adjustContrast(vec3 color, float amount) {
+  return (color - 0.5) * amount + 0.5;
+}
+
+vec3 sepiaColor(vec3 color) {
+  return vec3(
+    dot(color, vec3(0.393, 0.769, 0.189)),
+    dot(color, vec3(0.349, 0.686, 0.168)),
+    dot(color, vec3(0.272, 0.534, 0.131))
+  );
+}
+
+void main() {
+  vec4 sampleColor = texture2D(u_image, v_texCoord);
+  vec3 original = sampleColor.rgb;
+  vec3 target = original;
+  if (u_preset == 0) {
+    target = adjustSaturation(adjustContrast(original, 1.12), 1.50) * 1.03;
+  } else if (u_preset == 1) {
+    target = adjustSaturation(adjustContrast(original, 0.90), 0.90) * 1.08;
+  } else if (u_preset == 2) {
+    target = adjustSaturation(adjustContrast(original, 1.20), 0.76) * 0.95;
+  } else if (u_preset == 3) {
+    target = adjustSaturation(adjustContrast(original, 1.05), 1.20) * 1.03;
+    target = mix(target, sepiaColor(target), 0.28);
+  } else if (u_preset == 4) {
+    target = adjustSaturation(adjustContrast(original, 1.25), 0.0);
+  } else {
+    target = adjustSaturation(adjustContrast(original, 1.08), 0.82) * 0.96;
+    target = mix(target, sepiaColor(target), 0.46);
+  }
+  gl_FragColor = vec4(clamp(mix(original, target, u_strength), 0.0, 1.0), sampleColor.a);
+}`;
+
+function compileShader(gl: WebGLRenderingContext, type: number, source: string) {
+  const shader = gl.createShader(type);
+  if (!shader) throw new Error('Safari 無法建立濾鏡著色器');
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const message = gl.getShaderInfoLog(shader) ?? '未知錯誤';
+    gl.deleteShader(shader);
+    throw new Error('Safari 濾鏡編譯失敗：' + message);
+  }
+  return shader;
+}
+
+class WebGLFilterRenderer {
+  readonly canvas: HTMLCanvasElement;
+  private readonly gl: WebGLRenderingContext;
+  private readonly program: WebGLProgram;
+  private readonly texture: WebGLTexture;
+  private readonly buffer: WebGLBuffer;
+
+  constructor(width: number, height: number, preset: FilterPreset, strength: number) {
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const gl = this.canvas.getContext('webgl', {
+      alpha: false,
+      antialias: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+    });
+    if (!gl) throw new Error('這台 Safari 無法啟動 WebGL 濾鏡輸出');
+    this.gl = gl;
+
+    const vertex = compileShader(gl, gl.VERTEX_SHADER, FILTER_VERTEX_SHADER);
+    const fragment = compileShader(gl, gl.FRAGMENT_SHADER, FILTER_FRAGMENT_SHADER);
+    const program = gl.createProgram();
+    if (!program) throw new Error('Safari 無法建立濾鏡程式');
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      const message = gl.getProgramInfoLog(program) ?? '未知錯誤';
+      gl.deleteProgram(program);
+      throw new Error('Safari 濾鏡連結失敗：' + message);
+    }
+    this.program = program;
+    gl.useProgram(program);
+
+    const buffer = gl.createBuffer();
+    if (!buffer) throw new Error('Safari 無法建立濾鏡頂點資料');
+    this.buffer = buffer;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1, 0, 0,
+       1, -1, 1, 0,
+      -1,  1, 0, 1,
+       1,  1, 1, 1,
+    ]), gl.STATIC_DRAW);
+    const position = gl.getAttribLocation(program, 'a_position');
+    const texCoord = gl.getAttribLocation(program, 'a_texCoord');
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(texCoord);
+    gl.vertexAttribPointer(texCoord, 2, gl.FLOAT, false, 16, 8);
+
+    const texture = gl.createTexture();
+    if (!texture) throw new Error('Safari 無法建立影片濾鏡材質');
+    this.texture = texture;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+    gl.uniform1i(gl.getUniformLocation(program, 'u_image'), 0);
+    gl.uniform1i(gl.getUniformLocation(program, 'u_preset'), FILTER_INDEX[preset]);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_strength'), clamp(strength, 0, 1));
+    gl.viewport(0, 0, width, height);
+  }
+
+  render(video: HTMLVideoElement) {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.flush();
+  }
+
+  dispose() {
+    this.gl.deleteTexture(this.texture);
+    this.gl.deleteBuffer(this.buffer);
+    this.gl.deleteProgram(this.program);
+  }
+}
+
 function firstSupported(types: string[]) {
   if (typeof MediaRecorder === 'undefined') return null;
   if (typeof MediaRecorder.isTypeSupported !== 'function') return types.at(-1) ?? null;
@@ -120,11 +283,22 @@ function sourceOutputSize(video: HTMLVideoElement): [number, number] {
   return [even(sourceWidth * scale), even(sourceHeight * scale)];
 }
 
+function selectionOutputSize(box: Box): [number, number] {
+  const width = Math.max(2, box[2]);
+  const height = Math.max(2, box[3]);
+  const scale = Math.min(1, 1280 / Math.max(width, height));
+  return [even(width * scale), even(height * scale)];
+}
+
 function configureOutputCanvas(
   video: HTMLVideoElement,
   canvas: HTMLCanvasElement,
   operation: ExportOperation,
 ) {
+  if (operation.kind === 'crop' && operation.selectionBox) {
+    [canvas.width, canvas.height] = selectionOutputSize(operation.selectionBox);
+    return;
+  }
   if (operation.kind === 'filter' || operation.aspect === 'source') {
     [canvas.width, canvas.height] = sourceOutputSize(video);
     return;
@@ -223,6 +397,18 @@ function drawCroppedFrame(
   if (!context || !video.videoWidth || !video.videoHeight) return;
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
+  if (operation.selectionBox) {
+    const [rawX, rawY, rawWidth, rawHeight] = operation.selectionBox;
+    const cropX = clamp(rawX, 0, Math.max(0, sourceWidth - 2));
+    const cropY = clamp(rawY, 0, Math.max(0, sourceHeight - 2));
+    const cropWidth = clamp(rawWidth, 2, sourceWidth - cropX);
+    const cropHeight = clamp(rawHeight, 2, sourceHeight - cropY);
+    context.filter = 'none';
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
+    return;
+  }
   const outputAspect = canvas.width / canvas.height;
   const sourceAspect = sourceWidth / sourceHeight;
   let cropWidth = sourceWidth;
@@ -247,14 +433,15 @@ function drawCroppedFrame(
 function drawFilteredFrame(
   video: HTMLVideoElement,
   canvas: HTMLCanvasElement,
-  operation: Extract<ExportOperation, { kind: 'filter' }>,
+  renderer: WebGLFilterRenderer,
 ) {
   const context = canvas.getContext('2d', { alpha: false });
   if (!context || !video.videoWidth || !video.videoHeight) return;
   context.fillStyle = '#000';
   context.fillRect(0, 0, canvas.width, canvas.height);
-  context.filter = getFilterCss(operation.preset, operation.strength);
-  context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, canvas.width, canvas.height);
+  renderer.render(video);
+  context.filter = 'none';
+  context.drawImage(renderer.canvas, 0, 0, canvas.width, canvas.height);
   context.filter = 'none';
 }
 
@@ -264,6 +451,7 @@ function drawOutputFrame(
   path: TrackPoint[],
   time: number,
   operation: ExportOperation,
+  filterRenderer: WebGLFilterRenderer | null,
 ) {
   if (operation.kind === 'track') {
     drawTrackedFrame(video, canvas, path, time, operation.subjectScale);
@@ -273,7 +461,8 @@ function drawOutputFrame(
     drawCroppedFrame(video, canvas, operation);
     return;
   }
-  drawFilteredFrame(video, canvas, operation);
+  if (!filterRenderer) throw new Error('濾鏡輸出器尚未就緒');
+  drawFilteredFrame(video, canvas, filterRenderer);
 }
 
 async function seek(video: HTMLVideoElement, time: number) {
@@ -348,6 +537,9 @@ export class RealtimeVideoExporter {
     const smoothedPath = options.operation.kind === 'track'
       ? smoothTrackPath(path, options.operation.smoothness)
       : path;
+    const filterRenderer = options.operation.kind === 'filter'
+      ? new WebGLFilterRenderer(width, height, options.operation.preset, options.operation.strength)
+      : null;
     const originalTime = this.video.currentTime;
     const originalRate = this.video.playbackRate;
     const audioTracks = await this.prepareAudio();
@@ -378,7 +570,7 @@ export class RealtimeVideoExporter {
       this.video.pause();
       await seek(this.video, 0);
       this.video.playbackRate = 1;
-      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation);
+      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer);
       recorder.start(1000);
       recorderStarted = true;
 
@@ -405,7 +597,7 @@ export class RealtimeVideoExporter {
             settle(new Error('使用者已取消輸出'));
             return false;
           }
-          drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation);
+          drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation, filterRenderer);
           options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
           return true;
         };
@@ -445,6 +637,7 @@ export class RealtimeVideoExporter {
       this.monitor!.gain.value = 1;
       this.video.playbackRate = originalRate;
       await seek(this.video, Math.min(originalTime, this.video.duration)).catch(() => undefined);
+      filterRenderer?.dispose();
     }
 
     if (playbackError) throw playbackError;

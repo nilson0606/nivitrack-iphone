@@ -33,9 +33,11 @@ type VideoInfo = {
   duration: string;
   resolution: string;
   aspectRatio: number;
+  width: number;
+  height: number;
 };
 
-type Phase = 'choose' | 'tool-ready' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
+type Phase = 'choose' | 'tool-ready' | 'crop-select' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
 
 type ToolId =
   | `filter-${FilterPreset}`
@@ -63,7 +65,7 @@ const TOOL_CHOICES: ToolChoice[] = [
   { id: 'crop-9-16', group: '裁切', name: '直式 9:16', detail: '短影音滿版比例', fileTag: '9x16' },
   { id: 'crop-square', group: '裁切', name: '方形 1:1', detail: '社群方形構圖', fileTag: '1x1' },
   { id: 'crop-16-9', group: '裁切', name: '橫式 16:9', detail: '標準寬螢幕比例', fileTag: '16x9' },
-  { id: 'crop-free', group: '裁切', name: '自由裁切', detail: '移動中心並縮放', fileTag: 'FreeCrop' },
+  { id: 'crop-free', group: '裁切', name: '自由裁切', detail: '手指框出任意範圍', fileTag: 'FreeCrop' },
   { id: 'track', group: '鎖定', name: '主角鎖定置中', detail: 'ViT 追蹤人物或寵物', fileTag: 'SubjectLock' },
 ];
 
@@ -150,6 +152,7 @@ export default function Home() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [trackPath, setTrackPath] = useState<TrackPoint[]>([]);
+  const [cropBox, setCropBox] = useState<Box | null>(null);
   const [selectedTool, setSelectedTool] = useState<ToolId | null>(null);
   const [filterStrength, setFilterStrength] = useState(0.72);
   const [cropCenterX, setCropCenterX] = useState(0.5);
@@ -234,6 +237,7 @@ export default function Home() {
     setCandidates([]);
     selectionRef.current = null;
     setTrackPath([]);
+    setCropBox(null);
     setSelectedTool(null);
     setFilterStrength(0.72);
     setCropCenterX(0.5);
@@ -256,6 +260,8 @@ export default function Home() {
       duration: formatDuration(video.duration),
       resolution: video.videoWidth + ' × ' + video.videoHeight,
       aspectRatio: video.videoWidth / Math.max(1, video.videoHeight),
+      width: video.videoWidth,
+      height: video.videoHeight,
     });
     setNotice('影片已在本機載入；請從 11 種功能中選擇一項');
   }
@@ -274,9 +280,14 @@ export default function Home() {
     setCropCenterX(0.5);
     setCropCenterY(0.5);
     setCropZoom(1);
+    setCropBox(null);
     resetExportResult();
     if (tool === 'track') {
       requestAnimationFrame(() => enterSelection());
+      return;
+    }
+    if (tool === 'crop-free') {
+      requestAnimationFrame(() => enterCropSelection());
       return;
     }
     setPhase('tool-ready');
@@ -291,6 +302,7 @@ export default function Home() {
     setCandidates([]);
     setStats(null);
     setTrackPath([]);
+    setCropBox(null);
     selectionRef.current = null;
     resetExportResult();
     setNotice('請從 11 種功能中選擇一項');
@@ -343,6 +355,66 @@ export default function Home() {
     context.fillText(label, x + lineWidth * 2, Math.max(lineWidth * 6.5, y - lineWidth * 2));
   }
 
+  function drawCropFrame(targetBox: Box | null) {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || !video.videoWidth) return;
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (!targetBox) return;
+    const [x, y, width, height] = targetBox;
+    const lineWidth = Math.max(4, canvas.width / 320);
+    context.fillStyle = 'rgba(0, 0, 0, 0.58)';
+    context.fillRect(0, 0, canvas.width, y);
+    context.fillRect(0, y, x, height);
+    context.fillRect(x + width, y, canvas.width - x - width, height);
+    context.fillRect(0, y + height, canvas.width, canvas.height - y - height);
+    context.strokeStyle = '#d9f06f';
+    context.lineWidth = lineWidth;
+    context.strokeRect(x, y, width, height);
+    context.fillStyle = '#102018';
+    context.font = '700 ' + Math.max(18, canvas.width / 55) + 'px -apple-system';
+    const label = '保留範圍';
+    const labelWidth = context.measureText(label).width + lineWidth * 5;
+    context.fillRect(x, Math.max(0, y - lineWidth * 9), labelWidth, lineWidth * 9);
+    context.fillStyle = '#d9f06f';
+    context.fillText(label, x + lineWidth * 2, Math.max(lineWidth * 6.5, y - lineWidth * 2));
+  }
+
+  function enterCropSelection() {
+    const video = videoRef.current;
+    if (!video) return;
+    video.pause();
+    setPhase('crop-select');
+    setCropBox(null);
+    resetExportResult();
+    setNotice('用手指框出成品要保留的畫面範圍，比例完全自由');
+    requestAnimationFrame(() => drawCropFrame(null));
+  }
+
+  function confirmCropSelection() {
+    if (!cropBox) {
+      setNotice('請先用手指框出要保留的範圍');
+      return;
+    }
+    const video = videoRef.current;
+    if (video?.videoWidth && video.videoHeight) {
+      const targetRatio = cropBox[2] / cropBox[3];
+      const sourceRatio = video.videoWidth / video.videoHeight;
+      const baseWidth = sourceRatio > targetRatio ? video.videoHeight * targetRatio : video.videoWidth;
+      setCropCenterX((cropBox[0] + cropBox[2] / 2) / video.videoWidth);
+      setCropCenterY((cropBox[1] + cropBox[3] / 2) / video.videoHeight);
+      setCropZoom(baseWidth / cropBox[2]);
+    }
+    setPhase('tool-ready');
+    setNotice('自由裁切框已確認；可輸出影片或重新框選');
+  }
+
   function enterSelection() {
     const video = videoRef.current;
     if (!video) return;
@@ -371,6 +443,13 @@ export default function Home() {
   }
 
   function startBox(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (phase === 'crop-select') {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      dragStartRef.current = pointerPosition(event);
+      setCropBox(null);
+      drawCropFrame(null);
+      return;
+    }
     if (phase !== 'select') return;
     const point = pointerPosition(event);
     const hit = candidates
@@ -397,17 +476,36 @@ export default function Home() {
 
   function moveBox(event: ReactPointerEvent<HTMLCanvasElement>) {
     const start = dragStartRef.current;
-    if (!start || phase !== 'select') return;
+    if (!start) return;
     const next = normalizeBox(start, pointerPosition(event));
+    if (phase === 'crop-select') {
+      setCropBox(next);
+      drawCropFrame(next);
+      return;
+    }
+    if (phase !== 'select') return;
     setBox(next);
     drawFrame(next);
   }
 
   function finishBox(event: ReactPointerEvent<HTMLCanvasElement>) {
     const start = dragStartRef.current;
-    if (!start || phase !== 'select') return;
+    if (!start) return;
     dragStartRef.current = null;
     const next = normalizeBox(start, pointerPosition(event));
+    if (phase === 'crop-select') {
+      if (next[2] < 24 || next[3] < 24) {
+        setCropBox(null);
+        drawCropFrame(null);
+        setNotice('裁切範圍太小，請重新拖曳較大的框');
+        return;
+      }
+      setCropBox(next);
+      drawCropFrame(next);
+      setNotice('裁切框已畫好；確認後即可輸出');
+      return;
+    }
+    if (phase !== 'select') return;
     if (next[2] < 12 || next[3] < 12) {
       setBox(null);
       drawFrame(null);
@@ -661,12 +759,17 @@ export default function Home() {
     if (filterPreset) {
       operation = { kind: 'filter', preset: filterPreset, strength: filterStrength };
     } else if (cropAspect) {
+      if (selectedTool === 'crop-free' && !cropBox) {
+        setNotice('請先用手指框出自由裁切範圍');
+        return;
+      }
       operation = {
         kind: 'crop',
         aspect: cropAspect,
         centerX: cropCenterX,
         centerY: cropCenterY,
         zoom: cropZoom,
+        selectionBox: selectedTool === 'crop-free' ? cropBox ?? undefined : undefined,
       };
     } else if (selectedTool === 'track') {
       operation = { kind: 'track', aspect, subjectScale, smoothness };
@@ -745,7 +848,9 @@ export default function Home() {
   const selectedCropAspect = cropAspectFor(selectedTool);
   const isSimpleTool = Boolean(selectedFilter || selectedCropAspect);
   const sourceRatio = videoInfo?.aspectRatio ?? 9 / 16;
-  const previewRatio = selectedCropAspect === '9:16'
+  const previewRatio = selectedTool === 'crop-free' && cropBox
+    ? cropBox[2] / cropBox[3]
+    : selectedCropAspect === '9:16'
     ? 9 / 16
     : selectedCropAspect === '1:1'
       ? 1
@@ -816,7 +921,7 @@ export default function Home() {
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'exporting') && (
                   <div className="progress-overlay">
@@ -830,6 +935,13 @@ export default function Home() {
                   <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
                 )}
                 {phase === 'tool-ready' && <button type="button" onClick={returnToTools}>取消此功能</button>}
+                {phase === 'tool-ready' && selectedTool === 'crop-free' && <button type="button" onClick={enterCropSelection}>重新框選裁切</button>}
+                {phase === 'crop-select' && (
+                  <>
+                    <button type="button" onClick={returnToTools}>返回功能選單</button>
+                    <button className="primary" type="button" disabled={!cropBox} onClick={confirmCropSelection}>使用此裁切框</button>
+                  </>
+                )}
                 {phase === 'select' && (
                   <>
                     <button type="button" onClick={returnToTools}>返回功能選單</button>
@@ -914,20 +1026,24 @@ export default function Home() {
                     <>
                       <div className="crop-summary">
                         <span>輸出比例</span>
-                        <strong>{selectedCropAspect === 'source' ? '維持原片比例' : selectedCropAspect}</strong>
+                        <strong>{selectedTool === 'crop-free' && cropBox ? `自由比例 ${(cropBox[2] / cropBox[3]).toFixed(2)}:1` : selectedCropAspect}</strong>
                       </div>
-                      <label className="range-control">
-                        <span><b>左右位置</b><em>{Math.round(cropCenterX * 100)}%</em></span>
-                        <input type="range" min="0" max="100" value={Math.round(cropCenterX * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropCenterX(Number(event.target.value) / 100)} />
-                      </label>
-                      <label className="range-control">
-                        <span><b>上下位置</b><em>{Math.round(cropCenterY * 100)}%</em></span>
-                        <input type="range" min="0" max="100" value={Math.round(cropCenterY * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropCenterY(Number(event.target.value) / 100)} />
-                      </label>
-                      <label className="range-control">
-                        <span><b>畫面縮放</b><em>{Math.round(cropZoom * 100)}%</em></span>
-                        <input type="range" min="100" max="250" value={Math.round(cropZoom * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropZoom(Number(event.target.value) / 100)} />
-                      </label>
+                      {selectedTool !== 'crop-free' && (
+                        <>
+                          <label className="range-control">
+                            <span><b>左右位置</b><em>{Math.round(cropCenterX * 100)}%</em></span>
+                            <input type="range" min="0" max="100" value={Math.round(cropCenterX * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropCenterX(Number(event.target.value) / 100)} />
+                          </label>
+                          <label className="range-control">
+                            <span><b>上下位置</b><em>{Math.round(cropCenterY * 100)}%</em></span>
+                            <input type="range" min="0" max="100" value={Math.round(cropCenterY * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropCenterY(Number(event.target.value) / 100)} />
+                          </label>
+                          <label className="range-control">
+                            <span><b>畫面縮放</b><em>{Math.round(cropZoom * 100)}%</em></span>
+                            <input type="range" min="100" max="250" value={Math.round(cropZoom * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropZoom(Number(event.target.value) / 100)} />
+                          </label>
+                        </>
+                      )}
                     </>
                   )}
 
