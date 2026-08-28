@@ -28,7 +28,7 @@ export const DEFAULT_PERSON_EFFECTS: PersonEffectOptions = {
   preserveFraming: false,
   background: 'black',
   subject: 'original',
-  outline: 'none',
+  outline: 'white',
   cloneLayout: 'trail',
   cloneCount: 0,
   cloneDelay: 0,
@@ -648,14 +648,14 @@ export class PersonEffectRenderer {
     if (options.outline !== 'none') {
       const outlineColor = options.outline === 'white' ? '#ffffff' : '#58ffd0';
       const outline = this.tint(this.spriteCanvas, outlineColor);
-      const radius = Math.max(4, Math.min(10, destination.width / 44));
+      const radius = Math.max(7, Math.min(18, destination.width / 30));
       context.save();
       if (options.outline === 'neon') {
         context.shadowColor = '#35d292';
         context.shadowBlur = radius * 3.5;
       }
-      for (let index = 0; index < 12; index += 1) {
-        const angle = (index / 12) * Math.PI * 2;
+      for (let index = 0; index < 16; index += 1) {
+        const angle = (index / 16) * Math.PI * 2;
         context.drawImage(
           outline,
           destination.x + Math.cos(angle) * radius,

@@ -1250,7 +1250,7 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟去背' : '去背效果'}
                       </button>
                     </div>
-                    <p className="effect-note">ViT 追蹤維持原樣。開啟後只做一件事：保留原色主角、背景轉成純黑；MagicTouch＋Pose 負責主角遮罩，光流降低逐幀閃爍。沒有分身、邊框或其他特效。</p>
+                    <p className="effect-note">ViT 追蹤維持原樣。開啟後保留原色主角、背景轉成純黑，並用粗白邊遮住部分輪廓毛邊；MagicTouch＋Pose 負責主角遮罩，光流降低逐幀閃爍。</p>
 
                     {personEffects.enabled && (
                       <>
