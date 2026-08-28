@@ -66,7 +66,12 @@ function workerRequest(
       cleanup();
       resolve(event.data);
     };
-    const onError = () => fail(new Error('單人實例分割 Worker 發生錯誤'));
+    const onError = (event: ErrorEvent) => {
+      const detail = event.message
+        ? '：' + event.message + (event.lineno ? '（第 ' + event.lineno + ' 行）' : '')
+        : '';
+      fail(new Error('單人實例分割 Worker 發生錯誤' + detail));
+    };
     const cancelPoll = window.setInterval(() => {
       if (isCancelled()) fail(new Error('使用者已取消單人實例分割'));
     }, 100);
@@ -150,9 +155,10 @@ export async function prepareInteractiveSubjectPreview(
   inputCanvas.height = INPUT_SIZE;
   const context = inputCanvas.getContext('2d', { alpha: false });
   if (!context) throw new Error('Safari 無法建立單人分割輸入畫布');
-  const worker = new Worker(new URL('./interactive-subject-worker.ts', import.meta.url), {
-    type: 'module',
-  });
+  // MediaPipe's WASM loader uses importScripts when it runs inside a Worker.
+  // iOS Safari rejects importScripts in module workers, so keep this bundled,
+  // self-contained worker in classic mode.
+  const worker = new Worker(new URL('./interactive-subject-worker.ts', import.meta.url));
   const frames: ModnetPreviewFrame[] = [];
   let requestId = 1;
   let inferenceTotal = 0;

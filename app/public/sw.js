@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v17-instance-preview';
+const VERSION = 'nivitrack-12-tools-v18-classic-instance-worker';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
