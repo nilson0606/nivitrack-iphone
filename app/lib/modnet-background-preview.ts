@@ -1,0 +1,315 @@
+import * as ort from 'onnxruntime-web/wasm';
+
+import {
+  recoverTrackedSubjectAlpha,
+  selectTrackedSubjectAlpha,
+  trackedSubjectRegion,
+} from './person-background-removal';
+import type { Box } from './vit-tracker';
+import { interpolateBox, type TrackPoint } from './video-export';
+
+const MODEL_SIZE = 256;
+const PREVIEW_FPS = 10;
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+type ModnetPreviewFrame = {
+  time: number;
+  alpha: Uint8ClampedArray;
+};
+
+export type ModnetPreviewStats = {
+  frames: number;
+  elapsedMs: number;
+  averageInferenceMs: number;
+};
+
+type PrepareOptions = {
+  startTime: number;
+  endTime: number;
+  seekTo: (time: number) => Promise<void>;
+  isCancelled: () => boolean;
+  onProgress: (progress: number, frame: number, total: number) => void;
+};
+
+class ModnetPreviewGenerator {
+  private readonly session: ort.InferenceSession;
+  private readonly inputCanvas = document.createElement('canvas');
+  private readonly inputData = new Float32Array(1 * 3 * MODEL_SIZE * MODEL_SIZE);
+  private previousAlpha: Float32Array | null = null;
+  private missedFrames = 0;
+
+  private constructor(session: ort.InferenceSession) {
+    this.session = session;
+    this.inputCanvas.width = MODEL_SIZE;
+    this.inputCanvas.height = MODEL_SIZE;
+  }
+
+  static async create() {
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.simd = true;
+    ort.env.wasm.wasmPaths = new URL('ort/', document.baseURI).href;
+    const modelUrl = new URL('models/modnet_quantized.onnx', document.baseURI).href;
+    const session = await ort.InferenceSession.create(modelUrl, {
+      executionProviders: ['wasm'],
+      graphOptimizationLevel: 'all',
+      executionMode: 'sequential',
+    });
+    return new ModnetPreviewGenerator(session);
+  }
+
+  async infer(video: HTMLVideoElement, box: Box) {
+    const [regionX, regionY, regionWidth, regionHeight] = trackedSubjectRegion(
+      box,
+      video.videoWidth,
+      video.videoHeight,
+    );
+    const context = this.inputCanvas.getContext('2d', {
+      alpha: false,
+      willReadFrequently: true,
+    });
+    if (!context) throw new Error('Safari 無法建立 MODNet 輸入畫布');
+    context.drawImage(
+      video,
+      regionX,
+      regionY,
+      regionWidth,
+      regionHeight,
+      0,
+      0,
+      MODEL_SIZE,
+      MODEL_SIZE,
+    );
+    const rgba = context.getImageData(0, 0, MODEL_SIZE, MODEL_SIZE).data;
+    const plane = MODEL_SIZE * MODEL_SIZE;
+    for (let index = 0; index < plane; index += 1) {
+      const pixel = index * 4;
+      this.inputData[index] = rgba[pixel] / 127.5 - 1;
+      this.inputData[plane + index] = rgba[pixel + 1] / 127.5 - 1;
+      this.inputData[plane * 2 + index] = rgba[pixel + 2] / 127.5 - 1;
+    }
+
+    const input = new ort.Tensor('float32', this.inputData, [1, 3, MODEL_SIZE, MODEL_SIZE]);
+    const started = performance.now();
+    try {
+      const outputs = await this.session.run({ [this.session.inputNames[0]]: input });
+      try {
+        const inferenceMs = performance.now() - started;
+        const output = outputs[this.session.outputNames[0]];
+        if (!output || output.dims.at(-1) !== MODEL_SIZE || output.dims.at(-2) !== MODEL_SIZE) {
+          throw new Error('MODNet 輸出尺寸不正確');
+        }
+        const confidence = output.data as Float32Array;
+        const relativeBox: Box = [
+          box[0] - regionX,
+          box[1] - regionY,
+          box[2],
+          box[3],
+        ];
+        const selected = selectTrackedSubjectAlpha(
+          confidence,
+          MODEL_SIZE,
+          MODEL_SIZE,
+          relativeBox,
+          regionWidth,
+          regionHeight,
+        );
+        const recovered = recoverTrackedSubjectAlpha(
+          selected,
+          this.previousAlpha,
+          plane,
+          this.missedFrames,
+        );
+        this.missedFrames = recovered.missedFrames;
+        const current = recovered.alpha;
+        if (this.previousAlpha?.length === current.length && recovered.fresh) {
+          for (let index = 0; index < current.length; index += 1) {
+            current[index] = current[index] * 0.78 + this.previousAlpha[index] * 0.22;
+          }
+        }
+        this.previousAlpha = new Float32Array(current);
+        const alpha = new Uint8ClampedArray(plane);
+        for (let index = 0; index < plane; index += 1) {
+          alpha[index] = Math.round(clamp(current[index], 0, 1) * 255);
+        }
+        return { alpha, inferenceMs };
+      } finally {
+        Object.values(outputs).forEach((tensor) => tensor.dispose());
+      }
+    } finally {
+      input.dispose();
+    }
+  }
+
+  async close() {
+    this.previousAlpha = null;
+    await this.session.release();
+  }
+}
+
+export class ModnetPreviewTimeline {
+  readonly startTime: number;
+  readonly endTime: number;
+  private readonly frames: ModnetPreviewFrame[];
+  private readonly maskCanvas = document.createElement('canvas');
+  private readonly subjectCanvas = document.createElement('canvas');
+  private readonly mixedAlpha = new Uint8ClampedArray(MODEL_SIZE * MODEL_SIZE);
+  private readonly imageData: ImageData;
+
+  constructor(frames: ModnetPreviewFrame[]) {
+    if (frames.length === 0) throw new Error('MODNet Preview 沒有任何遮罩影格');
+    this.frames = frames;
+    this.startTime = frames[0].time;
+    this.endTime = frames[frames.length - 1].time;
+    this.maskCanvas.width = MODEL_SIZE;
+    this.maskCanvas.height = MODEL_SIZE;
+    const context = this.maskCanvas.getContext('2d', { alpha: true });
+    if (!context) throw new Error('Safari 無法建立 MODNet 遮罩畫布');
+    this.imageData = context.createImageData(MODEL_SIZE, MODEL_SIZE);
+    for (let index = 0; index < this.mixedAlpha.length; index += 1) {
+      const pixel = index * 4;
+      this.imageData.data[pixel] = 255;
+      this.imageData.data[pixel + 1] = 255;
+      this.imageData.data[pixel + 2] = 255;
+    }
+  }
+
+  private alphaAt(time: number) {
+    if (time <= this.frames[0].time) return this.frames[0].alpha;
+    const last = this.frames[this.frames.length - 1];
+    if (time >= last.time) return last.alpha;
+    let low = 0;
+    let high = this.frames.length - 1;
+    while (low + 1 < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (this.frames[middle].time <= time) low = middle;
+      else high = middle;
+    }
+    const before = this.frames[low];
+    const after = this.frames[high];
+    const amount = (time - before.time) / Math.max(0.0001, after.time - before.time);
+    for (let index = 0; index < this.mixedAlpha.length; index += 1) {
+      this.mixedAlpha[index] = Math.round(
+        before.alpha[index] * (1 - amount) + after.alpha[index] * amount,
+      );
+    }
+    return this.mixedAlpha;
+  }
+
+  draw(
+    video: HTMLVideoElement,
+    outputCanvas: HTMLCanvasElement,
+    box: Box,
+    suppression = 0.62,
+  ) {
+    const alpha = this.alphaAt(video.currentTime);
+    const exponent = 0.75 + clamp(suppression, 0, 1) * 0.9;
+    const maskContext = this.maskCanvas.getContext('2d', { alpha: true });
+    if (!maskContext) throw new Error('Safari 無法更新 MODNet 遮罩');
+    for (let index = 0; index < alpha.length; index += 1) {
+      this.imageData.data[index * 4 + 3] = Math.round(
+        Math.pow(alpha[index] / 255, exponent) * 255,
+      );
+    }
+    maskContext.putImageData(this.imageData, 0, 0);
+
+    const [regionX, regionY, regionWidth, regionHeight] = trackedSubjectRegion(
+      box,
+      video.videoWidth,
+      video.videoHeight,
+    );
+    const outputScaleX = outputCanvas.width / video.videoWidth;
+    const outputScaleY = outputCanvas.height / video.videoHeight;
+    const destinationX = regionX * outputScaleX;
+    const destinationY = regionY * outputScaleY;
+    const destinationWidth = regionWidth * outputScaleX;
+    const destinationHeight = regionHeight * outputScaleY;
+    const subjectWidth = Math.max(1, Math.ceil(destinationWidth));
+    const subjectHeight = Math.max(1, Math.ceil(destinationHeight));
+    if (this.subjectCanvas.width !== subjectWidth || this.subjectCanvas.height !== subjectHeight) {
+      this.subjectCanvas.width = subjectWidth;
+      this.subjectCanvas.height = subjectHeight;
+    }
+    const subjectContext = this.subjectCanvas.getContext('2d', { alpha: true });
+    const outputContext = outputCanvas.getContext('2d', { alpha: false });
+    if (!subjectContext || !outputContext) throw new Error('Safari 無法建立 MODNet 合成畫布');
+
+    subjectContext.globalCompositeOperation = 'source-over';
+    subjectContext.clearRect(0, 0, subjectWidth, subjectHeight);
+    subjectContext.drawImage(
+      video,
+      regionX,
+      regionY,
+      regionWidth,
+      regionHeight,
+      0,
+      0,
+      subjectWidth,
+      subjectHeight,
+    );
+    subjectContext.globalCompositeOperation = 'destination-in';
+    subjectContext.drawImage(
+      this.maskCanvas,
+      0,
+      0,
+      subjectWidth,
+      subjectHeight,
+    );
+    subjectContext.globalCompositeOperation = 'source-over';
+    outputContext.fillStyle = '#000';
+    outputContext.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+    outputContext.drawImage(
+      this.subjectCanvas,
+      destinationX,
+      destinationY,
+      destinationWidth,
+      destinationHeight,
+    );
+  }
+}
+
+export async function prepareModnetPreview(
+  video: HTMLVideoElement,
+  path: TrackPoint[],
+  options: PrepareOptions,
+) {
+  if (!video.videoWidth || !video.videoHeight || path.length < 2) {
+    throw new Error('影片或追蹤路徑尚未準備好');
+  }
+  const startTime = clamp(options.startTime, 0, video.duration);
+  const endTime = clamp(options.endTime, startTime, video.duration);
+  const times: number[] = [];
+  for (let time = startTime; time <= endTime + 0.0001; time += 1 / PREVIEW_FPS) {
+    times.push(Math.min(time, endTime));
+  }
+  if (times.length === 0 || endTime - times[times.length - 1] > 0.001) times.push(endTime);
+  const frames: ModnetPreviewFrame[] = [];
+  let inferenceTotal = 0;
+  const started = performance.now();
+  let generator: ModnetPreviewGenerator | null = null;
+  try {
+    generator = await ModnetPreviewGenerator.create();
+    for (let index = 0; index < times.length; index += 1) {
+      if (options.isCancelled()) throw new Error('使用者已取消 MODNet Preview');
+      const time = times[index];
+      await options.seekTo(time);
+      const result = await generator.infer(video, interpolateBox(path, time));
+      inferenceTotal += result.inferenceMs;
+      frames.push({ time, alpha: result.alpha });
+      options.onProgress((index + 1) / times.length, index + 1, times.length);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  } finally {
+    await generator?.close();
+  }
+  return {
+    timeline: new ModnetPreviewTimeline(frames),
+    stats: {
+      frames: frames.length,
+      elapsedMs: performance.now() - started,
+      averageInferenceMs: inferenceTotal / Math.max(1, frames.length),
+    } satisfies ModnetPreviewStats,
+  };
+}

@@ -314,7 +314,7 @@ function configureOutputCanvas(
   [canvas.width, canvas.height] = OUTPUT_SIZES[operation.aspect];
 }
 
-function interpolateBox(path: TrackPoint[], time: number): Box {
+export function interpolateBox(path: TrackPoint[], time: number): Box {
   if (path.length === 0) return [0, 0, 1, 1];
   if (time <= path[0].time) return [...path[0].box] as Box;
   const last = path[path.length - 1];

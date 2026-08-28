@@ -20,7 +20,7 @@ import {
   RecorderSupport,
   TrackPoint,
 } from '../lib/video-export';
-import type { PersonBackgroundRenderer } from '../lib/person-background-removal';
+import type { ModnetPreviewTimeline } from '../lib/modnet-background-preview';
 
 type Capability = {
   label: string;
@@ -38,7 +38,7 @@ type VideoInfo = {
   height: number;
 };
 
-type Phase = 'choose' | 'tool-ready' | 'crop-select' | 'select' | 'tracking' | 'previewing' | 'complete' | 'path-ready' | 'exporting';
+type Phase = 'choose' | 'tool-ready' | 'crop-select' | 'select' | 'tracking' | 'masking' | 'previewing' | 'complete' | 'path-ready' | 'exporting';
 
 type ToolId =
   | `filter-${FilterPreset}`
@@ -162,7 +162,7 @@ export default function Home() {
   const exportResultRef = useRef<HTMLDivElement>(null);
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
   const backgroundPreviewRef = useRef<BackgroundPreview | null>(null);
-  const backgroundPreviewRendererRef = useRef<PersonBackgroundRenderer | null>(null);
+  const modnetPreviewTimelineRef = useRef<ModnetPreviewTimeline | null>(null);
   const previewFrameCallbackRef = useRef(0);
   const previewAnimationFrameRef = useRef(0);
   const backgroundPreviewReturnPhaseRef = useRef<'complete' | 'path-ready'>('complete');
@@ -206,7 +206,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MediaPipe 姿態＋分割', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
+        { label: '人物去背', detail: 'MODNet 低記憶體預覽', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -248,7 +248,8 @@ export default function Home() {
         video.cancelVideoFrameCallback(previewFrameCallbackRef.current);
       }
       if (previewAnimationFrameRef.current) cancelAnimationFrame(previewAnimationFrameRef.current);
-      backgroundPreviewRendererRef.current?.close();
+      void trackerRef.current?.close();
+      detectorRef.current?.dispose();
     };
   }, []);
 
@@ -277,9 +278,26 @@ export default function Home() {
   function resetBackgroundPreview() {
     stopBackgroundPreviewCallbacks();
     backgroundPreviewRef.current = null;
-    backgroundPreviewRendererRef.current?.close();
-    backgroundPreviewRendererRef.current = null;
+    modnetPreviewTimelineRef.current = null;
     setBackgroundPreviewReady(false);
+  }
+
+  async function releaseTracker() {
+    const tracker = trackerRef.current;
+    trackerRef.current = null;
+    await tracker?.close();
+  }
+
+  function releaseDetector() {
+    const detector = detectorRef.current;
+    detectorRef.current = null;
+    detector?.dispose();
+  }
+
+  async function releaseUpstreamModels() {
+    releaseDetector();
+    await releaseTracker();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   }
 
   function chooseVideo(event: ChangeEvent<HTMLInputElement>) {
@@ -288,6 +306,7 @@ export default function Home() {
     videoRef.current?.pause();
     setSelectionPlaying(false);
     resetBackgroundPreview();
+    void releaseUpstreamModels();
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setSourceFile(file);
     setVideoUrl(URL.createObjectURL(file));
@@ -682,6 +701,34 @@ export default function Home() {
     });
   }
 
+  async function buildModnetPreview(
+    path: TrackPoint[],
+    startTime: number,
+    endTime: number,
+  ) {
+    const video = videoRef.current;
+    if (!video) throw new Error('影片尚未載入');
+    setPhase('masking');
+    setProgress(0);
+    setBackgroundPreviewReady(false);
+    modnetPreviewTimelineRef.current = null;
+    setNotice('正在釋放追蹤模型並載入低記憶體 MODNet…');
+    await releaseUpstreamModels();
+    const { prepareModnetPreview } = await import('../lib/modnet-background-preview');
+    const prepared = await prepareModnetPreview(video, path, {
+      startTime,
+      endTime,
+      seekTo,
+      isCancelled: () => cancelRef.current,
+      onProgress: (next, frame, total) => {
+        setProgress(next);
+        setNotice('產生 MODNet 3 秒 Preview · ' + frame + ' / ' + total + ' 幀');
+      },
+    });
+    modnetPreviewTimelineRef.current = prepared.timeline;
+    return prepared.stats;
+  }
+
   async function runTracking() {
     const video = videoRef.current;
     if (!video || !box) return;
@@ -747,23 +794,19 @@ export default function Home() {
       setProgress(1);
       if (selectedTool === 'remove-background') {
         backgroundPreviewRef.current = { startTime, endTime, path: previewPoints };
-        setNotice('3 秒追蹤完成；正在準備本機去背預覽…');
         try {
-          if (!backgroundPreviewRendererRef.current) {
-            const { PersonBackgroundRenderer } = await import('../lib/person-background-removal');
-            backgroundPreviewRendererRef.current = await PersonBackgroundRenderer.create();
-          }
+          const modnetStats = await buildModnetPreview(previewPoints, startTime, endTime);
           await seekTo(startTime);
           setBox([...previewPoints[0].box] as Box);
           drawFrame(previewPoints[0].box);
           setBackgroundPreviewReady(true);
           setPhase('complete');
-          setNotice('3 秒去背預覽已準備；請點「播放 3 秒去背預覽」');
+          setNotice('MODNet Preview 已準備 · 平均 ' + Math.round(modnetStats.averageInferenceMs) + ' ms／幀');
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           setBackgroundPreviewReady(false);
           setPhase('complete');
-          setNotice('3 秒追蹤完成，但去背預覽模型準備失敗：' + message);
+          setNotice('MODNet Preview 準備失敗：' + message + '；正式輸出尚未切換 v9');
         }
       } else {
         setPhase('complete');
@@ -783,21 +826,20 @@ export default function Home() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const preview = backgroundPreviewRef.current;
-    const renderer = backgroundPreviewRendererRef.current;
-    if (!video || !canvas || !preview || !renderer || !backgroundPreviewReady) {
+    const timeline = modnetPreviewTimelineRef.current;
+    if (!video || !canvas || !preview || !timeline || !backgroundPreviewReady) {
       setNotice('請先完成 3 秒追蹤，讓去背預覽準備完成');
       return;
     }
 
     stopBackgroundPreviewCallbacks();
     cancelRef.current = false;
-    renderer.reset();
     backgroundPreviewReturnPhaseRef.current = phase === 'path-ready' ? 'path-ready' : 'complete';
     video.pause();
     video.currentTime = preview.startTime;
     setPhase('previewing');
     setProgress(0);
-    setNotice('正在播放 3 秒純黑背景預覽…');
+    setNotice('正在播放 3 秒 MODNet 純黑背景 Preview…');
 
     let finished = false;
     let cleanupListeners = () => {};
@@ -828,11 +870,10 @@ export default function Home() {
         return;
       }
       try {
-        renderer.render(
+        timeline.draw(
           video,
           canvas,
           previewBoxAt(preview.path, mediaTime),
-          undefined,
           bodyTightness,
         );
         setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
@@ -887,24 +928,22 @@ export default function Home() {
     const preferredStart = selectionRef.current?.time ?? video.currentTime;
     const startTime = Math.min(Math.max(0, preferredStart), Math.max(0, video.duration - 3));
     const endTime = Math.min(video.duration, startTime + 3);
+    cancelRef.current = false;
     backgroundPreviewRef.current = { startTime, endTime, path: trackPath };
     setBackgroundPreviewReady(false);
-    setNotice('正在準備完整路徑的 3 秒去背 Preview…');
     try {
-      if (!backgroundPreviewRendererRef.current) {
-        const { PersonBackgroundRenderer } = await import('../lib/person-background-removal');
-        backgroundPreviewRendererRef.current = await PersonBackgroundRenderer.create();
-      }
-      backgroundPreviewRendererRef.current.reset();
+      const modnetStats = await buildModnetPreview(trackPath, startTime, endTime);
       await seekTo(startTime);
       const previewBox = previewBoxAt(trackPath, startTime);
       setBox(previewBox);
       drawFrame(previewBox);
       setBackgroundPreviewReady(true);
-      setNotice('3 秒去背 Preview 已準備；請點「播放 3 秒去背 Preview」');
+      setPhase('path-ready');
+      setNotice('MODNet Preview 已準備 · 平均 ' + Math.round(modnetStats.averageInferenceMs) + ' ms／幀');
     } catch (error) {
+      setPhase('path-ready');
       const message = error instanceof Error ? error.message : String(error);
-      setNotice('3 秒去背 Preview 準備失敗：' + message);
+      setNotice('MODNet Preview 準備失敗：' + message + '；正式輸出尚未切換 v9');
     }
   }
 
@@ -997,6 +1036,7 @@ export default function Home() {
       await seekTo(selection.time);
       setBox(selection.box);
       drawFrame(selection.box);
+      await releaseUpstreamModels();
       setNotice(selectedTool === 'remove-background'
         ? '完整舞者路徑已建立；可調整比例、主角大小與柔順度後輸出'
         : '完整 ViT 路徑已建立；可調整構圖並輸出影片');
@@ -1118,7 +1158,11 @@ export default function Home() {
 
   function cancelTracking() {
     cancelRef.current = true;
-    setNotice(phase === 'exporting' ? '正在取消輸出…' : phase === 'previewing' ? '正在取消預覽…' : '正在取消追蹤…');
+    setNotice(phase === 'exporting'
+      ? '正在取消輸出…'
+      : phase === 'previewing'
+        ? '正在取消預覽…'
+        : phase === 'masking' ? '正在取消 MODNet Preview…' : '正在取消追蹤…');
   }
 
   const selectedChoice = TOOL_CHOICES.find((item) => item.id === selectedTool) ?? null;
@@ -1218,17 +1262,17 @@ export default function Home() {
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectionPlaying ? '播放中 · 暫停後框選' : selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'previewing' ? '3 秒純黑背景預覽' : phase === 'exporting' ? (selectedTool === 'remove-background' ? 'MediaPipe 本機去背' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
+                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectionPlaying ? '播放中 · 暫停後框選' : selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'masking' ? 'MODNet 逐幀產生遮罩' : phase === 'previewing' ? '3 秒 MODNet 純黑背景預覽' : phase === 'exporting' ? (selectedTool === 'remove-background' ? 'MediaPipe 本機去背' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
                 </span>
-                {(phase === 'tracking' || phase === 'previewing' || phase === 'exporting') && (
+                {(phase === 'tracking' || phase === 'masking' || phase === 'previewing' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>{phase === 'exporting' ? '保留原聲' : phase === 'previewing' ? '純黑背景預覽' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
+                    <span>{phase === 'exporting' ? '保留原聲' : phase === 'previewing' ? 'MODNet 預覽' : phase === 'masking' ? '單 Session · 逐幀釋放' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
                   </div>
                 )}
               </div>
               <div className="video-actions">
-                {phase !== 'tracking' && phase !== 'previewing' && phase !== 'exporting' && (
+                {phase !== 'tracking' && phase !== 'masking' && phase !== 'previewing' && phase !== 'exporting' && (
                   <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
                 )}
                 {phase === 'tool-ready' && <button type="button" onClick={returnToTools}>取消此功能</button>}
@@ -1256,15 +1300,15 @@ export default function Home() {
                     </button>
                   </>
                 )}
-                {(phase === 'tracking' || phase === 'previewing' || phase === 'exporting') && (
-                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'previewing' ? '取消預覽' : '取消追蹤'}</button>
+                {(phase === 'tracking' || phase === 'masking' || phase === 'previewing' || phase === 'exporting') && (
+                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'previewing' ? '取消預覽' : phase === 'masking' ? '取消 MODNet' : '取消追蹤'}</button>
                 )}
                 {phase === 'complete' && (
                   <>
                     <button type="button" onClick={returnToTools}>返回功能選單</button>
                     <button type="button" onClick={enterSelection}>重新框選</button>
                     {selectedTool === 'remove-background' && (
-                      <button className="primary" type="button" disabled={!backgroundPreviewReady} onClick={playBackgroundPreview}>播放 3 秒去背預覽</button>
+                      <button className="primary" type="button" disabled={!backgroundPreviewReady} onClick={playBackgroundPreview}>播放 3 秒 MODNet 預覽</button>
                     )}
                     <button className={selectedTool === 'remove-background' ? '' : 'primary'} type="button" onClick={runFullTracking}>追蹤完整影片</button>
                   </>
@@ -1410,7 +1454,7 @@ export default function Home() {
                             ? playBackgroundPreview
                             : () => void prepareTrackedPathBackgroundPreview()}
                         >
-                          {backgroundPreviewReady ? '播放 3 秒去背 Preview' : '準備 3 秒去背 Preview'}
+                          {backgroundPreviewReady ? '播放 3 秒 MODNet Preview' : '準備 3 秒 MODNet Preview'}
                         </button>
                       </div>
                     </>
@@ -1494,7 +1538,7 @@ export default function Home() {
 
                   {selectedTool === 'remove-background' && (
                     <p className="export-note">
-                      人體骨架範圍會依收緊度限制去背遮罩並抑制單幀閃漏；推論、去背、放大置中與原聲合成都只在這台 iPhone 執行。主角手持物品會視為背景移除。
+                      MODNet 目前只用於低記憶體 3 秒 Preview；正式輸出仍保留現行安全去背，待 Preview 驗收後才切換。所有模型與畫面都只在這台 iPhone 處理。
                     </p>
                   )}
 
