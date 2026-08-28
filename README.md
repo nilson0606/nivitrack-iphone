@@ -4,7 +4,7 @@ NiviTrack 是一個為 iPhone Safari 設計的本機影片後製 Web App。選�
 
 影片與追蹤工作都在使用者自己的 iPhone 內完成，不會上傳到 GitHub 或其他伺服器。
 
-第 12 項使用 Apache-2.0 的 `@mediapipe/tasks-vision` 與 Google MediaPipe Selfie Segmenter 模型。WASM 與約 250 KB 的模型由同一個 GitHub Pages 靜態網站提供；首次載入後，所有逐幀推論與黑底合成都在 Safari 本機執行，不需要 API、後端或付費伺服器。
+第 12 項使用 Apache-2.0 的 `@mediapipe/tasks-vision` 與 Google MediaPipe Selfie Segmenter 模型。每幀會先依 ViT 追蹤框裁出選定舞者的局部畫面，再執行人物分割，避免整個複雜背景與其他舞者降低辨識率。WASM 與約 250 KB 的模型由同一個 GitHub Pages 靜態網站提供；首次載入後，所有逐幀推論與黑底合成都在 Safari 本機執行，不需要 API、後端或付費伺服器。
 
 ## 開啟 NiviTrack
 
@@ -129,6 +129,8 @@ NiviTrack 會直接讀取原始影片，不需要先轉成 MP4。
 - 完整框住主角，避免框入太多背景。
 - 避開嚴重遮擋、快速轉身或主角太小的畫面。
 - 先通過 3 秒測試，再進行完整追蹤。
+
+去背時若某幾幀因遮擋或快速動作暫時辨識不到舞者，NiviTrack 會短暫沿用並淡出上一幀遮罩；若影片開頭尚未出現舞者，該段保持純黑，不會再中止整支影片輸出。
 
 ### 輸出中斷或沒有聲音
 

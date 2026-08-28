@@ -1,4 +1,8 @@
-import { selectTrackedSubjectAlpha } from '../lib/person-background-removal.ts';
+import {
+  recoverTrackedSubjectAlpha,
+  selectTrackedSubjectAlpha,
+  trackedSubjectRegion,
+} from '../lib/person-background-removal.ts';
 
 const width = 20;
 const height = 10;
@@ -34,10 +38,57 @@ function testTouchingDancers() {
   return countSides(selectTrackedSubjectAlpha(mask, width, height, trackedBox, 100, 50));
 }
 
+function testLowConfidenceDancer() {
+  const mask = new Float32Array(width * height);
+  for (let y = 2; y <= 7; y += 1) {
+    for (let x = 2; x <= 6; x += 1) mask[y * width + x] = 0.1;
+    for (let x = 12; x <= 16; x += 1) mask[y * width + x] = 0.11;
+  }
+  return countSides(selectTrackedSubjectAlpha(mask, width, height, trackedBox, 100, 50));
+}
+
+function testMissingFrameRecovery() {
+  const previous = new Float32Array(width * height);
+  previous[23] = 1;
+  const firstMissing = recoverTrackedSubjectAlpha(null, null, previous.length, 0);
+  const temporaryMissing = recoverTrackedSubjectAlpha(null, previous, previous.length, 0);
+  let expired = { alpha: previous, missedFrames: 0, fresh: true };
+  for (let index = 0; index < 13; index += 1) {
+    expired = recoverTrackedSubjectAlpha(null, expired.alpha, previous.length, expired.missedFrames);
+  }
+  return {
+    firstMissingIsBlack: firstMissing.alpha.every((value) => value === 0),
+    temporaryMissingRetained: temporaryMissing.alpha[23] > 0,
+    expiredIsBlack: expired.alpha.every((value) => value === 0),
+  };
+}
+
+function testTrackedRegion() {
+  const box = [30, 20, 40, 80];
+  const region = trackedSubjectRegion(box, 100, 200);
+  return {
+    region,
+    containsBox: region[0] <= box[0]
+      && region[1] <= box[1]
+      && region[0] + region[2] >= box[0] + box[2]
+      && region[1] + region[3] >= box[1] + box[3],
+    cropped: region[2] < 100 && region[3] < 200,
+  };
+}
+
 const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
+const lowConfidence = testLowConfidenceDancer();
+const recovery = testMissingFrameRecovery();
+const region = testTrackedRegion();
 const pass = separated.selected > 0 && separated.leaked === 0
-  && touching.selected > 0 && touching.leaked === 0;
+  && touching.selected > 0 && touching.leaked === 0
+  && lowConfidence.selected > 0 && lowConfidence.leaked === 0
+  && recovery.firstMissingIsBlack
+  && recovery.temporaryMissingRetained
+  && recovery.expiredIsBlack
+  && region.containsBox
+  && region.cropped;
 
-console.log(JSON.stringify({ separated, touching, pass }, null, 2));
+console.log(JSON.stringify({ separated, touching, lowConfidence, recovery, region, pass }, null, 2));
 if (!pass) process.exitCode = 1;
