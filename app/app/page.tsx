@@ -137,6 +137,7 @@ export default function Home() {
   const detectorRef = useRef<ObjectDetection | null>(null);
   const selectionRef = useRef<{ time: number; box: Box } | null>(null);
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
+  const exportResultRef = useRef<HTMLDivElement>(null);
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
 
   const [videoUrl, setVideoUrl] = useState('');
@@ -810,7 +811,15 @@ export default function Home() {
         resolution: result.width + ' × ' + result.height,
       });
       setPhase(operation.kind === 'track' ? 'path-ready' : 'tool-ready');
-      setNotice('輸出完成；影片仍在這台 iPhone，可分享或儲存到檔案');
+      setNotice('輸出完成；請點「分享／儲存到 iPhone」');
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          exportResultRef.current?.scrollIntoView({
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+            block: 'center',
+          });
+        });
+      });
     } catch (error) {
       setPhase(selectedTool === 'track' ? 'path-ready' : 'tool-ready');
       const message = error instanceof Error ? error.message : String(error);
@@ -1057,7 +1066,7 @@ export default function Home() {
                   </div>
 
                   {exportUrl && exportInfo && (
-                    <div className="export-result">
+                    <div className="export-result result-ready" ref={exportResultRef}>
                       <video src={exportUrl} controls playsInline preload="metadata" />
                       <div>
                         <strong>{exportInfo.name}</strong>
@@ -1143,7 +1152,7 @@ export default function Home() {
                   )}
 
                   {exportUrl && exportInfo && (
-                    <div className="export-result">
+                    <div className="export-result result-ready" ref={exportResultRef}>
                       <video src={exportUrl} controls playsInline preload="metadata" />
                       <div>
                         <strong>{exportInfo.name}</strong>
