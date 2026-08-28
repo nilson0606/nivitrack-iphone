@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#102018">
   <title>NiviTrack iPhone 使用手冊</title>
-  <meta name="description" content="NiviTrack iPhone 本機影片追蹤 Web App 使用手冊">
+  <meta name="description" content="NiviTrack iPhone 本機影片後製 Web App 使用手冊">
   <style>
     :root {
       color-scheme: dark;
@@ -134,7 +134,7 @@
     <div class="hero">
       <div class="eyebrow">IPHONE · SAFARI · 本機處理</div>
       <h1>從選片到輸出，照著做就好。</h1>
-      <p>NiviTrack 直接讀取 iPhone 裡的 MOV、HEVC 或 MP4，追蹤指定主角並輸出置中構圖的影片。影片不會上傳。</p>
+      <p>NiviTrack 直接讀取 iPhone 裡的 MOV、HEVC 或 MP4，提供濾鏡、裁切與主角鎖定共 11 種單一後製。影片不會上傳。</p>
       <div class="hero-actions"><a class="app-link" href="./">立即開啟 NiviTrack</a></div>
       <div class="notice"><strong>支援範圍：</strong>iPhone、iOS 26、Safari。</div>
     </div>
@@ -157,30 +157,43 @@
           <li>名稱保留為 <strong>NiviTrack</strong>，再點「加入」。</li>
           <li>回到主畫面，點 NiviTrack 圖示。</li>
         </ol>
-        <p class="tip">第一次使用請保持連線，並完成一次「測試 3 秒 ViT」，讓 AI 模型與離線資源載入完成。</p>
+        <p class="tip">第一次使用請保持連線。只有選「主角鎖定置中」時才會載入 ViT 模型；濾鏡與裁切不需要 AI。</p>
       </section>
       <section id="workflow">
-        <h2>完整操作流程</h2>
+        <h2>一般操作流程</h2>
         <div class="steps">
           <div class="step"><b>1</b><div><strong>選擇影片</strong><p>從「照片」或「檔案」選擇 MOV、HEVC 或 MP4。等待顯示影片已在本機載入，不需要先轉成 MP4。</p></div></div>
-          <div class="step"><b>2</b><div><strong>播放後暫停</strong><p>找到主角清楚、較大、遮擋較少的畫面，然後暫停。</p></div></div>
-          <div class="step"><b>3</b><div><strong>指定主角</strong><p>點「進入主角選取」，用手指完整框住人物或寵物。也可點「AI 尋找人物／寵物」。</p></div></div>
-          <div class="step"><b>4</b><div><strong>先測試 3 秒</strong><p>點「測試 3 秒 ViT」，確認框線能跟著主角。這一步只測試，不會輸出影片。</p></div></div>
-          <div class="step"><b>5</b><div><strong>追蹤完整影片</strong><p>測試正常後點「追蹤完整影片」，等待顯示「完整 ViT 路徑已建立」。</p></div></div>
+          <div class="step"><b>2</b><div><strong>選擇一項功能</strong><p>預設不會追蹤。從 6 種濾鏡、4 種裁切或「主角鎖定置中」中選一項。</p></div></div>
+          <div class="step"><b>3</b><div><strong>預覽與調整</strong><p>濾鏡可調效果強度；裁切可調左右、上下位置與縮放。播放影片即可查看效果。</p></div></div>
+          <div class="step"><b>4</b><div><strong>輸出影片</strong><p>點「輸出相容 MP4」，保持 App 在前景，等待成品預覽出現。原聲會保留。</p></div></div>
         </div>
+        <p class="tip">一次只處理一項。若要疊加效果，先輸出，再把成品重新匯入並選下一項功能。</p>
+        <h3>11 種功能</h3>
+        <ul>
+          <li><strong>濾鏡：</strong>鮮明增色、柔和人像、電影冷調、暖陽色調、黑白高反差、復古底片。</li>
+          <li><strong>裁切：</strong>直式 9:16、方形 1:1、橫式 16:9、自由裁切與縮放。</li>
+          <li><strong>鎖定：</strong>主角鎖定置中（ViT）。</li>
+        </ul>
+        <h3>主角鎖定置中</h3>
+        <ol>
+          <li>先播放後暫停在主角清楚的畫面。</li>
+          <li>選「主角鎖定置中」，用手指框住人物或寵物；也可使用 AI 尋找候選框。</li>
+          <li>先跑 3 秒 ViT 測試，再追蹤完整影片。</li>
+          <li>調整輸出比例、主角大小與置中柔順度後輸出。</li>
+        </ol>
         <p class="tip">追蹤及輸出期間，請保持 NiviTrack 在前景，不要鎖定螢幕或切換到其他 App。</p>
       </section>
       <section id="export">
-        <h2>構圖、輸出與儲存</h2>
+        <h2>輸出與儲存</h2>
         <div class="options">
           <div class="option"><strong>9:16</strong><span>直式手機影片</span></div>
           <div class="option"><strong>1:1</strong><span>正方形影片</span></div>
           <div class="option"><strong>16:9</strong><span>橫式影片</span></div>
         </div>
         <ul>
-          <li><strong>主角大小：</strong>數值越大，主角在成品中越大。</li>
-          <li><strong>置中柔順度：</strong>數值越高，鏡頭移動越平順。</li>
-          <li><strong>建議預設：</strong>9:16、主角大小 55%、置中柔順度 72%。</li>
+          <li><strong>裁切：</strong>可移動畫面中心並放大；自由裁切會維持原片比例。</li>
+          <li><strong>主角鎖定：</strong>可選 9:16、1:1 或 16:9，並調整主角大小與柔順度。</li>
+          <li><strong>原聲：</strong>所有 11 種功能都會沿用來源影片的聲音。</li>
         </ul>
         <ol>
           <li>一般分享請點「輸出相容 MP4」。</li>
@@ -202,7 +215,7 @@
         <ol>
           <li>在另一台 iPhone 使用 Safari 開啟 NiviTrack 網址。</li>
           <li>使用 Safari 的「加入主畫面」。</li>
-          <li>從主畫面啟動，並在連網時完成一次 3 秒測試。</li>
+          <li>從主畫面啟動。若要使用主角鎖定，第一次請保持連網讓 ViT 模型載入。</li>
         </ol>
         <p class="muted">每台手機的影片與輸出檔彼此獨立，不會自動互傳。成品可使用 AirDrop、訊息或共享相簿分享。</p>
       </section>
@@ -219,13 +232,13 @@
       <section id="faq">
         <h2>常見問題</h2>
         <details open><summary>一直顯示「正在檢查 Safari…」</summary><div>從多工畫面將 NiviTrack 往上滑關閉，確認網路正常，再由主畫面重新開啟。若仍未恢復，再關閉並開啟一次。</div></details>
-        <details><summary>影片畫面是黑的</summary><div>先按播放，確認 Safari 能解碼影片。看得到畫面後，暫停在主角清楚的位置，再進入主角選取。</div></details>
+        <details><summary>影片畫面是黑的</summary><div>先按播放，確認 Safari 能解碼影片。若只有裁切預覽異常，先返回功能選單再重新選擇該裁切。</div></details>
         <details><summary>追蹤框跑掉</summary><div>重新框選主角。選擇主角輪廓清楚的畫面，完整框住主角並減少背景，避開嚴重遮擋。先通過 3 秒測試，再做完整追蹤。</div></details>
         <details><summary>輸出中斷或沒有聲音</summary><div>保持 NiviTrack 在前景、確認電量與儲存空間充足，並優先使用「輸出相容 MP4」。仍有問題時，關閉 App 後重新開啟再處理。</div></details>
         <details><summary>主畫面的功能沒有更新</summary><div>從多工畫面完全關閉 NiviTrack，再由主畫面重新開啟。網址和主畫面圖示都不需要更換。</div></details>
       </section>
     </main>
   </div>
-  <footer><div class="wrap">NiviTrack · iPhone Safari 本機影片追蹤</div></footer>
+  <footer><div class="wrap">NiviTrack · iPhone Safari 本機影片後製</div></footer>
 </body>
 </html>

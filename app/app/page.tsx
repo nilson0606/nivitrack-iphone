@@ -12,6 +12,9 @@ import type { ObjectDetection } from '@tensorflow-models/coco-ssd';
 import { Box, TrackResult, VitTracker } from '../lib/vit-tracker';
 import {
   AspectPreset,
+  ExportOperation,
+  FilterPreset,
+  getFilterCss,
   getRecorderSupport,
   RealtimeVideoExporter,
   RecorderSupport,
@@ -29,9 +32,52 @@ type VideoInfo = {
   size: string;
   duration: string;
   resolution: string;
+  aspectRatio: number;
 };
 
-type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
+type Phase = 'choose' | 'tool-ready' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
+
+type ToolId =
+  | `filter-${FilterPreset}`
+  | 'crop-9-16'
+  | 'crop-square'
+  | 'crop-16-9'
+  | 'crop-free'
+  | 'track';
+
+type ToolChoice = {
+  id: ToolId;
+  group: '濾鏡' | '裁切' | '鎖定';
+  name: string;
+  detail: string;
+  fileTag: string;
+};
+
+const TOOL_CHOICES: ToolChoice[] = [
+  { id: 'filter-vivid', group: '濾鏡', name: '鮮明增色', detail: '提高飽和與層次', fileTag: 'Vivid' },
+  { id: 'filter-soft', group: '濾鏡', name: '柔和人像', detail: '降低反差、提亮膚色', fileTag: 'Soft' },
+  { id: 'filter-cinematic', group: '濾鏡', name: '電影冷調', detail: '沉穩低彩度質感', fileTag: 'Cinema' },
+  { id: 'filter-warm', group: '濾鏡', name: '暖陽色調', detail: '溫暖明亮的色彩', fileTag: 'Warm' },
+  { id: 'filter-mono', group: '濾鏡', name: '黑白高反差', detail: '俐落黑白明暗', fileTag: 'Mono' },
+  { id: 'filter-vintage', group: '濾鏡', name: '復古底片', detail: '低彩暖褐底片感', fileTag: 'Vintage' },
+  { id: 'crop-9-16', group: '裁切', name: '直式 9:16', detail: '短影音滿版比例', fileTag: '9x16' },
+  { id: 'crop-square', group: '裁切', name: '方形 1:1', detail: '社群方形構圖', fileTag: '1x1' },
+  { id: 'crop-16-9', group: '裁切', name: '橫式 16:9', detail: '標準寬螢幕比例', fileTag: '16x9' },
+  { id: 'crop-free', group: '裁切', name: '自由裁切', detail: '移動中心並縮放', fileTag: 'FreeCrop' },
+  { id: 'track', group: '鎖定', name: '主角鎖定置中', detail: 'ViT 追蹤人物或寵物', fileTag: 'SubjectLock' },
+];
+
+function filterPresetFor(tool: ToolId | null): FilterPreset | null {
+  return tool?.startsWith('filter-') ? tool.slice(7) as FilterPreset : null;
+}
+
+function cropAspectFor(tool: ToolId | null): AspectPreset | 'source' | null {
+  if (tool === 'crop-9-16') return '9:16';
+  if (tool === 'crop-square') return '1:1';
+  if (tool === 'crop-16-9') return '16:9';
+  if (tool === 'crop-free') return 'source';
+  return null;
+}
 
 type TrackingStats = {
   frames: number;
@@ -64,6 +110,10 @@ function formatDuration(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.floor(seconds % 60);
   return minutes + ':' + rest.toString().padStart(2, '0');
+}
+
+function eventClock() {
+  return performance.now();
 }
 
 function normalizeBox(start: [number, number], end: [number, number]): Box {
@@ -100,6 +150,11 @@ export default function Home() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [trackPath, setTrackPath] = useState<TrackPoint[]>([]);
+  const [selectedTool, setSelectedTool] = useState<ToolId | null>(null);
+  const [filterStrength, setFilterStrength] = useState(0.72);
+  const [cropCenterX, setCropCenterX] = useState(0.5);
+  const [cropCenterY, setCropCenterY] = useState(0.5);
+  const [cropZoom, setCropZoom] = useState(1);
   const [aspect, setAspect] = useState<AspectPreset>('9:16');
   const [subjectScale, setSubjectScale] = useState(0.55);
   const [smoothness, setSmoothness] = useState(0.72);
@@ -179,6 +234,11 @@ export default function Home() {
     setCandidates([]);
     selectionRef.current = null;
     setTrackPath([]);
+    setSelectedTool(null);
+    setFilterStrength(0.72);
+    setCropCenterX(0.5);
+    setCropCenterY(0.5);
+    setCropZoom(1);
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
@@ -195,8 +255,45 @@ export default function Home() {
       size: formatBytes(sourceFile.size),
       duration: formatDuration(video.duration),
       resolution: video.videoWidth + ' × ' + video.videoHeight,
+      aspectRatio: video.videoWidth / Math.max(1, video.videoHeight),
     });
-    setNotice('影片已在本機載入，沒有上傳或預先轉檔');
+    setNotice('影片已在本機載入；請從 11 種功能中選擇一項');
+  }
+
+  function resetExportResult() {
+    setExportUrl('');
+    setExportBlob(null);
+    setExportInfo(null);
+    setProgress(0);
+  }
+
+  function chooseTool(tool: ToolId) {
+    if (!videoInfo) return;
+    setSelectedTool(tool);
+    setFilterStrength(0.72);
+    setCropCenterX(0.5);
+    setCropCenterY(0.5);
+    setCropZoom(1);
+    resetExportResult();
+    if (tool === 'track') {
+      requestAnimationFrame(() => enterSelection());
+      return;
+    }
+    setPhase('tool-ready');
+    setNotice('已選擇「' + TOOL_CHOICES.find((item) => item.id === tool)?.name + '」；可先播放預覽，再輸出影片');
+  }
+
+  function returnToTools() {
+    videoRef.current?.pause();
+    setSelectedTool(null);
+    setPhase('choose');
+    setBox(null);
+    setCandidates([]);
+    setStats(null);
+    setTrackPath([]);
+    selectionRef.current = null;
+    resetExportResult();
+    setNotice('請從 11 種功能中選擇一項');
   }
 
   function drawFrame(
@@ -407,7 +504,7 @@ export default function Home() {
     const endTime = Math.min(video.duration, startTime + 3);
     const interval = 1 / 10;
     const results: TrackResult[] = [];
-    const started = performance.now();
+    const started = eventClock();
 
     try {
       setNotice('正在載入本機 ViT 模型…');
@@ -434,7 +531,7 @@ export default function Home() {
         if (frameTime >= endTime) break;
       }
 
-      const elapsedMs = performance.now() - started;
+      const elapsedMs = eventClock() - started;
       const inferenceTotal = results.reduce((sum, item) => sum + item.inferenceMs, 0);
       const scoreTotal = results.reduce((sum, item) => sum + item.score, 0);
       setStats({
@@ -490,7 +587,7 @@ export default function Home() {
       accepted: true,
     }];
     const measurements: TrackResult[] = [];
-    const started = performance.now();
+    const started = eventClock();
     let processed = 0;
 
     try {
@@ -528,7 +625,7 @@ export default function Home() {
       await trackDirection(backwardTimes, '補齊選角前片段');
 
       points.sort((left, right) => left.time - right.time);
-      const elapsedMs = performance.now() - started;
+      const elapsedMs = eventClock() - started;
       const inferenceTotal = measurements.reduce((sum, item) => sum + item.inferenceMs, 0);
       const scoreTotal = measurements.reduce((sum, item) => sum + item.score, 0);
       setTrackPath(points);
@@ -558,7 +655,27 @@ export default function Home() {
   async function exportVideo(codec: 'h264' | 'hevc') {
     const video = videoRef.current;
     const renderCanvas = renderCanvasRef.current;
-    if (!video || !renderCanvas || trackPath.length < 2) {
+    const filterPreset = filterPresetFor(selectedTool);
+    const cropAspect = cropAspectFor(selectedTool);
+    let operation: ExportOperation | null = null;
+    if (filterPreset) {
+      operation = { kind: 'filter', preset: filterPreset, strength: filterStrength };
+    } else if (cropAspect) {
+      operation = {
+        kind: 'crop',
+        aspect: cropAspect,
+        centerX: cropCenterX,
+        centerY: cropCenterY,
+        zoom: cropZoom,
+      };
+    } else if (selectedTool === 'track') {
+      operation = { kind: 'track', aspect, subjectScale, smoothness };
+    }
+    if (!video || !renderCanvas || !operation) {
+      setNotice('請先選擇一項後製功能');
+      return;
+    }
+    if (operation.kind === 'track' && trackPath.length < 2) {
       setNotice('請先完成整支影片的 ViT 追蹤');
       return;
     }
@@ -570,9 +687,7 @@ export default function Home() {
     try {
       if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
-        aspect,
-        subjectScale,
-        smoothness,
+        operation,
         codec,
         onProgress: (next) => {
           setProgress(next);
@@ -581,7 +696,8 @@ export default function Home() {
         isCancelled: () => cancelRef.current,
       });
       const baseName = (sourceFile?.name ?? 'NiviTrack').replace(/\.[^.]+$/, '');
-      const name = baseName + '-NiviTrack-' + aspect.replace(':', 'x') + '.mp4';
+      const fileTag = TOOL_CHOICES.find((item) => item.id === selectedTool)?.fileTag ?? 'Edit';
+      const name = baseName + '-NiviTrack-' + fileTag + '.mp4';
       setExportBlob(result.blob);
       setExportUrl(URL.createObjectURL(result.blob));
       setExportInfo({
@@ -590,10 +706,10 @@ export default function Home() {
         mimeType: result.mimeType,
         resolution: result.width + ' × ' + result.height,
       });
-      setPhase('path-ready');
+      setPhase(operation.kind === 'track' ? 'path-ready' : 'tool-ready');
       setNotice('輸出完成；影片仍在這台 iPhone，可分享或儲存到檔案');
     } catch (error) {
-      setPhase('path-ready');
+      setPhase(selectedTool === 'track' ? 'path-ready' : 'tool-ready');
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
     }
@@ -624,7 +740,29 @@ export default function Home() {
     setNotice(phase === 'exporting' ? '正在取消輸出…' : '正在取消追蹤…');
   }
 
-  const step = phase === 'choose' ? 1 : phase === 'select' ? 2 : 3;
+  const selectedChoice = TOOL_CHOICES.find((item) => item.id === selectedTool) ?? null;
+  const selectedFilter = filterPresetFor(selectedTool);
+  const selectedCropAspect = cropAspectFor(selectedTool);
+  const isSimpleTool = Boolean(selectedFilter || selectedCropAspect);
+  const sourceRatio = videoInfo?.aspectRatio ?? 9 / 16;
+  const previewRatio = selectedCropAspect === '9:16'
+    ? 9 / 16
+    : selectedCropAspect === '1:1'
+      ? 1
+      : selectedCropAspect === '16:9'
+        ? 16 / 9
+        : sourceRatio;
+  const cropPreviewActive = Boolean(selectedCropAspect && (phase === 'tool-ready' || phase === 'exporting'));
+  const stageStyle = cropPreviewActive
+    ? { aspectRatio: String(previewRatio), maxWidth: previewRatio < 1 ? `calc(62vh * ${previewRatio})` : '100%' }
+    : undefined;
+  const videoStyle = {
+    filter: selectedFilter ? getFilterCss(selectedFilter, filterStrength) : undefined,
+    objectFit: cropPreviewActive ? 'cover' as const : undefined,
+    objectPosition: cropPreviewActive ? `${Math.round(cropCenterX * 100)}% ${Math.round(cropCenterY * 100)}%` : undefined,
+    transform: cropPreviewActive ? `scale(${cropZoom})` : undefined,
+  };
+  const step = !videoInfo ? 1 : selectedTool === null ? 2 : 3;
 
   return (
     <main className="app-shell">
@@ -636,13 +774,13 @@ export default function Home() {
       </header>
 
       <section className="hero">
-        <div className="eyebrow">IPHONE WEB APP · 技術原型</div>
-        <h1>讓主角一直留在<span>畫面正中央。</span></h1>
-        <p>選擇 iPhone 原始 MOV／HEVC，直接在手機裡辨識、追蹤與輸出。影片不會離開這台裝置。</p>
+        <div className="eyebrow">IPHONE WEB APP · 11 種單一後製</div>
+        <h1>選一個功能，<span>直接完成影片。</span></h1>
+        <p>匯入 MOV、HEVC 或 MP4，選擇濾鏡、裁切或主角鎖定。一次處理一項；要疊加時，把輸出影片再匯入即可。</p>
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
-          <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>指定主角</span></div>
-          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>追蹤與輸出</span></div>
+          <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>選擇功能</span></div>
+          <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>調整與輸出</span></div>
         </div>
       </section>
 
@@ -657,10 +795,11 @@ export default function Home() {
             </button>
           ) : (
             <>
-              <div className="video-stage">
+              <div className={'video-stage ' + (cropPreviewActive ? 'crop-preview' : '')} style={stageStyle}>
                 <video
                   ref={videoRef}
-                  className={phase === 'choose' || phase === 'exporting' ? '' : 'is-hidden'}
+                  className={phase === 'choose' || phase === 'tool-ready' || phase === 'exporting' ? '' : 'is-hidden'}
+                  style={videoStyle}
                   src={videoUrl}
                   controls
                   playsInline
@@ -670,19 +809,19 @@ export default function Home() {
                 />
                 <canvas
                   ref={canvasRef}
-                  className={phase === 'choose' || phase === 'exporting' ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
+                  className={phase === 'choose' || phase === 'tool-ready' || phase === 'exporting' ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
                   onPointerDown={startBox}
                   onPointerMove={moveBox}
                   onPointerUp={finishBox}
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>score {currentScore === null ? '—' : currentScore.toFixed(3)}</span>
+                    <span>{phase === 'exporting' ? '保留原聲' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
                   </div>
                 )}
               </div>
@@ -690,14 +829,10 @@ export default function Home() {
                 {phase !== 'tracking' && phase !== 'exporting' && (
                   <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
                 )}
-                {phase === 'choose' && (
-                  <button className="primary" type="button" disabled={!videoInfo} onClick={enterSelection}>
-                    進入主角選取
-                  </button>
-                )}
+                {phase === 'tool-ready' && <button type="button" onClick={returnToTools}>取消此功能</button>}
                 {phase === 'select' && (
                   <>
-                    <button type="button" onClick={() => { setPhase('choose'); setBox(null); }}>返回播放</button>
+                    <button type="button" onClick={returnToTools}>返回功能選單</button>
                     <button type="button" disabled={detecting} onClick={detectSubjects}>
                       {detecting ? 'AI 掃描中…' : 'AI 尋找人物／寵物'}
                     </button>
@@ -714,14 +849,111 @@ export default function Home() {
                 )}
                 {phase === 'complete' && (
                   <>
+                    <button type="button" onClick={returnToTools}>返回功能選單</button>
                     <button type="button" onClick={enterSelection}>重新框選</button>
                     <button className="primary" type="button" onClick={runFullTracking}>追蹤完整影片</button>
                   </>
                 )}
                 {phase === 'path-ready' && (
-                  <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
+                  <>
+                    <button type="button" onClick={returnToTools}>返回功能選單</button>
+                    <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
+                  </>
                 )}
               </div>
+              {(phase === 'choose' || phase === 'tool-ready') && videoInfo && (
+                <section className="tool-panel" aria-label="選擇一項影片後製功能">
+                  <div className="tool-heading">
+                    <div>
+                      <span>一次選一項</span>
+                      <strong>11 種影片後製</strong>
+                    </div>
+                    <b>{selectedChoice ? selectedChoice.name : '尚未選擇'}</b>
+                  </div>
+                  <div className="tool-grid">
+                    {TOOL_CHOICES.map((tool, index) => (
+                      <button
+                        className={selectedTool === tool.id ? 'selected' : ''}
+                        type="button"
+                        key={tool.id}
+                        onClick={() => chooseTool(tool.id)}
+                      >
+                        <span>{String(index + 1).padStart(2, '0')} · {tool.group}</span>
+                        <strong>{tool.name}</strong>
+                        <small>{tool.detail}</small>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {(phase === 'tool-ready' || (phase === 'exporting' && isSimpleTool)) && isSimpleTool && selectedChoice && (
+                <section className="export-panel">
+                  <div className="export-heading">
+                    <div>
+                      <span>{selectedChoice.group}已就緒</span>
+                      <strong>{selectedChoice.name}</strong>
+                    </div>
+                    <b>保留原聲</b>
+                  </div>
+
+                  {selectedFilter && (
+                    <label className="range-control">
+                      <span><b>效果強度</b><em>{Math.round(filterStrength * 100)}%</em></span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={Math.round(filterStrength * 100)}
+                        disabled={phase === 'exporting'}
+                        onChange={(event) => setFilterStrength(Number(event.target.value) / 100)}
+                      />
+                    </label>
+                  )}
+
+                  {selectedCropAspect && (
+                    <>
+                      <div className="crop-summary">
+                        <span>輸出比例</span>
+                        <strong>{selectedCropAspect === 'source' ? '維持原片比例' : selectedCropAspect}</strong>
+                      </div>
+                      <label className="range-control">
+                        <span><b>左右位置</b><em>{Math.round(cropCenterX * 100)}%</em></span>
+                        <input type="range" min="0" max="100" value={Math.round(cropCenterX * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropCenterX(Number(event.target.value) / 100)} />
+                      </label>
+                      <label className="range-control">
+                        <span><b>上下位置</b><em>{Math.round(cropCenterY * 100)}%</em></span>
+                        <input type="range" min="0" max="100" value={Math.round(cropCenterY * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropCenterY(Number(event.target.value) / 100)} />
+                      </label>
+                      <label className="range-control">
+                        <span><b>畫面縮放</b><em>{Math.round(cropZoom * 100)}%</em></span>
+                        <input type="range" min="100" max="250" value={Math.round(cropZoom * 100)} disabled={phase === 'exporting'} onChange={(event) => setCropZoom(Number(event.target.value) / 100)} />
+                      </label>
+                    </>
+                  )}
+
+                  <div className="export-buttons">
+                    <button className="primary" type="button" disabled={phase === 'exporting' || !recorderSupport.h264} onClick={() => void exportVideo('h264')}>
+                      輸出相容 MP4
+                    </button>
+                    <button type="button" disabled={phase === 'exporting' || !recorderSupport.hevc} onClick={() => void exportVideo('hevc')}>
+                      輸出 HEVC 母片（MP4）
+                    </button>
+                  </div>
+
+                  {exportUrl && exportInfo && (
+                    <div className="export-result">
+                      <video src={exportUrl} controls playsInline preload="metadata" />
+                      <div>
+                        <strong>{exportInfo.name}</strong>
+                        <span>{exportInfo.resolution} · {exportInfo.size}</span>
+                      </div>
+                      <button className="primary" type="button" onClick={() => void shareExport()}>
+                        分享／儲存到 iPhone
+                      </button>
+                    </div>
+                  )}
+                </section>
+              )}
               {(phase === 'path-ready' || phase === 'exporting') && trackPath.length > 1 && (
                 <section className="export-panel">
                   <div className="export-heading">

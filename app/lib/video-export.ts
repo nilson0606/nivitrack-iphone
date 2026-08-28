@@ -2,6 +2,28 @@ import type { Box } from './vit-tracker';
 
 export type AspectPreset = '9:16' | '1:1' | '16:9';
 
+export type FilterPreset = 'vivid' | 'soft' | 'cinematic' | 'warm' | 'mono' | 'vintage';
+
+export type ExportOperation =
+  | {
+      kind: 'filter';
+      preset: FilterPreset;
+      strength: number;
+    }
+  | {
+      kind: 'crop';
+      aspect: AspectPreset | 'source';
+      centerX: number;
+      centerY: number;
+      zoom: number;
+    }
+  | {
+      kind: 'track';
+      aspect: AspectPreset;
+      subjectScale: number;
+      smoothness: number;
+    };
+
 export type TrackPoint = {
   time: number;
   box: Box;
@@ -15,9 +37,7 @@ export type RecorderSupport = {
 };
 
 export type ExportOptions = {
-  aspect: AspectPreset;
-  subjectScale: number;
-  smoothness: number;
+  operation: ExportOperation;
   codec: 'h264' | 'hevc';
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
@@ -66,6 +86,52 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+function mix(from: number, to: number, strength: number) {
+  return from + (to - from) * clamp(strength, 0, 1);
+}
+
+export function getFilterCss(preset: FilterPreset, strength: number) {
+  const amount = clamp(strength, 0, 1);
+  switch (preset) {
+    case 'vivid':
+      return `brightness(${mix(1, 1.03, amount)}) contrast(${mix(1, 1.12, amount)}) saturate(${mix(1, 1.5, amount)})`;
+    case 'soft':
+      return `brightness(${mix(1, 1.08, amount)}) contrast(${mix(1, 0.9, amount)}) saturate(${mix(1, 0.9, amount)})`;
+    case 'cinematic':
+      return `brightness(${mix(1, 0.95, amount)}) contrast(${mix(1, 1.2, amount)}) saturate(${mix(1, 0.76, amount)})`;
+    case 'warm':
+      return `brightness(${mix(1, 1.03, amount)}) contrast(${mix(1, 1.05, amount)}) saturate(${mix(1, 1.2, amount)}) sepia(${mix(0, 0.28, amount)})`;
+    case 'mono':
+      return `grayscale(${amount}) contrast(${mix(1, 1.25, amount)})`;
+    case 'vintage':
+      return `brightness(${mix(1, 0.96, amount)}) contrast(${mix(1, 1.08, amount)}) saturate(${mix(1, 0.82, amount)}) sepia(${mix(0, 0.46, amount)})`;
+  }
+}
+
+function even(value: number) {
+  const rounded = Math.max(2, Math.round(value));
+  return rounded % 2 === 0 ? rounded : rounded - 1;
+}
+
+function sourceOutputSize(video: HTMLVideoElement): [number, number] {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  const scale = Math.min(1, 1280 / Math.max(sourceWidth, sourceHeight));
+  return [even(sourceWidth * scale), even(sourceHeight * scale)];
+}
+
+function configureOutputCanvas(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  operation: ExportOperation,
+) {
+  if (operation.kind === 'filter' || operation.aspect === 'source') {
+    [canvas.width, canvas.height] = sourceOutputSize(video);
+    return;
+  }
+  [canvas.width, canvas.height] = OUTPUT_SIZES[operation.aspect];
+}
+
 function interpolateBox(path: TrackPoint[], time: number): Box {
   if (path.length === 0) return [0, 0, 1, 1];
   if (time <= path[0].time) return [...path[0].box] as Box;
@@ -109,7 +175,7 @@ export function smoothTrackPath(path: TrackPoint[], smoothness: number) {
   return result;
 }
 
-function drawOutputFrame(
+function drawTrackedFrame(
   video: HTMLVideoElement,
   canvas: HTMLCanvasElement,
   path: TrackPoint[],
@@ -134,6 +200,7 @@ function drawOutputFrame(
 
   context.fillStyle = '#000';
   context.fillRect(0, 0, canvas.width, canvas.height);
+  context.filter = 'none';
   context.drawImage(
     video,
     cropX,
@@ -145,6 +212,68 @@ function drawOutputFrame(
     canvas.width,
     canvas.height,
   );
+}
+
+function drawCroppedFrame(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  operation: Extract<ExportOperation, { kind: 'crop' }>,
+) {
+  const context = canvas.getContext('2d', { alpha: false });
+  if (!context || !video.videoWidth || !video.videoHeight) return;
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  const outputAspect = canvas.width / canvas.height;
+  const sourceAspect = sourceWidth / sourceHeight;
+  let cropWidth = sourceWidth;
+  let cropHeight = sourceHeight;
+  if (sourceAspect > outputAspect) cropWidth = sourceHeight * outputAspect;
+  else cropHeight = sourceWidth / outputAspect;
+
+  const zoom = clamp(operation.zoom, 1, 3);
+  cropWidth /= zoom;
+  cropHeight /= zoom;
+  const centerX = clamp(operation.centerX, 0, 1) * sourceWidth;
+  const centerY = clamp(operation.centerY, 0, 1) * sourceHeight;
+  const cropX = clamp(centerX - cropWidth / 2, 0, Math.max(0, sourceWidth - cropWidth));
+  const cropY = clamp(centerY - cropHeight / 2, 0, Math.max(0, sourceHeight - cropHeight));
+
+  context.filter = 'none';
+  context.fillStyle = '#000';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
+}
+
+function drawFilteredFrame(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  operation: Extract<ExportOperation, { kind: 'filter' }>,
+) {
+  const context = canvas.getContext('2d', { alpha: false });
+  if (!context || !video.videoWidth || !video.videoHeight) return;
+  context.fillStyle = '#000';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.filter = getFilterCss(operation.preset, operation.strength);
+  context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, canvas.width, canvas.height);
+  context.filter = 'none';
+}
+
+function drawOutputFrame(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  path: TrackPoint[],
+  time: number,
+  operation: ExportOperation,
+) {
+  if (operation.kind === 'track') {
+    drawTrackedFrame(video, canvas, path, time, operation.subjectScale);
+    return;
+  }
+  if (operation.kind === 'crop') {
+    drawCroppedFrame(video, canvas, operation);
+    return;
+  }
+  drawFilteredFrame(video, canvas, operation);
 }
 
 async function seek(video: HTMLVideoElement, time: number) {
@@ -204,17 +333,21 @@ export class RealtimeVideoExporter {
     canvas: HTMLCanvasElement,
     options: ExportOptions,
   ): Promise<ExportResult> {
-    if (path.length < 2) throw new Error('尚未建立完整追蹤路徑');
+    if (options.operation.kind === 'track' && path.length < 2) {
+      throw new Error('尚未建立完整追蹤路徑');
+    }
     const support = getRecorderSupport();
     const requestedType = options.codec === 'hevc' ? support.hevc : support.h264;
     if (!requestedType) {
       throw new Error(options.codec === 'hevc' ? '這台 iPhone 的 Safari 不支援 HEVC 網頁輸出' : '這台 iPhone 的 Safari 不支援 H.264 MP4 網頁輸出');
     }
 
-    const [width, height] = OUTPUT_SIZES[options.aspect];
-    canvas.width = width;
-    canvas.height = height;
-    const smoothedPath = smoothTrackPath(path, options.smoothness);
+    configureOutputCanvas(this.video, canvas, options.operation);
+    const width = canvas.width;
+    const height = canvas.height;
+    const smoothedPath = options.operation.kind === 'track'
+      ? smoothTrackPath(path, options.operation.smoothness)
+      : path;
     const originalTime = this.video.currentTime;
     const originalRate = this.video.playbackRate;
     const audioTracks = await this.prepareAudio();
@@ -245,7 +378,7 @@ export class RealtimeVideoExporter {
       this.video.pause();
       await seek(this.video, 0);
       this.video.playbackRate = 1;
-      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.subjectScale);
+      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation);
       recorder.start(1000);
       recorderStarted = true;
 
@@ -272,7 +405,7 @@ export class RealtimeVideoExporter {
             settle(new Error('使用者已取消輸出'));
             return false;
           }
-          drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.subjectScale);
+          drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation);
           options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
           return true;
         };

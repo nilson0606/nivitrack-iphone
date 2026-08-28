@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-no-effects-stable-v2';
+const VERSION = 'nivitrack-11-tools-v1';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -9,24 +9,9 @@ const APP_SHELL = [
   appAsset('manifest.webmanifest'),
   appAsset('og.png'),
 ];
-const MODEL_ASSETS = [
-  appAsset('models/vittrack.onnx'),
-  appAsset('models/ssdlite_mobilenet_v2/model.json'),
-  appAsset('models/ssdlite_mobilenet_v2/group1-shard1of5'),
-  appAsset('models/ssdlite_mobilenet_v2/group1-shard2of5'),
-  appAsset('models/ssdlite_mobilenet_v2/group1-shard3of5'),
-  appAsset('models/ssdlite_mobilenet_v2/group1-shard4of5'),
-  appAsset('models/ssdlite_mobilenet_v2/group1-shard5of5'),
-  appAsset('ort/ort-wasm-simd-threaded.mjs'),
-  appAsset('ort/ort-wasm-simd-threaded.wasm'),
-];
-
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    Promise.all([
-      caches.open(APP_CACHE).then((cache) => cache.addAll(APP_SHELL)),
-      caches.open(MODEL_CACHE).then((cache) => cache.addAll(MODEL_ASSETS)),
-    ]).then(() => self.skipWaiting()),
+    caches.open(APP_CACHE).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()),
   );
 });
 
@@ -80,7 +65,10 @@ self.addEventListener('fetch', (event) => {
       return fetch(request).then((response) => {
         if (!response || !response.ok || response.type !== 'basic') return response;
         const copy = response.clone();
-        caches.open(APP_CACHE).then((cache) => cache.put(request, copy));
+        const assetCache = url.pathname.includes('/models/') || url.pathname.includes('/ort/')
+          ? MODEL_CACHE
+          : APP_CACHE;
+        caches.open(assetCache).then((cache) => cache.put(request, copy));
         return response;
       });
     }),
