@@ -76,7 +76,7 @@ const HEVC_TYPES = [
   'video/mp4;codecs=hev1,mp4a.40.2',
 ];
 
-const OUTPUT_SIZES: Record<AspectPreset, [number, number]> = {
+export const OUTPUT_SIZES: Record<AspectPreset, [number, number]> = {
   '9:16': [720, 1280],
   '1:1': [720, 720],
   '16:9': [1280, 720],

@@ -19,6 +19,8 @@ import {
   RealtimeVideoExporter,
   RecorderSupport,
   TrackPoint,
+  OUTPUT_SIZES,
+  trackedFrameCrop,
 } from '../lib/video-export';
 import type { ModnetPreviewTimeline } from '../lib/modnet-background-preview';
 
@@ -905,6 +907,9 @@ export default function Home() {
     backgroundPreviewReturnPhaseRef.current = phase === 'path-ready' ? 'path-ready' : 'complete';
     video.pause();
     video.currentTime = preview.startTime;
+    const [previewWidth, previewHeight] = OUTPUT_SIZES[aspect];
+    canvas.width = previewWidth;
+    canvas.height = previewHeight;
     setPhase('previewing');
     setProgress(0);
     setNotice(backgroundPreviewKind === 'instance'
@@ -940,12 +945,20 @@ export default function Home() {
         return;
       }
       try {
+        const previewBox = previewBoxAt(preview.path, mediaTime);
+        const previewCrop = trackedFrameCrop(
+          video.videoWidth,
+          video.videoHeight,
+          previewBox,
+          previewWidth / previewHeight,
+          subjectScale,
+        );
         timeline.draw(
           video,
           canvas,
-          previewBoxAt(preview.path, mediaTime),
+          previewBox,
           bodyTightness,
-          undefined,
+          previewCrop,
           blackOutline,
         );
         setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
@@ -1282,7 +1295,12 @@ export default function Home() {
   const selectedCropAspect = cropAspectFor(selectedTool);
   const isSimpleTool = Boolean(selectedFilter || selectedCropAspect);
   const sourceRatio = videoInfo?.aspectRatio ?? 9 / 16;
-  const previewRatio = selectedTool === 'crop-free' && cropBox
+  const backgroundPreviewCompositionActive =
+    selectedTool === 'remove-background' && phase === 'previewing';
+  const outputPreviewRatio = OUTPUT_SIZES[aspect][0] / OUTPUT_SIZES[aspect][1];
+  const previewRatio = backgroundPreviewCompositionActive
+    ? outputPreviewRatio
+    : selectedTool === 'crop-free' && cropBox
     ? cropBox[2] / cropBox[3]
     : selectedCropAspect === '9:16'
     ? 9 / 16
@@ -1291,7 +1309,8 @@ export default function Home() {
       : selectedCropAspect === '16:9'
         ? 16 / 9
         : sourceRatio;
-  const cropPreviewActive = Boolean(selectedCropAspect && (phase === 'tool-ready' || phase === 'exporting'));
+  const cropPreviewActive = backgroundPreviewCompositionActive
+    || Boolean(selectedCropAspect && (phase === 'tool-ready' || phase === 'exporting'));
   const stageStyle = cropPreviewActive
     ? { aspectRatio: String(previewRatio), maxWidth: previewRatio < 1 ? `calc(62vh * ${previewRatio})` : '100%' }
     : undefined;
