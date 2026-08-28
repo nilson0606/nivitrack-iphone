@@ -9,7 +9,6 @@ NiviTrack 是一個為 iPhone Safari 設計的本機影片追蹤 Web App。選�
 - Web App：<https://nilson0606.github.io/nivitrack-iphone/>
 - HTML 使用手冊：<https://nilson0606.github.io/nivitrack-iphone/manual.html>
 - 程式碼：<https://github.com/nilson0606/nivitrack-iphone>
-- 人物特效路線圖：[EFFECTS-ROADMAP.md](EFFECTS-ROADMAP.md)
 - 費用：免費，不需要 GitHub 帳號
 - 支援範圍：iPhone、iOS 26、Safari
 
@@ -83,23 +82,6 @@ NiviTrack 會直接讀取原始影片，不需要先轉成 MP4。
 6. 從 iPhone 分享選單選擇「儲存影片」或「儲存到檔案」。
 
 「HEVC 母片」的容器是 MP4，不是 MOV。若 HEVC 按鈕無法使用，請改用相容性最高的 H.264 MP4。
-
-## Stage 1 人物特效
-
-Stage 1 的 Clone 是同一個主角的分身／彩色殘影，不包含換臉或生成式人物。程式先以 ViT 與 MagicTouch 鎖定原主角，再以 DeepLab‑V3 的 `person` 類別排除電風扇、家具等非人體物件；遮罩以 30 FPS 逐格預先完成後，才加入邊框與分身。
-
-1. 完成整支影片的 ViT 追蹤。
-2. 在「人物去背與延遲分身」點「開啟特效」。
-3. 選擇背景：原始、純黑或模糊。
-4. 選擇主角：原色、藍色剪影或黑色剪影。
-5. 選擇邊框：白邊、霓虹光或無邊框。
-6. 選擇「前後殘影」或「左右並排」，再設定 0～4 個分身、0～1 秒延遲、透明度與顏色。
-7. 點「測試 3 秒特效」。
-8. 測試完成且滿意後，再輸出相容 MP4 或 HEVC 母片。
-
-只要更改構圖或任何特效設定，必須重新完成一次 3 秒特效測試。完整輸出會先完成整支影片的逐格主角去背，再套用測試時的設定並保留原聲；短片會比原本即時遮罩多等一些時間。若兩個人完全重疊或彼此遮擋，純瀏覽器模型仍可能出現邊緣誤差。
-
-Stage 2 預定加入連續殘影、定格分身、鏡像分身、聚光燈、RGB 分離、瞬間閃現與背景替換；完整範圍請查看人物特效路線圖。
 
 ## 處理下一支影片
 
