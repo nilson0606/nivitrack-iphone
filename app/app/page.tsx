@@ -12,11 +12,19 @@ import type { ObjectDetection } from '@tensorflow-models/coco-ssd';
 import { Box, TrackResult, VitTracker } from '../lib/vit-tracker';
 import {
   AspectPreset,
+  drawOutputFrame,
   getRecorderSupport,
   RealtimeVideoExporter,
   RecorderSupport,
+  smoothTrackPath,
   TrackPoint,
 } from '../lib/video-export';
+import {
+  BackgroundMaskTimeline,
+  prepareBackgroundRemoval,
+  type BackgroundRemovalStats,
+} from '../lib/background-removal';
+import type { EdgeTamOnnxSegmenter } from '../lib/edgetam-onnx-segmenter';
 
 type Capability = {
   label: string;
@@ -31,7 +39,15 @@ type VideoInfo = {
   resolution: string;
 };
 
-type Phase = 'choose' | 'select' | 'tracking' | 'complete' | 'path-ready' | 'exporting';
+type Phase =
+  | 'choose'
+  | 'select'
+  | 'tracking'
+  | 'complete'
+  | 'path-ready'
+  | 'masking'
+  | 'previewing'
+  | 'exporting';
 
 type TrackingStats = {
   frames: number;
@@ -53,6 +69,21 @@ type ExportInfo = {
   mimeType: string;
   resolution: string;
 };
+
+type GpuNavigator = Navigator & {
+  gpu?: {
+    requestAdapter(): Promise<{
+      features: { has(name: string): boolean };
+    } | null>;
+  };
+};
+
+async function checkBackgroundRemovalSupport() {
+  const gpu = (navigator as GpuNavigator).gpu;
+  if (!gpu) return false;
+  const adapter = await gpu.requestAdapter();
+  return Boolean(adapter?.features.has('shader-f16'));
+}
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -86,6 +117,9 @@ export default function Home() {
   const selectionRef = useRef<{ time: number; box: Box } | null>(null);
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
+  const backgroundSegmenterRef = useRef<EdgeTamOnnxSegmenter | null>(null);
+  const previewTimelineRef = useRef<BackgroundMaskTimeline | null>(null);
+  const fullTimelineRef = useRef<BackgroundMaskTimeline | null>(null);
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -110,9 +144,13 @@ export default function Home() {
   const [exportUrl, setExportUrl] = useState('');
   const [exportBlob, setExportBlob] = useState<Blob | null>(null);
   const [exportInfo, setExportInfo] = useState<ExportInfo | null>(null);
+  const [backgroundMode, setBackgroundMode] = useState<'original' | 'remove'>('original');
+  const [backgroundPreviewReady, setBackgroundPreviewReady] = useState(false);
+  const [backgroundStats, setBackgroundStats] = useState<BackgroundRemovalStats | null>(null);
 
   useEffect(() => {
     const support = getRecorderSupport();
+    let active = true;
     const capabilityFrame = requestAnimationFrame(() => {
       setRecorderSupport(support);
       setCapabilities([
@@ -123,7 +161,29 @@ export default function Home() {
         { label: '相容分享', detail: 'H.264 / AAC MP4', available: Boolean(support.h264) },
         { label: 'HEVC 母片', detail: 'HEVC / AAC', available: Boolean(support.hevc) },
         { label: '離線安裝', detail: 'Service Worker', available: 'serviceWorker' in navigator },
+        { label: '主角去背', detail: '檢查 WebGPU FP16', available: false },
       ]);
+      void checkBackgroundRemovalSupport()
+        .then((available) => {
+          if (!active) return;
+          setCapabilities((items) => items.map((item) => (
+            item.label === '主角去背'
+              ? {
+                  ...item,
+                  detail: available ? 'EdgeTAM · WebGPU FP16' : '不支援，原始輸出可用',
+                  available,
+                }
+              : item
+          )));
+        })
+        .catch(() => {
+          if (!active) return;
+          setCapabilities((items) => items.map((item) => (
+            item.label === '主角去背'
+              ? { ...item, detail: '不支援，原始輸出可用', available: false }
+              : item
+          )));
+        });
     });
 
     if ('serviceWorker' in navigator) {
@@ -134,7 +194,10 @@ export default function Home() {
           setNotice('離線快取尚未啟用；其餘本機功能仍可測試');
         });
     }
-    return () => cancelAnimationFrame(capabilityFrame);
+    return () => {
+      active = false;
+      cancelAnimationFrame(capabilityFrame);
+    };
   }, []);
 
   useEffect(() => {
@@ -152,6 +215,7 @@ export default function Home() {
   useEffect(() => {
     return () => {
       void exporterRef.current?.dispose();
+      void backgroundSegmenterRef.current?.close();
     };
   }, []);
 
@@ -165,6 +229,20 @@ export default function Home() {
     if (!input) return;
     input.value = '';
     input.click();
+  }
+
+  function resetBackgroundRemoval() {
+    previewTimelineRef.current = null;
+    fullTimelineRef.current = null;
+    backgroundSegmenterRef.current?.reset();
+    setBackgroundPreviewReady(false);
+    setBackgroundStats(null);
+  }
+
+  async function releaseBackgroundSegmenter() {
+    const segmenter = backgroundSegmenterRef.current;
+    backgroundSegmenterRef.current = null;
+    await segmenter?.close();
   }
 
   function chooseVideo(event: ChangeEvent<HTMLInputElement>) {
@@ -182,6 +260,9 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
+    setBackgroundMode('original');
+    resetBackgroundRemoval();
+    void releaseBackgroundSegmenter();
     setProgress(0);
     setPhase('choose');
     setNotice('正在直接讀取原始影片…');
@@ -259,6 +340,8 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
+    resetBackgroundRemoval();
+    void releaseBackgroundSegmenter();
     setNotice('用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawFrame(null));
   }
@@ -470,6 +553,7 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
+    resetBackgroundRemoval();
     setProgress(0);
     setCurrentScore(null);
 
@@ -555,6 +639,161 @@ export default function Home() {
     }
   }
 
+  async function getBackgroundSegmenter() {
+    if (backgroundSegmenterRef.current) return backgroundSegmenterRef.current;
+    const { EdgeTamOnnxSegmenter } = await import('../lib/edgetam-onnx-segmenter');
+    const modelBaseUrl = new URL('models/edgetam-onnx/', document.baseURI).href;
+    const wasmBaseUrl = new URL('ort/', document.baseURI).href;
+    backgroundSegmenterRef.current = await EdgeTamOnnxSegmenter.create(
+      modelBaseUrl,
+      wasmBaseUrl,
+      (next, label) => {
+        setProgress(next);
+        setNotice(label);
+      },
+      () => cancelRef.current,
+    );
+    return backgroundSegmenterRef.current;
+  }
+
+  async function playBackgroundPreview() {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const timeline = previewTimelineRef.current;
+    const selection = selectionRef.current;
+    if (!video || !canvas || !timeline || !selection) {
+      setNotice('請先產生 3 秒去背預覽');
+      return;
+    }
+
+    cancelRef.current = false;
+    setPhase('previewing');
+    setProgress(0);
+    setNotice('播放 3 秒去背預覽；黑色區域就是已移除的背景');
+    const originalMuted = video.muted;
+    const originalRate = video.playbackRate;
+    const smoothedPath = smoothTrackPath(trackPath, smoothness);
+    canvas.width = aspect === '16:9' ? 1280 : 720;
+    canvas.height = aspect === '9:16' ? 1280 : 720;
+
+    try {
+      video.pause();
+      video.muted = true;
+      video.playbackRate = 1;
+      await seekTo(timeline.startTime);
+      drawOutputFrame(video, canvas, smoothedPath, timeline.startTime, subjectScale, timeline);
+
+      await new Promise<void>((resolve, reject) => {
+        let frameCallback = 0;
+        let animationFrame = 0;
+        let finished = false;
+        const cleanup = () => {
+          video.removeEventListener('ended', ended);
+          video.removeEventListener('error', failed);
+          if (frameCallback && 'cancelVideoFrameCallback' in video) {
+            video.cancelVideoFrameCallback(frameCallback);
+          }
+          if (animationFrame) cancelAnimationFrame(animationFrame);
+        };
+        const settle = (error?: Error) => {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          video.pause();
+          if (error) reject(error);
+          else resolve();
+        };
+        const render = (time: number) => {
+          if (cancelRef.current) {
+            settle(new Error('使用者已取消預覽'));
+            return false;
+          }
+          const mediaTime = Math.min(time, timeline.endTime);
+          drawOutputFrame(video, canvas, smoothedPath, mediaTime, subjectScale, timeline);
+          setProgress((mediaTime - timeline.startTime) / Math.max(0.001, timeline.endTime - timeline.startTime));
+          if (time >= timeline.endTime - 0.002) {
+            settle();
+            return false;
+          }
+          return true;
+        };
+        const videoFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+          if (!render(metadata.mediaTime)) return;
+          frameCallback = video.requestVideoFrameCallback(videoFrame);
+        };
+        const animation = () => {
+          if (!render(video.currentTime)) return;
+          animationFrame = requestAnimationFrame(animation);
+        };
+        const ended = () => settle();
+        const failed = () => settle(new Error('Safari 播放去背預覽失敗'));
+        video.addEventListener('ended', ended);
+        video.addEventListener('error', failed);
+        if ('requestVideoFrameCallback' in video) {
+          frameCallback = video.requestVideoFrameCallback(videoFrame);
+        } else {
+          animationFrame = requestAnimationFrame(animation);
+        }
+        video.play().catch((error) => settle(error instanceof Error ? error : new Error(String(error))));
+      });
+      setProgress(1);
+      setNotice('3 秒去背預覽完成；可重播，或輸出完整影片');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      video.pause();
+      video.muted = originalMuted;
+      video.playbackRate = originalRate;
+      setPhase('path-ready');
+      await seekTo(selection.time).catch(() => undefined);
+      drawFrame(selection.box);
+    }
+  }
+
+  async function runBackgroundPreview() {
+    const video = videoRef.current;
+    const selection = selectionRef.current;
+    if (!video || !selection || trackPath.length < 2) {
+      setNotice('請先完成整支影片的 ViT 追蹤');
+      return;
+    }
+    cancelRef.current = false;
+    setPhase('masking');
+    setProgress(0);
+    setBackgroundPreviewReady(false);
+    previewTimelineRef.current = null;
+    fullTimelineRef.current = null;
+
+    try {
+      const segmenter = await getBackgroundSegmenter();
+      const startTime = Math.max(0, Math.min(Math.max(0, video.duration - 3), selection.time - 1.5));
+      const endTime = Math.min(video.duration, startTime + 3);
+      const prepared = await prepareBackgroundRemoval(video, trackPath, segmenter, {
+        startTime,
+        endTime,
+        anchorTime: selection.time,
+        seekTo,
+        isCancelled: () => cancelRef.current,
+        onProgress: (next, frame, total) => {
+          setProgress(next);
+          setNotice('產生 3 秒去背 · ' + frame + ' / ' + total + ' 幀');
+        },
+      });
+      previewTimelineRef.current = prepared.timeline;
+      setBackgroundStats(prepared.stats);
+      setBackgroundPreviewReady(true);
+      await playBackgroundPreview();
+    } catch (error) {
+      setPhase('path-ready');
+      setBackgroundPreviewReady(false);
+      previewTimelineRef.current = null;
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice(message + '；原本的無特效輸出仍可使用');
+      await seekTo(selection.time).catch(() => undefined);
+      drawFrame(selection.box);
+    }
+  }
+
   async function exportVideo(codec: 'h264' | 'hevc') {
     const video = videoRef.current;
     const renderCanvas = renderCanvasRef.current;
@@ -562,18 +801,48 @@ export default function Home() {
       setNotice('請先完成整支影片的 ViT 追蹤');
       return;
     }
+    if (backgroundMode === 'remove' && !backgroundPreviewReady) {
+      setNotice('請先完成 3 秒去背預覽；也可以切回「原始背景」直接輸出');
+      return;
+    }
     cancelRef.current = false;
-    setPhase('exporting');
     setProgress(0);
-    setNotice(codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
 
     try {
+      let matte: BackgroundMaskTimeline | undefined;
+      if (backgroundMode === 'remove') {
+        if (!fullTimelineRef.current) {
+          setPhase('masking');
+          setNotice('正在建立完整去背遮罩…');
+          const segmenter = await getBackgroundSegmenter();
+          const prepared = await prepareBackgroundRemoval(video, trackPath, segmenter, {
+            startTime: 0,
+            endTime: video.duration,
+            anchorTime: selectionRef.current?.time ?? 0,
+            seekTo,
+            isCancelled: () => cancelRef.current,
+            onProgress: (next, frame, total) => {
+              setProgress(next);
+              setNotice('完整去背中 · ' + frame + ' / ' + total + ' 幀');
+            },
+          });
+          fullTimelineRef.current = prepared.timeline;
+          setBackgroundStats(prepared.stats);
+          await releaseBackgroundSegmenter();
+        }
+        matte = fullTimelineRef.current ?? undefined;
+      }
+
+      setPhase('exporting');
+      setProgress(0);
+      setNotice(codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
       if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         aspect,
         subjectScale,
         smoothness,
         codec,
+        matte,
         onProgress: (next) => {
           setProgress(next);
           setNotice('本機編碼中 · ' + Math.round(next * 100) + '%');
@@ -581,7 +850,8 @@ export default function Home() {
         isCancelled: () => cancelRef.current,
       });
       const baseName = (sourceFile?.name ?? 'NiviTrack').replace(/\.[^.]+$/, '');
-      const name = baseName + '-NiviTrack-' + aspect.replace(':', 'x') + '.mp4';
+      const name = baseName + '-NiviTrack-' + aspect.replace(':', 'x')
+        + (backgroundMode === 'remove' ? '-NoBG' : '') + '.mp4';
       setExportBlob(result.blob);
       setExportUrl(URL.createObjectURL(result.blob));
       setExportInfo({
@@ -621,10 +891,20 @@ export default function Home() {
 
   function cancelTracking() {
     cancelRef.current = true;
-    setNotice(phase === 'exporting' ? '正在取消輸出…' : '正在取消追蹤…');
+    setNotice(
+      phase === 'exporting'
+        ? '正在取消輸出…'
+        : phase === 'masking' || phase === 'previewing'
+          ? '正在取消去背…'
+          : '正在取消追蹤…',
+    );
   }
 
   const step = phase === 'choose' ? 1 : phase === 'select' ? 2 : 3;
+  const busy = phase === 'tracking' || phase === 'masking' || phase === 'previewing' || phase === 'exporting';
+  const backgroundAvailable = capabilities.some(
+    (item) => item.label === '主角去背' && item.available,
+  );
 
   return (
     <main className="app-shell">
@@ -677,17 +957,35 @@ export default function Home() {
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '原始檔直接解碼' : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose'
+                    ? '原始檔直接解碼'
+                    : phase === 'select'
+                      ? '手指框選主角'
+                      : phase === 'exporting'
+                        ? 'Safari 本機編碼'
+                        : phase === 'masking'
+                          ? 'EdgeTAM 本機去背'
+                          : phase === 'previewing'
+                            ? '3 秒去背預覽'
+                            : phase === 'path-ready'
+                              ? '構圖與輸出'
+                              : 'ViT 本機推論'}
                 </span>
-                {(phase === 'tracking' || phase === 'exporting') && (
+                {busy && phase !== 'previewing' && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>score {currentScore === null ? '—' : currentScore.toFixed(3)}</span>
+                    <span>
+                      {phase === 'tracking'
+                        ? 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))
+                        : phase === 'masking'
+                          ? '主角遮罩'
+                          : '影片編碼'}
+                    </span>
                   </div>
                 )}
               </div>
               <div className="video-actions">
-                {phase !== 'tracking' && phase !== 'exporting' && (
+                {!busy && (
                   <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
                 )}
                 {phase === 'choose' && (
@@ -709,8 +1007,14 @@ export default function Home() {
                     </button>
                   </>
                 )}
-                {(phase === 'tracking' || phase === 'exporting') && (
-                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : '取消追蹤'}</button>
+                {busy && (
+                  <button className="danger" type="button" onClick={cancelTracking}>
+                    {phase === 'exporting'
+                      ? '取消輸出'
+                      : phase === 'masking' || phase === 'previewing'
+                        ? '取消去背'
+                        : '取消追蹤'}
+                  </button>
                 )}
                 {phase === 'complete' && (
                   <>
@@ -722,15 +1026,77 @@ export default function Home() {
                   <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
                 )}
               </div>
-              {(phase === 'path-ready' || phase === 'exporting') && trackPath.length > 1 && (
+              {(phase === 'path-ready' || phase === 'masking' || phase === 'previewing' || phase === 'exporting') && trackPath.length > 1 && (
                 <section className="export-panel">
                   <div className="export-heading">
                     <div>
                       <span>完整路徑已就緒</span>
-                      <strong>選擇輸出構圖</strong>
+                      <strong>選擇背景與輸出構圖</strong>
                     </div>
                     <b>{trackPath.length} 點</b>
                   </div>
+
+                  <div className="background-options" aria-label="背景處理方式">
+                    <button
+                      className={backgroundMode === 'original' ? 'selected' : ''}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setBackgroundMode('original');
+                        setExportUrl('');
+                        setExportBlob(null);
+                        setExportInfo(null);
+                        void releaseBackgroundSegmenter();
+                        setNotice('保留原始背景；ViT 追蹤結果不變，可直接輸出');
+                      }}
+                    >
+                      <strong>原始背景</strong>
+                      <span>跳過去背，直接輸出</span>
+                    </button>
+                    <button
+                      className={backgroundMode === 'remove' ? 'selected' : ''}
+                      type="button"
+                      disabled={busy || !backgroundAvailable}
+                      onClick={() => {
+                        setBackgroundMode('remove');
+                        setExportUrl('');
+                        setExportBlob(null);
+                        setExportInfo(null);
+                        setNotice('已選擇去背黑底；請先測試 3 秒');
+                      }}
+                    >
+                      <strong>去背黑底</strong>
+                      <span>{backgroundAvailable ? '先測 3 秒，再完整輸出' : '此裝置不支援 WebGPU FP16'}</span>
+                    </button>
+                  </div>
+
+                  {backgroundMode === 'remove' && (
+                    <div className="background-tools">
+                      <div>
+                        <strong>{backgroundPreviewReady ? '3 秒去背已通過' : '尚未測試去背'}</strong>
+                        <span>
+                          {backgroundStats
+                            ? backgroundStats.frames + ' 幀 · 平均 ' + backgroundStats.averageInferenceMs.toFixed(0) + ' ms／幀'
+                            : '先追蹤、再去背；不會跳過 ViT'}
+                        </span>
+                      </div>
+                      <div>
+                        <button
+                          className="primary"
+                          type="button"
+                          disabled={busy || !backgroundAvailable}
+                          onClick={() => void runBackgroundPreview()}
+                        >
+                          {backgroundPreviewReady ? '重新測試 3 秒去背' : '測試 3 秒去背'}
+                        </button>
+                        {backgroundPreviewReady && (
+                          <button type="button" disabled={busy} onClick={() => void playBackgroundPreview()}>
+                            重播 3 秒
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="aspect-options" aria-label="輸出比例">
                     {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
@@ -738,7 +1104,7 @@ export default function Home() {
                         className={aspect === preset ? 'selected' : ''}
                         type="button"
                         key={preset}
-                        disabled={phase === 'exporting'}
+                        disabled={busy}
                         onClick={() => setAspect(preset)}
                       >
                         {preset}
@@ -753,7 +1119,7 @@ export default function Home() {
                       min="25"
                       max="80"
                       value={Math.round(subjectScale * 100)}
-                      disabled={phase === 'exporting'}
+                      disabled={busy}
                       onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
                     />
                   </label>
@@ -765,7 +1131,7 @@ export default function Home() {
                       min="0"
                       max="100"
                       value={Math.round(smoothness * 100)}
-                      disabled={phase === 'exporting'}
+                      disabled={busy}
                       onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
                     />
                   </label>
@@ -774,14 +1140,14 @@ export default function Home() {
                     <button
                       className="primary"
                       type="button"
-                      disabled={phase === 'exporting' || !recorderSupport.h264}
+                      disabled={busy || !recorderSupport.h264 || (backgroundMode === 'remove' && !backgroundPreviewReady)}
                       onClick={() => void exportVideo('h264')}
                     >
                       輸出相容 MP4
                     </button>
                     <button
                       type="button"
-                      disabled={phase === 'exporting' || !recorderSupport.hevc}
+                      disabled={busy || !recorderSupport.hevc || (backgroundMode === 'remove' && !backgroundPreviewReady)}
                       onClick={() => void exportVideo('hevc')}
                     >
                       輸出 HEVC 母片（MP4）
@@ -816,7 +1182,7 @@ export default function Home() {
 
         <aside className="side-panel">
           <div className="status-card">
-            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 7}</b></div>
+            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 8}</b></div>
             <div className="capability-list">
               {capabilities.length === 0 ? <p className="checking">正在檢查 Safari…</p> : capabilities.map((item) => (
                 <div className="capability" key={item.label}>

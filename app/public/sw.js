@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-no-effects-stable-v2';
+const VERSION = 'nivitrack-background-removal-v2';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -80,7 +80,8 @@ self.addEventListener('fetch', (event) => {
       return fetch(request).then((response) => {
         if (!response || !response.ok || response.type !== 'basic') return response;
         const copy = response.clone();
-        caches.open(APP_CACHE).then((cache) => cache.put(request, copy));
+        const isModel = url.pathname.includes('/models/') || url.pathname.includes('/ort/');
+        caches.open(isModel ? MODEL_CACHE : APP_CACHE).then((cache) => cache.put(request, copy));
         return response;
       });
     }),
