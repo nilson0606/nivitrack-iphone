@@ -12,6 +12,7 @@
     "lint": "eslint app lib scripts vite.config.ts next.config.ts",
     "test:vit": "node scripts/smoke-vit.mjs",
     "test:modnet": "node scripts/smoke-modnet.mjs",
+    "test:interactive-model": "node scripts/smoke-interactive-model.mjs",
     "test:background-mask": "node --experimental-strip-types scripts/smoke-background-mask.mjs"
   },
   "dependencies": {

@@ -35,3 +35,21 @@ bounded timeline memory design.
 - License: Apache License 2.0
 - Size: `6,632,188` bytes
 - SHA-256: `92E49898C3E05A6D7A944FC67A8CB87C4AAD754FFB6EBD949528C7D1105FEE3A`
+
+# Bundled MediaPipe MagicTouch experiment
+
+`interactive_segmentation.task` is Google's official int8 MagicTouch v2 task
+bundle used only by the isolated 3-second selected-object experiment. It
+contains separate encoder and decoder TFLite models. The tracking box produces
+positive torso strokes and negative surrounding points automatically; the user
+does not draw a brush stroke.
+
+The experiment runs at 5 mask frames per second in a dedicated Web Worker,
+closes every returned `MPMask`, terminates the worker before playback, and is
+not connected to formal export.
+
+- Source: https://storage.googleapis.com/mediapipe-models/interactive_segmenter_v2/magic_touch/int8/1/interactive_segmentation.task
+- Official Web reference: https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/tasks/web/vision/README.md
+- MediaPipe Tasks license: Apache License 2.0
+- Size: `30,525,312` bytes
+- SHA-256: `38431BC66B883404E8397F74C3579404315B9B52B04A46C6346FE906A7309B03`

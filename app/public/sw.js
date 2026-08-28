@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v16-black-safety-edge';
+const VERSION = 'nivitrack-12-tools-v17-instance-preview';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

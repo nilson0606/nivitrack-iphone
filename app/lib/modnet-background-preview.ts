@@ -59,7 +59,7 @@ function downsampleAlpha(source: Float32Array) {
   return alpha;
 }
 
-type ModnetPreviewFrame = {
+export type ModnetPreviewFrame = {
   time: number;
   alpha: Uint8ClampedArray;
   guard?: {

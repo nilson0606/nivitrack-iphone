@@ -181,6 +181,7 @@ export default function Home() {
   const [detecting, setDetecting] = useState(false);
   const [selectionPlaying, setSelectionPlaying] = useState(false);
   const [backgroundPreviewReady, setBackgroundPreviewReady] = useState(false);
+  const [backgroundPreviewKind, setBackgroundPreviewKind] = useState<'modnet' | 'instance'>('modnet');
   const [trackPath, setTrackPath] = useState<TrackPoint[]>([]);
   const [cropBox, setCropBox] = useState<Box | null>(null);
   const [selectedTool, setSelectedTool] = useState<ToolId | null>(null);
@@ -207,7 +208,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MODNet 384＋黑色安全邊框', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
+        { label: '人物去背', detail: 'MODNet＋MagicTouch 3 秒實驗', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -283,6 +284,7 @@ export default function Home() {
     modnetPreviewTimelineRef.current?.close();
     modnetPreviewTimelineRef.current = null;
     setBackgroundPreviewReady(false);
+    setBackgroundPreviewKind('modnet');
   }
 
   async function releaseTracker() {
@@ -714,6 +716,7 @@ export default function Home() {
     setPhase('masking');
     setProgress(0);
     setBackgroundPreviewReady(false);
+    setBackgroundPreviewKind('modnet');
     modnetPreviewTimelineRef.current?.close();
     modnetPreviewTimelineRef.current = null;
     setNotice('正在釋放追蹤模型並載入低記憶體 MODNet…');
@@ -731,6 +734,67 @@ export default function Home() {
     });
     modnetPreviewTimelineRef.current = prepared.timeline;
     return prepared.stats;
+  }
+
+  async function prepareInstanceSubjectExperiment() {
+    const video = videoRef.current;
+    const returnPhase = phase === 'path-ready' ? 'path-ready' : 'complete';
+    let preview = backgroundPreviewRef.current;
+    if (!video || !Number.isFinite(video.duration)) {
+      setNotice('影片尚未準備好');
+      return;
+    }
+    if (!preview && trackPath.length >= 2) {
+      const preferredStart = selectionRef.current?.time ?? video.currentTime;
+      const startTime = Math.min(Math.max(0, preferredStart), Math.max(0, video.duration - 3));
+      preview = {
+        startTime,
+        endTime: Math.min(video.duration, startTime + 3),
+        path: trackPath,
+      };
+      backgroundPreviewRef.current = preview;
+    }
+    if (!preview || preview.path.length < 2) {
+      setNotice('請先完成 3 秒主角追蹤');
+      return;
+    }
+    cancelRef.current = false;
+    setBackgroundPreviewKind('instance');
+    setBackgroundPreviewReady(false);
+    setPhase('masking');
+    setProgress(0);
+    modnetPreviewTimelineRef.current?.close();
+    modnetPreviewTimelineRef.current = null;
+    try {
+      setNotice('首次載入約 30.5MB MagicTouch；正在隔離式初始化…');
+      await releaseUpstreamModels();
+      const { prepareInteractiveSubjectPreview } = await import('../lib/interactive-subject-preview');
+      const prepared = await prepareInteractiveSubjectPreview(video, preview.path, {
+        startTime: preview.startTime,
+        endTime: preview.endTime,
+        seekTo,
+        isCancelled: () => cancelRef.current,
+        onProgress: (next, frame, total) => {
+          setProgress(next);
+          setNotice('單人實例分割實驗 · ' + frame + ' / ' + total + ' 幀');
+        },
+      });
+      modnetPreviewTimelineRef.current = prepared.timeline;
+      await seekTo(preview.startTime);
+      const previewBox = previewBoxAt(preview.path, preview.startTime);
+      setBox(previewBox);
+      drawFrame(previewBox);
+      setBackgroundPreviewReady(true);
+      setPhase(returnPhase);
+      setNotice('單人實例預覽已準備 · 平均 ' + Math.round(prepared.stats.averageInferenceMs) + ' ms／幀');
+    } catch (error) {
+      modnetPreviewTimelineRef.current?.close();
+      modnetPreviewTimelineRef.current = null;
+      setBackgroundPreviewReady(false);
+      setPhase(returnPhase);
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice('單人實例分割實驗失敗：' + message + '；v16 正式輸出未受影響');
+    }
   }
 
   async function runTracking() {
@@ -843,7 +907,9 @@ export default function Home() {
     video.currentTime = preview.startTime;
     setPhase('previewing');
     setProgress(0);
-    setNotice('正在播放 3 秒 MODNet 純黑背景 Preview…');
+    setNotice(backgroundPreviewKind === 'instance'
+      ? '正在播放 3 秒單人實例分割純黑預覽…'
+      : '正在播放 3 秒 MODNet 純黑背景 Preview…');
 
     let finished = false;
     let cleanupListeners = () => {};
@@ -1308,12 +1374,12 @@ export default function Home() {
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectionPlaying ? '播放中 · 暫停後框選' : selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'masking' ? 'MODNet 逐幀產生遮罩' : phase === 'previewing' ? '3 秒 MODNet 純黑背景預覽' : phase === 'exporting' ? (selectedTool === 'remove-background' ? 'MODNet 本機去背輸出' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
+                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectionPlaying ? '播放中 · 暫停後框選' : selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'masking' ? (backgroundPreviewKind === 'instance' ? 'MagicTouch 單人實例分割' : 'MODNet 逐幀產生遮罩') : phase === 'previewing' ? (backgroundPreviewKind === 'instance' ? '3 秒單人實例純黑預覽' : '3 秒 MODNet 純黑背景預覽') : phase === 'exporting' ? (selectedTool === 'remove-background' ? 'MODNet 本機去背輸出' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'masking' || phase === 'previewing' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>{phase === 'exporting' ? '保留原聲' : phase === 'previewing' ? 'MODNet 預覽' : phase === 'masking' ? '單 Session · 逐幀釋放' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
+                    <span>{phase === 'exporting' ? '保留原聲' : phase === 'previewing' ? (backgroundPreviewKind === 'instance' ? '實例預覽' : 'MODNet 預覽') : phase === 'masking' ? (backgroundPreviewKind === 'instance' ? '隔離 Worker · 5 fps' : '單 Session · 逐幀釋放') : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
                   </div>
                 )}
               </div>
@@ -1347,14 +1413,19 @@ export default function Home() {
                   </>
                 )}
                 {(phase === 'tracking' || phase === 'masking' || phase === 'previewing' || phase === 'exporting') && (
-                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'previewing' ? '取消預覽' : phase === 'masking' ? '取消 MODNet' : '取消追蹤'}</button>
+                  <button className="danger" type="button" onClick={cancelTracking}>{phase === 'exporting' ? '取消輸出' : phase === 'previewing' ? '取消預覽' : phase === 'masking' ? (backgroundPreviewKind === 'instance' ? '取消實例分割' : '取消 MODNet') : '取消追蹤'}</button>
                 )}
                 {phase === 'complete' && (
                   <>
                     <button type="button" onClick={returnToTools}>返回功能選單</button>
                     <button type="button" onClick={enterSelection}>重新框選</button>
                     {selectedTool === 'remove-background' && (
-                      <button className="primary" type="button" disabled={!backgroundPreviewReady} onClick={playBackgroundPreview}>播放 3 秒 MODNet 預覽</button>
+                      <>
+                        <button type="button" onClick={() => void prepareInstanceSubjectExperiment()}>實驗：3 秒單人實例分割</button>
+                        <button className="primary" type="button" disabled={!backgroundPreviewReady} onClick={playBackgroundPreview}>
+                          {backgroundPreviewKind === 'instance' ? '播放 3 秒單人實例預覽' : '播放 3 秒 MODNet 預覽'}
+                        </button>
+                      </>
                     )}
                     <button className={selectedTool === 'remove-background' ? '' : 'primary'} type="button" onClick={runFullTracking}>追蹤完整影片</button>
                   </>
@@ -1506,7 +1577,16 @@ export default function Home() {
                             ? playBackgroundPreview
                             : () => void prepareTrackedPathBackgroundPreview()}
                         >
-                          {backgroundPreviewReady ? '播放 3 秒 MODNet Preview' : '準備 3 秒 MODNet Preview'}
+                          {backgroundPreviewReady
+                            ? (backgroundPreviewKind === 'instance' ? '播放 3 秒單人實例預覽' : '播放 3 秒 MODNet Preview')
+                            : '準備 3 秒 MODNet Preview'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={phase === 'exporting'}
+                          onClick={() => void prepareInstanceSubjectExperiment()}
+                        >
+                          實驗：3 秒單人實例分割
                         </button>
                       </div>
                     </>
