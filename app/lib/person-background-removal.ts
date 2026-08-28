@@ -68,6 +68,33 @@ export function constrainSubjectConfidenceToPose(
   return constrained;
 }
 
+export function preferUsablePoseAlpha(
+  poseAlpha: Float32Array | null,
+  fallbackAlpha: Float32Array | null,
+) {
+  if (!fallbackAlpha) return poseAlpha;
+  if (!poseAlpha || poseAlpha.length !== fallbackAlpha.length) return fallbackAlpha;
+  let posePixels = 0;
+  let fallbackPixels = 0;
+  let poseWeight = 0;
+  let fallbackWeight = 0;
+  for (let index = 0; index < fallbackAlpha.length; index += 1) {
+    const pose = poseAlpha[index];
+    const fallback = fallbackAlpha[index];
+    if (pose > 0.08) posePixels += 1;
+    if (fallback > 0.08) fallbackPixels += 1;
+    poseWeight += pose;
+    fallbackWeight += fallback;
+  }
+  if (fallbackPixels === 0 || fallbackWeight === 0) return poseAlpha;
+
+  // A pose prior is allowed to trim attached background, but never to erase the
+  // tracked dancer. Low-coverage results fall back to the proven selfie matte.
+  const enoughPixels = posePixels >= Math.max(8, Math.floor(fallbackPixels * 0.18));
+  const enoughWeight = poseWeight >= fallbackWeight * 0.14;
+  return enoughPixels && enoughWeight ? poseAlpha : fallbackAlpha;
+}
+
 export function tightenTrackedSubjectEdges(alpha: Float32Array, width: number, height: number) {
   const tightened = new Float32Array(alpha.length);
   for (let y = 0; y < height; y += 1) {
@@ -302,6 +329,7 @@ export class PersonBackgroundRenderer {
   private pendingAlpha: Float32Array | null = null;
   private timestamp = 0;
   private missedFrames = 0;
+  private poseEnabled = true;
 
   private constructor(segmenter: ImageSegmenter, poseLandmarker: PoseLandmarker) {
     this.segmenter = segmenter;
@@ -403,33 +431,52 @@ export class PersonBackgroundRenderer {
       personConfidence = new Float32Array(mask.getAsFloat32Array());
     });
 
-    this.poseLandmarker.detectForVideo(this.inferenceCanvas, this.timestamp, (result) => {
-      const mask = result.segmentationMasks?.[0];
-      if (!mask) return;
-      poseWidth = mask.width;
-      poseHeight = mask.height;
-      poseConfidence = new Float32Array(mask.getAsFloat32Array());
-    });
+    if (this.poseEnabled) {
+      try {
+        this.poseLandmarker.detectForVideo(this.inferenceCanvas, this.timestamp, (result) => {
+          const mask = result.segmentationMasks?.[0];
+          if (!mask) return;
+          poseWidth = mask.width;
+          poseHeight = mask.height;
+          poseConfidence = new Float32Array(mask.getAsFloat32Array());
+        });
+      } catch {
+        // Some Safari/WebGL combinations can initialize both tasks but reject
+        // the second per-frame inference. Keep export working with the original
+        // local selfie matte instead of leaving the output canvas black.
+        this.poseEnabled = false;
+      }
+    }
 
     if (personConfidence) {
-      const constrainedConfidence = poseConfidence
-        ? constrainSubjectConfidenceToPose(
-          personConfidence,
-          maskWidth,
-          maskHeight,
-          poseConfidence,
-          poseWidth,
-          poseHeight,
-        )
-        : personConfidence;
-      currentAlpha = selectTrackedSubjectAlpha(
-        constrainedConfidence,
+      const fallbackAlpha = selectTrackedSubjectAlpha(
+        personConfidence,
         maskWidth,
         maskHeight,
         relativeBox,
         regionWidth,
         regionHeight,
       );
+      let poseAlpha: Float32Array | null = null;
+      if (poseConfidence) {
+        const constrainedConfidence = constrainSubjectConfidenceToPose(
+          personConfidence,
+          maskWidth,
+          maskHeight,
+          poseConfidence,
+          poseWidth,
+          poseHeight,
+        );
+        poseAlpha = selectTrackedSubjectAlpha(
+          constrainedConfidence,
+          maskWidth,
+          maskHeight,
+          relativeBox,
+          regionWidth,
+          regionHeight,
+        );
+      }
+      currentAlpha = preferUsablePoseAlpha(poseAlpha, fallbackAlpha);
     }
 
     const recovered = recoverTrackedSubjectAlpha(

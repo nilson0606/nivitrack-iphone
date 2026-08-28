@@ -1,5 +1,6 @@
 import {
   constrainSubjectConfidenceToPose,
+  preferUsablePoseAlpha,
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
   stabilizeTrackedSubjectAlpha,
@@ -100,7 +101,32 @@ function testBroadBackgroundOverlap() {
       if (x >= 10) backgroundObject += 1;
     }
   }
-  return { dancer, backgroundObject };
+  const fallback = selectTrackedSubjectAlpha(
+    personMask,
+    width,
+    height,
+    [10, 0, 70, 50],
+    100,
+    50,
+  );
+  const preferred = preferUsablePoseAlpha(alpha, fallback);
+  return {
+    dancer,
+    backgroundObject,
+    usableConstraintPreferred: preferred === alpha,
+  };
+}
+
+function testInvalidPoseFallback() {
+  const fallback = new Float32Array(100).fill(0.8);
+  const emptyPose = new Float32Array(100);
+  const tinyPose = new Float32Array(100);
+  tinyPose[50] = 1;
+  return {
+    emptyFallsBack: preferUsablePoseAlpha(emptyPose, fallback) === fallback,
+    tinyFallsBack: preferUsablePoseAlpha(tinyPose, fallback) === fallback,
+    missingFallsBack: preferUsablePoseAlpha(null, fallback) === fallback,
+  };
 }
 
 function testLowConfidenceDancer() {
@@ -178,6 +204,7 @@ const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
 const narrowBackgroundBridge = testNarrowBackgroundBridge();
 const broadBackgroundOverlap = testBroadBackgroundOverlap();
+const invalidPoseFallback = testInvalidPoseFallback();
 const lowConfidence = testLowConfidenceDancer();
 const recovery = testMissingFrameRecovery();
 const region = testTrackedRegion();
@@ -187,7 +214,12 @@ const framing = testAdjustableFraming();
 const pass = separated.selected > 0 && separated.leaked === 0
   && touching.selected > 0 && touching.leaked === 0
   && narrowBackgroundBridge.dancer > 0 && narrowBackgroundBridge.backgroundObject === 0
-  && broadBackgroundOverlap.dancer > 0 && broadBackgroundOverlap.backgroundObject === 0
+  && broadBackgroundOverlap.dancer > 0
+  && broadBackgroundOverlap.backgroundObject === 0
+  && broadBackgroundOverlap.usableConstraintPreferred
+  && invalidPoseFallback.emptyFallsBack
+  && invalidPoseFallback.tinyFallsBack
+  && invalidPoseFallback.missingFallsBack
   && lowConfidence.selected > 0 && lowConfidence.leaked === 0
   && recovery.firstMissingIsBlack
   && recovery.temporaryMissingRetained
@@ -207,6 +239,7 @@ console.log(JSON.stringify({
   touching,
   narrowBackgroundBridge,
   broadBackgroundOverlap,
+  invalidPoseFallback,
   lowConfidence,
   recovery,
   region,
