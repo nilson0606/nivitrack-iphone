@@ -165,6 +165,7 @@ export default function Home() {
   const backgroundPreviewRendererRef = useRef<PersonBackgroundRenderer | null>(null);
   const previewFrameCallbackRef = useRef(0);
   const previewAnimationFrameRef = useRef(0);
+  const backgroundPreviewReturnPhaseRef = useRef<'complete' | 'path-ready'>('complete');
 
   const [videoUrl, setVideoUrl] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -789,6 +790,7 @@ export default function Home() {
     stopBackgroundPreviewCallbacks();
     cancelRef.current = false;
     renderer.reset();
+    backgroundPreviewReturnPhaseRef.current = phase === 'path-ready' ? 'path-ready' : 'complete';
     video.pause();
     video.currentTime = preview.startTime;
     setPhase('previewing');
@@ -805,7 +807,7 @@ export default function Home() {
       cleanupListeners();
       video.pause();
       stopBackgroundPreviewCallbacks();
-      setPhase('complete');
+      setPhase(backgroundPreviewReturnPhaseRef.current);
       if (error) {
         const message = error instanceof Error ? error.message : String(error);
         setNotice('3 秒去背預覽失敗：' + message);
@@ -866,6 +868,36 @@ export default function Home() {
     video.play().catch((error) => {
       finish(error);
     });
+  }
+
+  async function prepareTrackedPathBackgroundPreview() {
+    const video = videoRef.current;
+    if (!video || trackPath.length < 2 || !Number.isFinite(video.duration)) {
+      setNotice('請先完成整支影片的主角追蹤');
+      return;
+    }
+    const preferredStart = selectionRef.current?.time ?? video.currentTime;
+    const startTime = Math.min(Math.max(0, preferredStart), Math.max(0, video.duration - 3));
+    const endTime = Math.min(video.duration, startTime + 3);
+    backgroundPreviewRef.current = { startTime, endTime, path: trackPath };
+    setBackgroundPreviewReady(false);
+    setNotice('正在準備完整路徑的 3 秒去背 Preview…');
+    try {
+      if (!backgroundPreviewRendererRef.current) {
+        const { PersonBackgroundRenderer } = await import('../lib/person-background-removal');
+        backgroundPreviewRendererRef.current = await PersonBackgroundRenderer.create();
+      }
+      backgroundPreviewRendererRef.current.reset();
+      await seekTo(startTime);
+      const previewBox = previewBoxAt(trackPath, startTime);
+      setBox(previewBox);
+      drawFrame(previewBox);
+      setBackgroundPreviewReady(true);
+      setNotice('3 秒去背 Preview 已準備；請點「播放 3 秒去背 Preview」');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice('3 秒去背 Preview 準備失敗：' + message);
+    }
   }
 
   async function runFullTracking() {
@@ -1338,10 +1370,24 @@ export default function Home() {
                   </div>
 
                   {selectedTool === 'remove-background' && (
-                    <div className="crop-summary">
-                      <span>輸出方式</span>
-                      <strong>放大並置中選定舞者 · 其餘畫面為純黑</strong>
-                    </div>
+                    <>
+                      <div className="crop-summary">
+                        <span>輸出方式</span>
+                        <strong>放大並置中選定舞者 · 其餘畫面為純黑</strong>
+                      </div>
+                      <div className="background-preview-actions">
+                        <button
+                          className="primary"
+                          type="button"
+                          disabled={phase === 'exporting'}
+                          onClick={backgroundPreviewReady
+                            ? playBackgroundPreview
+                            : () => void prepareTrackedPathBackgroundPreview()}
+                        >
+                          {backgroundPreviewReady ? '播放 3 秒去背 Preview' : '準備 3 秒去背 Preview'}
+                        </button>
+                      </div>
+                    </>
                   )}
 
                   <div className="aspect-options" aria-label="輸出比例">

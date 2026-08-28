@@ -368,6 +368,18 @@ footer p span { margin-right: 7px; color: #20a866; }
 }
 .crop-summary span { color: var(--muted); font-size: 11px; }
 .crop-summary strong { font-size: 12px; }
+.background-preview-actions { margin-top: 10px; }
+.background-preview-actions button {
+  width: 100%;
+  border: 1px solid var(--ink);
+  border-radius: 12px;
+  background: var(--ink);
+  padding: 12px 13px;
+  color: white;
+  font-size: 12px;
+  font-weight: 780;
+}
+.background-preview-actions button:disabled { opacity: .42; }
 
 .export-panel {
   margin-top: 14px;
