@@ -1247,7 +1247,7 @@ export default function Home() {
                         disabled={phase !== 'path-ready'}
                         onClick={() => updatePersonEffects({ enabled: !personEffects.enabled })}
                       >
-                        {personEffects.enabled ? '已開啟去背' : '跳過去背'}
+                        {personEffects.enabled ? '已開啟去背' : '去背效果'}
                       </button>
                     </div>
                     <p className="effect-note">ViT 追蹤維持原樣。開啟後只做一件事：保留原色主角、背景轉成純黑；MagicTouch＋Pose 負責主角遮罩，光流降低逐幀閃爍。沒有分身、邊框或其他特效。</p>

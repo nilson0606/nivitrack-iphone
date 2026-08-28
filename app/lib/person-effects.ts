@@ -470,6 +470,12 @@ export class PersonEffectRenderer {
   private applyMask(prepared: PreparedMask) {
     this.maskCanvas.width = prepared.width;
     this.maskCanvas.height = prepared.height;
+    if (this.spriteCanvas.width !== prepared.width || this.spriteCanvas.height !== prepared.height) {
+      this.spriteCanvas.width = prepared.width;
+      this.spriteCanvas.height = prepared.height;
+      this.tintCanvas.width = prepared.width;
+      this.tintCanvas.height = prepared.height;
+    }
     const mask = this.maskCanvas.getContext('2d');
     if (!mask) throw new Error('Safari 無法建立人物遮罩 Canvas');
     const image = mask.createImageData(prepared.width, prepared.height);
@@ -572,7 +578,7 @@ export class PersonEffectRenderer {
     const region = this.lastRegion;
     const context = this.spriteCanvas.getContext('2d');
     if (!region || !context || !this.maskReady) return;
-    context.clearRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    context.clearRect(0, 0, this.spriteCanvas.width, this.spriteCanvas.height);
     context.globalCompositeOperation = 'source-over';
     context.drawImage(
       video,
@@ -582,29 +588,33 @@ export class PersonEffectRenderer {
       region.height,
       0,
       0,
-      SPRITE_SIZE,
-      SPRITE_SIZE,
+      this.spriteCanvas.width,
+      this.spriteCanvas.height,
     );
     context.globalCompositeOperation = 'destination-in';
-    context.drawImage(this.maskCanvas, 0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    context.drawImage(this.maskCanvas, 0, 0, this.spriteCanvas.width, this.spriteCanvas.height);
     context.globalCompositeOperation = 'source-over';
   }
 
   private snapshot(time: number) {
     if (!this.lastRegion) return;
-    const canvas = createCanvas();
+    const canvas = createCanvas(this.spriteCanvas.width, this.spriteCanvas.height);
     canvas.getContext('2d')!.drawImage(this.spriteCanvas, 0, 0);
     this.history.push({ time, region: { ...this.lastRegion }, canvas });
   }
 
-  private tint(source: CanvasImageSource, color: string) {
+  private tint(source: HTMLCanvasElement, color: string) {
     const context = this.tintCanvas.getContext('2d')!;
-    context.clearRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    if (this.tintCanvas.width !== source.width || this.tintCanvas.height !== source.height) {
+      this.tintCanvas.width = source.width;
+      this.tintCanvas.height = source.height;
+    }
+    context.clearRect(0, 0, source.width, source.height);
     context.globalCompositeOperation = 'source-over';
-    context.drawImage(source, 0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    context.drawImage(source, 0, 0, source.width, source.height);
     context.globalCompositeOperation = 'source-in';
     context.fillStyle = color;
-    context.fillRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    context.fillRect(0, 0, source.width, source.height);
     context.globalCompositeOperation = 'source-over';
     return this.tintCanvas;
   }
