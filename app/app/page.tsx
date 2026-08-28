@@ -476,24 +476,6 @@ export default function Home() {
     });
   }
 
-  async function waitForDecodedFrame(video: HTMLVideoElement) {
-    await new Promise<void>((resolve) => {
-      let finished = false;
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-        window.clearTimeout(timeout);
-        resolve();
-      };
-      const timeout = window.setTimeout(finish, 80);
-      if (typeof video.requestVideoFrameCallback === 'function') {
-        video.requestVideoFrameCallback(() => finish());
-      } else {
-        requestAnimationFrame(() => requestAnimationFrame(finish));
-      }
-    });
-  }
-
   async function runTracking() {
     const video = videoRef.current;
     if (!video || !box) return;
@@ -826,7 +808,6 @@ export default function Home() {
         if (cancelRef.current) throw new Error('使用者已取消去背測試');
         const at = Math.min(testEnd, testStart + frame * interval);
         await seekTo(at);
-        await waitForDecodedFrame(video);
         renderer.render(video, previewCanvas, smoothedPath, at, subjectScale, personEffects);
         setShowEffectPreview(true);
         const next = frame / Math.max(1, totalFrames);
@@ -841,7 +822,6 @@ export default function Home() {
       setCorrectionTime(testPreviewTime);
       setPhase('path-ready');
       await seekTo(testPreviewTime);
-      await waitForDecodedFrame(video);
       renderer.resetPlayback();
       renderer.render(video, previewCanvas, smoothedPath, testPreviewTime, subjectScale, personEffects);
       setShowEffectPreview(true);
@@ -884,7 +864,6 @@ export default function Home() {
       const smoothedPath = smoothTrackPath(trackPath, smoothness);
       video.pause();
       await seekTo(window.start);
-      await waitForDecodedFrame(video);
       if (effectReplayTokenRef.current !== replayToken) return;
       renderer.resetPlayback();
       renderer.render(
@@ -917,7 +896,6 @@ export default function Home() {
       video.pause();
       const midpoint = window.start + (window.end - window.start) * 0.5;
       await seekTo(midpoint);
-      await waitForDecodedFrame(video);
       renderer.resetPlayback();
       renderer.render(
         video,
@@ -1069,7 +1047,7 @@ export default function Home() {
               <div className="video-stage">
                 <video
                   ref={videoRef}
-                  className={phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? '' : 'is-hidden'}
+                  className={phase === 'choose' || phase === 'exporting' || (phase === 'effect-testing' && !showEffectPreview) ? '' : 'is-hidden'}
                   src={videoUrl}
                   controls
                   playsInline
