@@ -7,6 +7,7 @@ import {
   recoverTrackedSubjectAlpha,
   selectModnetTrackedAlpha,
   selectTrackedSubjectAlpha,
+  solidifyAndInsetAlpha,
   stabilizeTrackedSubjectAlpha,
   tightenTrackedSubjectEdges,
   trackedSubjectRegion,
@@ -298,6 +299,22 @@ function testEdgeTightening() {
   };
 }
 
+function testBlackSafetyEdge() {
+  const maskWidth = 20;
+  const maskHeight = 10;
+  const alpha = new Uint8ClampedArray(maskWidth * maskHeight);
+  for (let y = 2; y <= 7; y += 1) {
+    for (let x = 3; x <= 9; x += 1) alpha[y * maskWidth + x] = 90;
+  }
+  alpha[5 * maskWidth + 15] = 20;
+  solidifyAndInsetAlpha(alpha, maskWidth, maskHeight, 1, new Uint16Array(alpha.length));
+  return {
+    subjectInteriorSolidified: alpha[5 * maskWidth + 6] > 120,
+    subjectEdgeInsetToBlack: alpha[5 * maskWidth + 3] === 0,
+    weakDistantLeakRemoved: alpha[5 * maskWidth + 15] === 0,
+  };
+}
+
 function testAdjustableFraming() {
   const box = [400, 300, 200, 600];
   const smallerSubject = trackedFrameCrop(1080, 1920, box, 9 / 16, 0.25);
@@ -322,6 +339,7 @@ const partialLoss = testPartialSubjectLossRecovery();
 const region = testTrackedRegion();
 const temporal = testTemporalStability();
 const edges = testEdgeTightening();
+const blackSafetyEdge = testBlackSafetyEdge();
 const framing = testAdjustableFraming();
 const pass = separated.selected > 0 && separated.leaked === 0
   && touching.selected > 0 && touching.leaked === 0
@@ -352,6 +370,9 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && temporal.persistentSubjectRetained
   && edges.centerPreserved
   && edges.edgeFeathered
+  && blackSafetyEdge.subjectInteriorSolidified
+  && blackSafetyEdge.subjectEdgeInsetToBlack
+  && blackSafetyEdge.weakDistantLeakRemoved
   && framing.largerSubjectUsesTighterCrop
   && framing.aspectPreserved;
 
@@ -369,6 +390,7 @@ console.log(JSON.stringify({
   region,
   temporal,
   edges,
+  blackSafetyEdge,
   framing,
   pass,
 }, null, 2));

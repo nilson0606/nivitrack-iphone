@@ -23,6 +23,13 @@ body bands. A band that suddenly collapses receives one short, time-based
 50 ms release from the most recent reliable mask. Persistent changes are then
 accepted immediately to avoid a delayed silhouette during fast movement.
 
+Before playback or export, masks are solidified once to keep the current
+subject opaque, then inset by an adjustable 0-6 pixel black safety edge. The
+50 ms retained mask is also clipped to the current subject neighborhood so it
+cannot reveal a distant patch of the current background. Styling mutates each
+stored mask in place and uses one reusable distance buffer, preserving the
+bounded timeline memory design.
+
 - Source revision: https://huggingface.co/Xenova/modnet/tree/fa2fa546052fba4c08921230a26cc69a333fca12
 - Upstream project: https://github.com/ZHKKKe/MODNet
 - License: Apache License 2.0

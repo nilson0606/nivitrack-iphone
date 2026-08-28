@@ -192,6 +192,7 @@ export default function Home() {
   const [subjectScale, setSubjectScale] = useState(0.55);
   const [smoothness, setSmoothness] = useState(0.72);
   const [bodyTightness, setBodyTightness] = useState(0.62);
+  const [blackOutline, setBlackOutline] = useState(3);
   const [recorderSupport, setRecorderSupport] = useState<RecorderSupport>({
     h264: null,
     hevc: null,
@@ -206,7 +207,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MODNet 384＋50ms 防閃失', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
+        { label: '人物去背', detail: 'MODNet 384＋黑色安全邊框', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -878,6 +879,8 @@ export default function Home() {
           canvas,
           previewBoxAt(preview.path, mediaTime),
           bodyTightness,
+          undefined,
+          blackOutline,
         );
         setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
         if (mediaTime >= preview.endTime - 0.01) finish();
@@ -1083,6 +1086,7 @@ export default function Home() {
         subjectScale,
         smoothness,
         bodyTightness,
+        blackOutline,
       };
     }
     if (!video || !renderCanvas || !operation) {
@@ -1363,16 +1367,22 @@ export default function Home() {
                 )}
               </div>
               {phase === 'complete' && selectedTool === 'remove-background' && (
-                <label className="range-control">
-                  <span><b>去背收緊度</b><em>{Math.round(bodyTightness * 100)}%</em></span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={Math.round(bodyTightness * 100)}
-                    onChange={(event) => setBodyTightness(Number(event.target.value) / 100)}
-                  />
-                </label>
+                <>
+                  <label className="range-control">
+                    <span><b>去背收緊度</b><em>{Math.round(bodyTightness * 100)}%</em></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={Math.round(bodyTightness * 100)}
+                      onChange={(event) => setBodyTightness(Number(event.target.value) / 100)}
+                    />
+                  </label>
+                  <label className="range-control">
+                    <span><b>黑色安全邊框</b><em>{blackOutline}px</em></span>
+                    <input type="range" min="0" max="6" value={blackOutline} onChange={(event) => setBlackOutline(Number(event.target.value))} />
+                  </label>
+                </>
               )}
               {(phase === 'choose' || phase === 'tool-ready') && videoInfo && (
                 <section className="tool-panel" aria-label="選擇一項影片後製功能">
@@ -1541,17 +1551,23 @@ export default function Home() {
                   </label>
 
                   {selectedTool === 'remove-background' && (
-                    <label className="range-control">
-                      <span><b>去背收緊度</b><em>{Math.round(bodyTightness * 100)}%</em></span>
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={Math.round(bodyTightness * 100)}
-                        disabled={phase === 'exporting'}
-                        onChange={(event) => setBodyTightness(Number(event.target.value) / 100)}
-                      />
-                    </label>
+                    <>
+                      <label className="range-control">
+                        <span><b>去背收緊度</b><em>{Math.round(bodyTightness * 100)}%</em></span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={Math.round(bodyTightness * 100)}
+                          disabled={phase === 'exporting'}
+                          onChange={(event) => setBodyTightness(Number(event.target.value) / 100)}
+                        />
+                      </label>
+                      <label className="range-control">
+                        <span><b>黑色安全邊框</b><em>{blackOutline}px</em></span>
+                        <input type="range" min="0" max="6" value={blackOutline} disabled={phase === 'exporting'} onChange={(event) => setBlackOutline(Number(event.target.value))} />
+                      </label>
+                    </>
                   )}
 
                   <div className="export-buttons">

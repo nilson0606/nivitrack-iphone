@@ -22,6 +22,50 @@ function smoothstep(edge0: number, edge1: number, value: number) {
   return amount * amount * (3 - 2 * amount);
 }
 
+export function solidifyAndInsetAlpha(
+  alpha: Uint8ClampedArray,
+  width: number,
+  height: number,
+  outlinePixels: number,
+  distance: Uint16Array,
+) {
+  if (alpha.length !== width * height || distance.length !== alpha.length) {
+    throw new Error('黑色安全邊框遮罩尺寸不正確');
+  }
+  for (let index = 0; index < alpha.length; index += 1) {
+    const normalized = alpha[index] / 255;
+    alpha[index] = Math.round(Math.max(
+      normalized,
+      smoothstep(0.08, 0.52, normalized),
+    ) * 255);
+  }
+  const radius = clamp(Math.round(outlinePixels), 0, 6);
+  if (radius === 0) return;
+  const far = 65535;
+  for (let index = 0; index < alpha.length; index += 1) {
+    distance[index] = alpha[index] < 24 ? 0 : far;
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      let value = distance[index];
+      if (x > 0) value = Math.min(value, distance[index - 1] + 1);
+      if (y > 0) value = Math.min(value, distance[index - width] + 1);
+      distance[index] = value;
+    }
+  }
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = width - 1; x >= 0; x -= 1) {
+      const index = y * width + x;
+      let value = distance[index];
+      if (x + 1 < width) value = Math.min(value, distance[index + 1] + 1);
+      if (y + 1 < height) value = Math.min(value, distance[index + width] + 1);
+      distance[index] = value;
+      if (value <= radius) alpha[index] = 0;
+    }
+  }
+}
+
 type EnvelopePoint = { x: number; y: number };
 
 function pointDistance(first: EnvelopePoint, second: EnvelopePoint) {

@@ -4,6 +4,7 @@ import {
   preserveSuddenSubjectLoss,
   recoverTrackedSubjectAlpha,
   selectModnetTrackedAlpha,
+  solidifyAndInsetAlpha,
   trackedSubjectRegion,
   type SubjectCompletenessState,
 } from './person-background-removal';
@@ -18,6 +19,19 @@ const TEMPORAL_HISTORY_WEIGHT = 0.08;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function hasCurrentSubjectNearby(alpha: Uint8ClampedArray, x: number, y: number) {
+  for (let offsetY = -2; offsetY <= 2; offsetY += 1) {
+    const sampleY = y + offsetY;
+    if (sampleY < 0 || sampleY >= MASK_SIZE) continue;
+    for (let offsetX = -2; offsetX <= 2; offsetX += 1) {
+      const sampleX = x + offsetX;
+      if (sampleX < 0 || sampleX >= MASK_SIZE) continue;
+      if (alpha[sampleY * MASK_SIZE + sampleX] >= 32) return true;
+    }
+  }
+  return false;
 }
 
 function downsampleAlpha(source: Float32Array) {
@@ -269,7 +283,9 @@ export class ModnetPreviewTimeline {
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
   private readonly mixedAlpha = new Uint8ClampedArray(MASK_SIZE * MASK_SIZE);
+  private readonly edgeDistance = new Uint16Array(MASK_SIZE * MASK_SIZE);
   private readonly imageData: ImageData;
+  private styledOutline: number | null = null;
 
   constructor(frames: ModnetPreviewFrame[]) {
     if (frames.length === 0) throw new Error('MODNet Preview 沒有任何遮罩影格');
@@ -287,6 +303,15 @@ export class ModnetPreviewTimeline {
       this.imageData.data[pixel + 1] = 255;
       this.imageData.data[pixel + 2] = 255;
     }
+  }
+
+  private ensureMatteStyle(outlinePixels: number) {
+    if (this.styledOutline !== null) return;
+    const outline = clamp(Math.round(outlinePixels), 0, 6);
+    for (const frame of this.frames) {
+      solidifyAndInsetAlpha(frame.alpha, MASK_SIZE, MASK_SIZE, outline, this.edgeDistance);
+    }
+    this.styledOutline = outline;
   }
 
   private alphaAt(time: number) {
@@ -320,6 +345,7 @@ export class ModnetPreviewTimeline {
         const row = y * MASK_SIZE;
         for (let x = guard.left; x < guard.right; x += 1) {
           const index = row + x;
+          if (!hasCurrentSubjectNearby(before.alpha, x, y)) continue;
           this.mixedAlpha[index] = Math.max(
             this.mixedAlpha[index],
             Math.round(previous.alpha[index] * retention),
@@ -336,7 +362,9 @@ export class ModnetPreviewTimeline {
     box: Box,
     suppression = 0.62,
     crop: Box = [0, 0, video.videoWidth, video.videoHeight],
+    outlinePixels = 3,
   ) {
+    this.ensureMatteStyle(outlinePixels);
     const alpha = this.alphaAt(video.currentTime);
     const exponent = 0.65 + clamp(suppression, 0, 1) * 0.55;
     const maskContext = this.maskCanvas.getContext('2d', { alpha: true });

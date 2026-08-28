@@ -32,6 +32,7 @@ export type ExportOperation =
       subjectScale: number;
       smoothness: number;
       bodyTightness: number;
+      blackOutline: number;
     };
 
 export type TrackPoint = {
@@ -541,7 +542,14 @@ function drawOutputFrame(
       operation.subjectScale,
     );
     if (backgroundTimeline) {
-      backgroundTimeline.draw(video, canvas, trackedBox, operation.bodyTightness, crop);
+      backgroundTimeline.draw(
+        video,
+        canvas,
+        trackedBox,
+        operation.bodyTightness,
+        crop,
+        operation.blackOutline,
+      );
       return;
     }
     if (!backgroundRenderer) throw new Error('人物去背模型尚未就緒');
