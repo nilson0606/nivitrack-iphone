@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v10-modnet-output';
+const VERSION = 'nivitrack-12-tools-v11-audio-unlock';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

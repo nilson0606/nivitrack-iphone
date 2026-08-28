@@ -1102,7 +1102,10 @@ export default function Home() {
 
     let exportTimeline: ModnetPreviewTimeline | null = null;
     try {
+      if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       if (operation.kind === 'remove-background') {
+        setNotice('正在啟用原聲通道…');
+        await exporterRef.current.unlockAudioForExport();
         modnetPreviewTimelineRef.current?.close();
         modnetPreviewTimelineRef.current = null;
         setBackgroundPreviewReady(false);
@@ -1122,7 +1125,6 @@ export default function Home() {
         exportTimeline = prepared.timeline;
         setNotice('MODNet 已釋放；正在保留原聲並編碼影片…');
       }
-      if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         operation,
         codec,
