@@ -1,8 +1,10 @@
 # NiviTrack iPhone 使用手冊
 
-NiviTrack 是一個為 iPhone Safari 設計的本機影片追蹤 Web App。選擇 MOV、HEVC 或 MP4 影片後，可以框選人物或寵物，讓 ViT 追蹤主角並輸出置中構圖的影片。
+NiviTrack 是一個為 iPhone Safari 設計的本機影片後製 Web App。選擇 MOV、HEVC 或 MP4 影片後，可使用 6 種濾鏡、4 種裁切、ViT 主角置中，以及第 12 項「單一舞者去背」。去背會只保留被選定與追蹤的舞者，其他人物、物品和背景輸出為純黑。
 
 影片與追蹤工作都在使用者自己的 iPhone 內完成，不會上傳到 GitHub 或其他伺服器。
+
+第 12 項使用 Apache-2.0 的 `@mediapipe/tasks-vision` 與 Google MediaPipe Selfie Segmenter 模型。WASM 與約 250 KB 的模型由同一個 GitHub Pages 靜態網站提供；首次載入後，所有逐幀推論與黑底合成都在 Safari 本機執行，不需要 API、後端或付費伺服器。
 
 ## 開啟 NiviTrack
 

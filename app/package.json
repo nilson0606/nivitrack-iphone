@@ -10,9 +10,11 @@
     "build": "vinext build",
     "start": "vinext start",
     "lint": "eslint app lib scripts vite.config.ts next.config.ts",
-    "test:vit": "node scripts/smoke-vit.mjs"
+    "test:vit": "node scripts/smoke-vit.mjs",
+    "test:background-mask": "node --experimental-strip-types scripts/smoke-background-mask.mjs"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1",
     "@tensorflow-models/coco-ssd": "2.2.3",
     "@tensorflow/tfjs": "4.22.0",
     "next": "16.3.3",

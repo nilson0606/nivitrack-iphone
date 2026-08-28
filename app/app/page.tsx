@@ -45,11 +45,12 @@ type ToolId =
   | 'crop-square'
   | 'crop-16-9'
   | 'crop-free'
-  | 'track';
+  | 'track'
+  | 'remove-background';
 
 type ToolChoice = {
   id: ToolId;
-  group: '濾鏡' | '裁切' | '鎖定';
+  group: '濾鏡' | '裁切' | '鎖定' | '去背';
   name: string;
   detail: string;
   fileTag: string;
@@ -67,6 +68,7 @@ const TOOL_CHOICES: ToolChoice[] = [
   { id: 'crop-16-9', group: '裁切', name: '橫式 16:9', detail: '標準寬螢幕比例', fileTag: '16x9' },
   { id: 'crop-free', group: '裁切', name: '自由裁切', detail: '手指框出任意範圍', fileTag: 'FreeCrop' },
   { id: 'track', group: '鎖定', name: '主角鎖定置中', detail: 'ViT 追蹤人物或寵物', fileTag: 'SubjectLock' },
+  { id: 'remove-background', group: '去背', name: '單一舞者去背', detail: '只留選定舞者，背景純黑', fileTag: 'SoloBlack' },
 ];
 
 function filterPresetFor(tool: ToolId | null): FilterPreset | null {
@@ -176,6 +178,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
+        { label: '人物去背', detail: 'MediaPipe 本機分割', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -264,7 +267,7 @@ export default function Home() {
       width: video.videoWidth,
       height: video.videoHeight,
     });
-    setNotice('影片已在本機載入；請從 11 種功能中選擇一項');
+    setNotice('影片已在本機載入；請從 12 種功能中選擇一項');
   }
 
   function resetExportResult() {
@@ -283,7 +286,7 @@ export default function Home() {
     setCropZoom(1);
     setCropBox(null);
     resetExportResult();
-    if (tool === 'track') {
+    if (tool === 'track' || tool === 'remove-background') {
       requestAnimationFrame(() => enterSelection());
       return;
     }
@@ -306,7 +309,7 @@ export default function Home() {
     setCropBox(null);
     selectionRef.current = null;
     resetExportResult();
-    setNotice('請從 11 種功能中選擇一項');
+    setNotice('請從 12 種功能中選擇一項');
   }
 
   function drawFrame(
@@ -429,7 +432,9 @@ export default function Home() {
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
-    setNotice('用手指框住要追蹤的人物或寵物');
+    setNotice(selectedTool === 'remove-background'
+      ? '用手指緊貼框住要保留的單一舞者，或使用 AI 找人物'
+      : '用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawFrame(null));
   }
 
@@ -519,7 +524,9 @@ export default function Home() {
       box: [...next] as Box,
     };
     drawFrame(next);
-    setNotice('主角已指定；可開始 3 秒 ViT 追蹤測試');
+    setNotice(selectedTool === 'remove-background'
+      ? '舞者已指定；可先測試 3 秒主角追蹤'
+      : '主角已指定；可開始 3 秒 ViT 追蹤測試');
   }
 
   async function detectSubjects() {
@@ -537,8 +544,9 @@ export default function Home() {
         });
       }
       const predictions = await detectorRef.current.detect(video, 30, 0.25);
+      const peopleOnly = selectedTool === 'remove-background';
       const nextCandidates: Candidate[] = predictions
-        .filter((item) => item.class === 'person' || item.class === 'dog' || item.class === 'cat')
+        .filter((item) => item.class === 'person' || (!peopleOnly && (item.class === 'dog' || item.class === 'cat')))
         .map((item) => ({
           box: item.bbox as Box,
           label: item.class === 'person' ? '人物' : item.class === 'dog' ? '狗' : '貓',
@@ -549,7 +557,7 @@ export default function Home() {
       setNotice(
         nextCandidates.length
           ? '找到 ' + nextCandidates.length + ' 個候選框；點選其中一個或手動畫框'
-          : '沒有找到人物或寵物，請直接用手指框選',
+          : peopleOnly ? '沒有找到人物，請直接用手指緊貼框住單一舞者' : '沒有找到人物或寵物，請直接用手指框選',
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -642,7 +650,9 @@ export default function Home() {
       });
       setProgress(1);
       setPhase('complete');
-      setNotice('3 秒 ViT 路徑測試完成；尚未進行影片輸出');
+      setNotice(selectedTool === 'remove-background'
+        ? '3 秒單一舞者追蹤測試完成；尚未進行去背'
+        : '3 秒 ViT 路徑測試完成；尚未進行影片輸出');
     } catch (error) {
       setPhase('select');
       const message = error instanceof Error ? error.message : String(error);
@@ -740,7 +750,9 @@ export default function Home() {
       await seekTo(selection.time);
       setBox(selection.box);
       drawFrame(selection.box);
-      setNotice('完整 ViT 路徑已建立；可調整構圖並輸出影片');
+      setNotice(selectedTool === 'remove-background'
+        ? '完整舞者路徑已建立；可輸出純黑背景影片'
+        : '完整 ViT 路徑已建立；可調整構圖並輸出影片');
     } catch (error) {
       setPhase('select');
       const message = error instanceof Error ? error.message : String(error);
@@ -774,19 +786,23 @@ export default function Home() {
       };
     } else if (selectedTool === 'track') {
       operation = { kind: 'track', aspect, subjectScale, smoothness };
+    } else if (selectedTool === 'remove-background') {
+      operation = { kind: 'remove-background', smoothness: 0.35 };
     }
     if (!video || !renderCanvas || !operation) {
       setNotice('請先選擇一項後製功能');
       return;
     }
-    if (operation.kind === 'track' && trackPath.length < 2) {
+    if ((operation.kind === 'track' || operation.kind === 'remove-background') && trackPath.length < 2) {
       setNotice('請先完成整支影片的 ViT 追蹤');
       return;
     }
     cancelRef.current = false;
     setPhase('exporting');
     setProgress(0);
-    setNotice(codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
+    setNotice(operation.kind === 'remove-background'
+      ? '正在載入本機人物去背模型…'
+      : codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
 
     try {
       if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
@@ -795,7 +811,7 @@ export default function Home() {
         codec,
         onProgress: (next) => {
           setProgress(next);
-          setNotice('本機編碼中 · ' + Math.round(next * 100) + '%');
+          setNotice((operation.kind === 'remove-background' ? '人物去背與本機編碼中 · ' : '本機編碼中 · ') + Math.round(next * 100) + '%');
         },
         isCancelled: () => cancelRef.current,
       });
@@ -810,7 +826,7 @@ export default function Home() {
         mimeType: result.mimeType,
         resolution: result.width + ' × ' + result.height,
       });
-      setPhase(operation.kind === 'track' ? 'path-ready' : 'tool-ready');
+      setPhase(operation.kind === 'track' || operation.kind === 'remove-background' ? 'path-ready' : 'tool-ready');
       setNotice('輸出完成；請點「分享／儲存到 iPhone」');
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -821,7 +837,7 @@ export default function Home() {
         });
       });
     } catch (error) {
-      setPhase(selectedTool === 'track' ? 'path-ready' : 'tool-ready');
+      setPhase(selectedTool === 'track' || selectedTool === 'remove-background' ? 'path-ready' : 'tool-ready');
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
     }
@@ -888,9 +904,9 @@ export default function Home() {
       </header>
 
       <section className="hero">
-        <div className="eyebrow">IPHONE WEB APP · 11 種單一後製</div>
+        <div className="eyebrow">IPHONE WEB APP · 12 種單一後製</div>
         <h1>選一個功能，<span>直接完成影片。</span></h1>
-        <p>匯入 MOV、HEVC 或 MP4，選擇濾鏡、裁切或主角鎖定。一次處理一項；要疊加時，把輸出影片再匯入即可。</p>
+        <p>匯入 MOV、HEVC 或 MP4，選擇濾鏡、裁切、主角鎖定或單一舞者去背。一次處理一項；要疊加時，把輸出影片再匯入即可。</p>
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
           <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>選擇功能</span></div>
@@ -930,7 +946,7 @@ export default function Home() {
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? '手指框選主角' : phase === 'exporting' ? 'Safari 本機編碼' : phase === 'path-ready' ? '構圖與輸出' : 'ViT 本機推論'}
+                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'exporting' ? (selectedTool === 'remove-background' ? 'MediaPipe 本機去背' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'exporting') && (
                   <div className="progress-overlay">
@@ -955,7 +971,7 @@ export default function Home() {
                   <>
                     <button type="button" onClick={returnToTools}>返回功能選單</button>
                     <button type="button" disabled={detecting} onClick={detectSubjects}>
-                      {detecting ? 'AI 掃描中…' : 'AI 尋找人物／寵物'}
+                      {detecting ? 'AI 掃描中…' : selectedTool === 'remove-background' ? 'AI 尋找人物' : 'AI 尋找人物／寵物'}
                     </button>
                     <button type="button" disabled={!box} onClick={runTracking}>
                       測試 3 秒 ViT
@@ -987,7 +1003,7 @@ export default function Home() {
                   <div className="tool-heading">
                     <div>
                       <span>一次選一項</span>
-                      <strong>11 種影片後製</strong>
+                      <strong>12 種影片後製</strong>
                     </div>
                     <b>{selectedChoice ? selectedChoice.name : '尚未選擇'}</b>
                   </div>
@@ -1083,49 +1099,58 @@ export default function Home() {
                 <section className="export-panel">
                   <div className="export-heading">
                     <div>
-                      <span>完整路徑已就緒</span>
-                      <strong>選擇輸出構圖</strong>
+                      <span>{selectedTool === 'remove-background' ? '單一舞者路徑已就緒' : '完整路徑已就緒'}</span>
+                      <strong>{selectedTool === 'remove-background' ? '純黑背景去背' : '選擇輸出構圖'}</strong>
                     </div>
-                    <b>{trackPath.length} 點</b>
+                    <b>{selectedTool === 'remove-background' ? '原比例' : trackPath.length + ' 點'}</b>
                   </div>
 
-                  <div className="aspect-options" aria-label="輸出比例">
-                    {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
-                      <button
-                        className={aspect === preset ? 'selected' : ''}
-                        type="button"
-                        key={preset}
-                        disabled={phase === 'exporting'}
-                        onClick={() => setAspect(preset)}
-                      >
-                        {preset}
-                      </button>
-                    ))}
-                  </div>
+                  {selectedTool === 'remove-background' ? (
+                    <div className="crop-summary">
+                      <span>輸出方式</span>
+                      <strong>只留選定舞者 · 其他人物與物品皆為純黑</strong>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="aspect-options" aria-label="輸出比例">
+                        {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
+                          <button
+                            className={aspect === preset ? 'selected' : ''}
+                            type="button"
+                            key={preset}
+                            disabled={phase === 'exporting'}
+                            onClick={() => setAspect(preset)}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
 
-                  <label className="range-control">
-                    <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
-                    <input
-                      type="range"
-                      min="25"
-                      max="80"
-                      value={Math.round(subjectScale * 100)}
-                      disabled={phase === 'exporting'}
-                      onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
-                    />
-                  </label>
+                      <label className="range-control">
+                        <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
+                        <input
+                          type="range"
+                          min="25"
+                          max="80"
+                          value={Math.round(subjectScale * 100)}
+                          disabled={phase === 'exporting'}
+                          onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
+                        />
+                      </label>
 
-                  <label className="range-control">
-                    <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={Math.round(smoothness * 100)}
-                      disabled={phase === 'exporting'}
-                      onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
-                    />
-                  </label>
+                      <label className="range-control">
+                        <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={Math.round(smoothness * 100)}
+                          disabled={phase === 'exporting'}
+                          onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
+                        />
+                      </label>
+                    </>
+                  )}
 
                   <div className="export-buttons">
                     <button
@@ -1151,6 +1176,12 @@ export default function Home() {
                     </p>
                   )}
 
+                  {selectedTool === 'remove-background' && (
+                    <p className="export-note">
+                      首次會下載開源 MediaPipe 模型；推論、去背、原聲合成都只在這台 iPhone 執行。主角手持物品會視為背景移除。
+                    </p>
+                  )}
+
                   {exportUrl && exportInfo && (
                     <div className="export-result result-ready" ref={exportResultRef}>
                       <video src={exportUrl} controls playsInline preload="metadata" />
@@ -1173,7 +1204,7 @@ export default function Home() {
 
         <aside className="side-panel">
           <div className="status-card">
-            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 7}</b></div>
+            <div className="card-heading"><span>裝置能力</span><b>{readyCount}/{capabilities.length || 8}</b></div>
             <div className="capability-list">
               {capabilities.length === 0 ? <p className="checking">正在檢查 Safari…</p> : capabilities.map((item) => (
                 <div className="capability" key={item.label}>

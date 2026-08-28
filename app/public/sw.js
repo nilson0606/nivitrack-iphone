@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-11-tools-v3';
+const VERSION = 'nivitrack-12-tools-v1';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -65,7 +65,7 @@ self.addEventListener('fetch', (event) => {
       return fetch(request).then((response) => {
         if (!response || !response.ok || response.type !== 'basic') return response;
         const copy = response.clone();
-        const assetCache = url.pathname.includes('/models/') || url.pathname.includes('/ort/')
+        const assetCache = url.pathname.includes('/models/') || url.pathname.includes('/ort/') || url.pathname.includes('/mediapipe/')
           ? MODEL_CACHE
           : APP_CACHE;
         caches.open(assetCache).then((cache) => cache.put(request, copy));

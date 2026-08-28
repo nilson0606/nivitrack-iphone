@@ -1,4 +1,5 @@
 import type { Box } from './vit-tracker';
+import type { PersonBackgroundRenderer } from './person-background-removal';
 
 export type AspectPreset = '9:16' | '1:1' | '16:9';
 
@@ -22,6 +23,10 @@ export type ExportOperation =
       kind: 'track';
       aspect: AspectPreset;
       subjectScale: number;
+      smoothness: number;
+    }
+  | {
+      kind: 'remove-background';
       smoothness: number;
     };
 
@@ -299,7 +304,7 @@ function configureOutputCanvas(
     [canvas.width, canvas.height] = selectionOutputSize(operation.selectionBox);
     return;
   }
-  if (operation.kind === 'filter' || operation.aspect === 'source') {
+  if (operation.kind === 'filter' || operation.kind === 'remove-background' || operation.aspect === 'source') {
     [canvas.width, canvas.height] = sourceOutputSize(video);
     return;
   }
@@ -452,6 +457,7 @@ function drawOutputFrame(
   time: number,
   operation: ExportOperation,
   filterRenderer: WebGLFilterRenderer | null,
+  backgroundRenderer: PersonBackgroundRenderer | null,
 ) {
   if (operation.kind === 'track') {
     drawTrackedFrame(video, canvas, path, time, operation.subjectScale);
@@ -459,6 +465,11 @@ function drawOutputFrame(
   }
   if (operation.kind === 'crop') {
     drawCroppedFrame(video, canvas, operation);
+    return;
+  }
+  if (operation.kind === 'remove-background') {
+    if (!backgroundRenderer) throw new Error('人物去背模型尚未就緒');
+    backgroundRenderer.render(video, canvas, interpolateBox(path, time));
     return;
   }
   if (!filterRenderer) throw new Error('濾鏡輸出器尚未就緒');
@@ -522,7 +533,7 @@ export class RealtimeVideoExporter {
     canvas: HTMLCanvasElement,
     options: ExportOptions,
   ): Promise<ExportResult> {
-    if (options.operation.kind === 'track' && path.length < 2) {
+    if ((options.operation.kind === 'track' || options.operation.kind === 'remove-background') && path.length < 2) {
       throw new Error('尚未建立完整追蹤路徑');
     }
     const support = getRecorderSupport();
@@ -534,7 +545,7 @@ export class RealtimeVideoExporter {
     configureOutputCanvas(this.video, canvas, options.operation);
     const width = canvas.width;
     const height = canvas.height;
-    const smoothedPath = options.operation.kind === 'track'
+    const smoothedPath = options.operation.kind === 'track' || options.operation.kind === 'remove-background'
       ? smoothTrackPath(path, options.operation.smoothness)
       : path;
     const filterRenderer = options.operation.kind === 'filter'
@@ -566,11 +577,16 @@ export class RealtimeVideoExporter {
     let animationFrame = 0;
     let playbackError: Error | null = null;
     let recorderStarted = false;
+    let backgroundRenderer: PersonBackgroundRenderer | null = null;
     try {
+      if (options.operation.kind === 'remove-background') {
+        const { PersonBackgroundRenderer: Renderer } = await import('./person-background-removal');
+        backgroundRenderer = await Renderer.create();
+      }
       this.video.pause();
       await seek(this.video, 0);
       this.video.playbackRate = 1;
-      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer);
+      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer, backgroundRenderer);
       recorder.start(1000);
       recorderStarted = true;
 
@@ -597,9 +613,15 @@ export class RealtimeVideoExporter {
             settle(new Error('使用者已取消輸出'));
             return false;
           }
-          drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation, filterRenderer);
-          options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
-          return true;
+          try {
+            drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation, filterRenderer, backgroundRenderer);
+            options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
+            return true;
+          } catch (error) {
+            this.video.pause();
+            settle(error instanceof Error ? error : new Error(String(error)));
+            return false;
+          }
         };
         const videoFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
           if (!render(metadata.mediaTime)) return;
@@ -638,6 +660,7 @@ export class RealtimeVideoExporter {
       this.video.playbackRate = originalRate;
       await seek(this.video, Math.min(originalTime, this.video.duration)).catch(() => undefined);
       filterRenderer?.dispose();
+      backgroundRenderer?.close();
     }
 
     if (playbackError) throw playbackError;

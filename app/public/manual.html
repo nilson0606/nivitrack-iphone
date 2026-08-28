@@ -134,7 +134,7 @@
     <div class="hero">
       <div class="eyebrow">IPHONE · SAFARI · 本機處理</div>
       <h1>從選片到輸出，照著做就好。</h1>
-      <p>NiviTrack 直接讀取 iPhone 裡的 MOV、HEVC 或 MP4，提供濾鏡、裁切與主角鎖定共 11 種單一後製。影片不會上傳。</p>
+      <p>NiviTrack 直接讀取 iPhone 裡的 MOV、HEVC 或 MP4，提供濾鏡、裁切、主角鎖定與單一舞者去背共 12 種單一後製。影片不會上傳。</p>
       <div class="hero-actions"><a class="app-link" href="./">立即開啟 NiviTrack</a></div>
       <div class="notice"><strong>支援範圍：</strong>iPhone、iOS 26、Safari。</div>
     </div>
@@ -157,23 +157,32 @@
           <li>名稱保留為 <strong>NiviTrack</strong>，再點「加入」。</li>
           <li>回到主畫面，點 NiviTrack 圖示。</li>
         </ol>
-        <p class="tip">第一次使用請保持連線。只有選「主角鎖定置中」時才會載入 ViT 模型；濾鏡與裁切不需要 AI。</p>
+        <p class="tip">第一次使用請保持連線。「主角鎖定置中」與「單一舞者去背」才會載入 ViT；去背另在首次輸出時載入開源 MediaPipe 模型。濾鏡與裁切不需要 AI。</p>
       </section>
       <section id="workflow">
         <h2>一般操作流程</h2>
         <div class="steps">
           <div class="step"><b>1</b><div><strong>選擇影片</strong><p>從「照片」或「檔案」選擇 MOV、HEVC 或 MP4。等待顯示影片已在本機載入，不需要先轉成 MP4。</p></div></div>
-          <div class="step"><b>2</b><div><strong>選擇一項功能</strong><p>預設不會追蹤。從 6 種濾鏡、4 種裁切或「主角鎖定置中」中選一項。</p></div></div>
+          <div class="step"><b>2</b><div><strong>選擇一項功能</strong><p>預設不會追蹤。從 6 種濾鏡、4 種裁切、「主角鎖定置中」或「單一舞者去背」中選一項。</p></div></div>
           <div class="step"><b>3</b><div><strong>預覽與調整</strong><p>濾鏡可調效果強度；固定比例裁切可調位置與縮放；自由裁切則直接用手指框出要保留的範圍。</p></div></div>
           <div class="step"><b>4</b><div><strong>輸出影片</strong><p>點「輸出相容 MP4」，保持 App 在前景，等待成品預覽出現。原聲會保留。</p></div></div>
         </div>
         <p class="tip">一次只處理一項。若要疊加效果，先輸出，再把成品重新匯入並選下一項功能。</p>
-        <h3>11 種功能</h3>
+        <h3>12 種功能</h3>
         <ul>
           <li><strong>濾鏡：</strong>鮮明增色、柔和人像、電影冷調、暖陽色調、黑白高反差、復古底片。</li>
           <li><strong>裁切：</strong>直式 9:16、方形 1:1、橫式 16:9、自由裁切與縮放。</li>
           <li><strong>鎖定：</strong>主角鎖定置中（ViT）。</li>
+          <li><strong>去背：</strong>單一舞者去背，只留下選定舞者，其餘人物、物品與背景變為純黑。</li>
         </ul>
+        <h3>單一舞者去背</h3>
+        <ol>
+          <li>播放並暫停在主角全身清楚的畫面，選「單一舞者去背」。</li>
+          <li>用手指緊貼框住要保留的舞者，或點「AI 尋找人物」後選中正確人物框。</li>
+          <li>先測試 3 秒追蹤；正確跟住主角後，再追蹤完整影片。</li>
+          <li>輸出相容 MP4。每幀會在 iPhone 本機執行 MediaPipe 人物分割，原聲照常保留。</li>
+        </ol>
+        <p class="tip">多人畫面只保留被選取且被 ViT 跟住的舞者。框選要包含主角完整頭部與四肢，但不要包入其他舞者。主角手持物品在第一版會視為背景移除。</p>
         <h3>主角鎖定置中</h3>
         <ol>
           <li>先播放後暫停在主角清楚的畫面。</li>
@@ -193,7 +202,8 @@
         <ul>
           <li><strong>裁切：</strong>固定比例可移動畫面中心並放大；自由裁切可用手指框出任意比例。</li>
           <li><strong>主角鎖定：</strong>可選 9:16、1:1 或 16:9，並調整主角大小與柔順度。</li>
-          <li><strong>原聲：</strong>所有 11 種功能都會沿用來源影片的聲音。</li>
+          <li><strong>去背：</strong>保留原始比例與尺寸，背景輸出為純黑。</li>
+          <li><strong>原聲：</strong>所有 12 種功能都會沿用來源影片的聲音。</li>
         </ul>
         <ol>
           <li>一般分享請點「輸出相容 MP4」。</li>
@@ -215,7 +225,7 @@
         <ol>
           <li>在另一台 iPhone 使用 Safari 開啟 NiviTrack 網址。</li>
           <li>使用 Safari 的「加入主畫面」。</li>
-          <li>從主畫面啟動。若要使用主角鎖定，第一次請保持連網讓 ViT 模型載入。</li>
+          <li>從主畫面啟動。若要使用主角鎖定或去背，第一次請保持連網讓 ViT、MediaPipe 與人物分割模型載入。</li>
         </ol>
         <p class="muted">每台手機的影片與輸出檔彼此獨立，不會自動互傳。成品可使用 AirDrop、訊息或共享相簿分享。</p>
       </section>
