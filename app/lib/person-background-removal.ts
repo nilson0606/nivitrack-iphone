@@ -300,6 +300,64 @@ function findSeed(
   return { index: bestIndex, confidence: bestConfidence };
 }
 
+export function selectModnetTrackedAlpha(
+  confidence: Float32Array,
+  maskWidth: number,
+  maskHeight: number,
+  box: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  const pixelCount = maskWidth * maskHeight;
+  if (confidence.length !== pixelCount) throw new Error('MODNet 人物遮罩尺寸不正確');
+  const [boxX, boxY, boxWidth, boxHeight] = box;
+  const left = clamp(Math.floor((boxX / sourceWidth) * maskWidth), 0, maskWidth - 1);
+  const right = clamp(Math.ceil(((boxX + boxWidth) / sourceWidth) * maskWidth), left + 1, maskWidth);
+  const top = clamp(Math.floor((boxY / sourceHeight) * maskHeight), 0, maskHeight - 1);
+  const bottom = clamp(Math.ceil(((boxY + boxHeight) / sourceHeight) * maskHeight), top + 1, maskHeight);
+  let peak = 0;
+  const histogram = new Uint32Array(256);
+  let samples = 0;
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const value = clamp(confidence[y * maskWidth + x], 0, 1);
+      peak = Math.max(peak, value);
+      histogram[Math.min(255, Math.floor(value * 255))] += 1;
+      samples += 1;
+    }
+  }
+  if (samples === 0 || peak < 0.008) return null;
+  const percentileTarget = Math.max(1, Math.floor(samples * 0.98));
+  let cumulative = 0;
+  let percentile = 0;
+  for (let bucket = 0; bucket < histogram.length; bucket += 1) {
+    cumulative += histogram[bucket];
+    if (cumulative >= percentileTarget) {
+      percentile = bucket / 255;
+      break;
+    }
+  }
+  const reference = Math.max(percentile, peak * 0.65);
+  const low = clamp(reference * 0.08, 0.004, 0.08);
+  const high = clamp(reference * 0.55, low + 0.02, 0.68);
+  const centerX = ((boxX + boxWidth / 2) / sourceWidth) * maskWidth;
+  const centerY = ((boxY + boxHeight / 2) / sourceHeight) * maskHeight;
+  const radiusX = Math.max(3, (boxWidth / sourceWidth) * maskWidth * 0.72);
+  const radiusY = Math.max(3, (boxHeight / sourceHeight) * maskHeight * 0.64);
+  const alpha = new Float32Array(pixelCount);
+  for (let index = 0; index < pixelCount; index += 1) {
+    const x = index % maskWidth;
+    const y = Math.floor(index / maskWidth);
+    const normalizedX = Math.abs((x - centerX) / radiusX);
+    const normalizedY = Math.abs((y - centerY) / radiusY);
+    const distance = Math.pow(normalizedX, 8) + Math.pow(normalizedY, 8);
+    if (distance >= 1) continue;
+    const gate = 1 - smoothstep(0.62, 1, distance);
+    alpha[index] = smoothstep(low, high, clamp(confidence[index], 0, 1)) * gate;
+  }
+  return alpha;
+}
+
 export function selectTrackedSubjectAlpha(
   confidence: Float32Array,
   maskWidth: number,

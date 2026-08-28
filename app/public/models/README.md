@@ -12,10 +12,10 @@ The model is served from this WebApp and inference runs locally in the browser.
 
 # Bundled MODNet preview model
 
-`modnet_quantized.onnx` is the quantized MODNet portrait-matting model used only
-to precompute the three-second v9 background-removal preview. The WebApp runs it
-locally with ONNX Runtime Web at 256 x 256, one frame at a time, and releases the
-session before preview playback.
+`modnet_quantized.onnx` is the quantized MODNet portrait-matting model used to
+precompute bounded background-removal timelines for preview and v10 export. The
+WebApp runs it locally with ONNX Runtime Web at 256 x 256, one frame at a time,
+and releases the session before playback or media encoding.
 
 - Source revision: https://huggingface.co/Xenova/modnet/tree/fa2fa546052fba4c08921230a26cc69a333fca12
 - Upstream project: https://github.com/ZHKKKe/MODNet

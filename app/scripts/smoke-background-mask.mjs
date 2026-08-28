@@ -4,6 +4,7 @@ import {
   createPoseBodyEnvelope,
   preferUsablePoseAlpha,
   recoverTrackedSubjectAlpha,
+  selectModnetTrackedAlpha,
   selectTrackedSubjectAlpha,
   stabilizeTrackedSubjectAlpha,
   tightenTrackedSubjectEdges,
@@ -184,6 +185,27 @@ function testLowConfidenceDancer() {
   return countSides(selectTrackedSubjectAlpha(mask, width, height, trackedBox, 100, 50));
 }
 
+function testSoftModnetDancer() {
+  const mask = new Float32Array(width * height).fill(0.003);
+  for (let y = 1; y <= 8; y += 1) {
+    for (let x = 3; x <= 7; x += 1) mask[y * width + x] = 0.055 + y * 0.004;
+  }
+  for (let y = 2; y <= 7; y += 1) {
+    for (let x = 14; x <= 18; x += 1) mask[y * width + x] = 0.12;
+  }
+  const alpha = selectModnetTrackedAlpha(mask, width, height, [10, 0, 35, 50], 100, 50);
+  let dancer = 0;
+  let otherDancer = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if ((alpha?.[y * width + x] ?? 0) <= 0.1) continue;
+      if (x >= 3 && x <= 7) dancer += 1;
+      if (x >= 14) otherDancer += 1;
+    }
+  }
+  return { dancer, otherDancer };
+}
+
 function testMissingFrameRecovery() {
   const previous = new Float32Array(width * height);
   previous[23] = 1;
@@ -253,6 +275,7 @@ const broadBackgroundOverlap = testBroadBackgroundOverlap();
 const poseBodyEnvelope = testPoseBodyEnvelope();
 const invalidPoseFallback = testInvalidPoseFallback();
 const lowConfidence = testLowConfidenceDancer();
+const softModnet = testSoftModnetDancer();
 const recovery = testMissingFrameRecovery();
 const region = testTrackedRegion();
 const temporal = testTemporalStability();
@@ -273,6 +296,7 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && invalidPoseFallback.tinyFallsBack
   && invalidPoseFallback.missingFallsBack
   && lowConfidence.selected > 0 && lowConfidence.leaked === 0
+  && softModnet.dancer > 20 && softModnet.otherDancer === 0
   && recovery.firstMissingIsBlack
   && recovery.temporaryMissingRetained
   && recovery.expiredIsBlack
@@ -294,6 +318,7 @@ console.log(JSON.stringify({
   poseBodyEnvelope,
   invalidPoseFallback,
   lowConfidence,
+  softModnet,
   recovery,
   region,
   temporal,

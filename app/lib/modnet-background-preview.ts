@@ -2,7 +2,7 @@ import * as ort from 'onnxruntime-web/wasm';
 
 import {
   recoverTrackedSubjectAlpha,
-  selectTrackedSubjectAlpha,
+  selectModnetTrackedAlpha,
   trackedSubjectRegion,
 } from './person-background-removal';
 import type { Box } from './vit-tracker';
@@ -29,10 +29,34 @@ export type ModnetPreviewStats = {
 type PrepareOptions = {
   startTime: number;
   endTime: number;
+  maxFrames?: number;
   seekTo: (time: number) => Promise<void>;
   isCancelled: () => boolean;
   onProgress: (progress: number, frame: number, total: number) => void;
 };
+
+async function waitForDecodedFrame(video: HTMLVideoElement) {
+  await new Promise<void>((resolve) => {
+    let finished = false;
+    let frameCallback = 0;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timeout);
+      if (frameCallback && typeof video.cancelVideoFrameCallback === 'function') {
+        video.cancelVideoFrameCallback(frameCallback);
+      }
+      resolve();
+    };
+    const timeout = window.setTimeout(finish, 180);
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      frameCallback = video.requestVideoFrameCallback(() => finish());
+    } else {
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+    }
+  });
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
 
 class ModnetPreviewGenerator {
   private readonly session: ort.InferenceSession;
@@ -108,7 +132,7 @@ class ModnetPreviewGenerator {
           box[2],
           box[3],
         ];
-        const selected = selectTrackedSubjectAlpha(
+        const selected = selectModnetTrackedAlpha(
           confidence,
           MODEL_SIZE,
           MODEL_SIZE,
@@ -203,9 +227,10 @@ export class ModnetPreviewTimeline {
     outputCanvas: HTMLCanvasElement,
     box: Box,
     suppression = 0.62,
+    crop: Box = [0, 0, video.videoWidth, video.videoHeight],
   ) {
     const alpha = this.alphaAt(video.currentTime);
-    const exponent = 0.75 + clamp(suppression, 0, 1) * 0.9;
+    const exponent = 0.65 + clamp(suppression, 0, 1) * 0.55;
     const maskContext = this.maskCanvas.getContext('2d', { alpha: true });
     if (!maskContext) throw new Error('Safari 無法更新 MODNet 遮罩');
     for (let index = 0; index < alpha.length; index += 1) {
@@ -220,10 +245,11 @@ export class ModnetPreviewTimeline {
       video.videoWidth,
       video.videoHeight,
     );
-    const outputScaleX = outputCanvas.width / video.videoWidth;
-    const outputScaleY = outputCanvas.height / video.videoHeight;
-    const destinationX = regionX * outputScaleX;
-    const destinationY = regionY * outputScaleY;
+    const [cropX, cropY, cropWidth, cropHeight] = crop;
+    const outputScaleX = outputCanvas.width / Math.max(1, cropWidth);
+    const outputScaleY = outputCanvas.height / Math.max(1, cropHeight);
+    const destinationX = (regionX - cropX) * outputScaleX;
+    const destinationY = (regionY - cropY) * outputScaleY;
     const destinationWidth = regionWidth * outputScaleX;
     const destinationHeight = regionHeight * outputScaleY;
     const subjectWidth = Math.max(1, Math.ceil(destinationWidth));
@@ -268,6 +294,14 @@ export class ModnetPreviewTimeline {
       destinationHeight,
     );
   }
+
+  close() {
+    this.frames.length = 0;
+    this.maskCanvas.width = 1;
+    this.maskCanvas.height = 1;
+    this.subjectCanvas.width = 1;
+    this.subjectCanvas.height = 1;
+  }
 }
 
 export async function prepareModnetPreview(
@@ -280,11 +314,13 @@ export async function prepareModnetPreview(
   }
   const startTime = clamp(options.startTime, 0, video.duration);
   const endTime = clamp(options.endTime, startTime, video.duration);
+  const duration = Math.max(0, endTime - startTime);
+  const maximumFrames = Math.max(2, Math.floor(options.maxFrames ?? Number.MAX_SAFE_INTEGER));
+  const steps = Math.max(1, Math.min(maximumFrames - 1, Math.ceil(duration * PREVIEW_FPS)));
   const times: number[] = [];
-  for (let time = startTime; time <= endTime + 0.0001; time += 1 / PREVIEW_FPS) {
-    times.push(Math.min(time, endTime));
+  for (let step = 0; step <= steps; step += 1) {
+    times.push(startTime + (duration * step) / steps);
   }
-  if (times.length === 0 || endTime - times[times.length - 1] > 0.001) times.push(endTime);
   const frames: ModnetPreviewFrame[] = [];
   let inferenceTotal = 0;
   const started = performance.now();
@@ -292,9 +328,10 @@ export async function prepareModnetPreview(
   try {
     generator = await ModnetPreviewGenerator.create();
     for (let index = 0; index < times.length; index += 1) {
-      if (options.isCancelled()) throw new Error('使用者已取消 MODNet Preview');
+      if (options.isCancelled()) throw new Error('使用者已取消 MODNet 去背');
       const time = times[index];
       await options.seekTo(time);
+      await waitForDecodedFrame(video);
       const result = await generator.infer(video, interpolateBox(path, time));
       inferenceTotal += result.inferenceMs;
       frames.push({ time, alpha: result.alpha });

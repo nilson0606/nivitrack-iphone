@@ -1,5 +1,6 @@
 import type { Box } from './vit-tracker';
 import type { PersonBackgroundRenderer } from './person-background-removal';
+import type { ModnetPreviewTimeline } from './modnet-background-preview';
 
 export type AspectPreset = '9:16' | '1:1' | '16:9';
 
@@ -48,6 +49,7 @@ export type RecorderSupport = {
 export type ExportOptions = {
   operation: ExportOperation;
   codec: 'h264' | 'hevc';
+  backgroundTimeline?: ModnetPreviewTimeline;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -477,6 +479,7 @@ function drawOutputFrame(
   operation: ExportOperation,
   filterRenderer: WebGLFilterRenderer | null,
   backgroundRenderer: PersonBackgroundRenderer | null,
+  backgroundTimeline: ModnetPreviewTimeline | null,
 ) {
   if (operation.kind === 'track') {
     drawTrackedFrame(video, canvas, path, time, operation.subjectScale);
@@ -487,7 +490,6 @@ function drawOutputFrame(
     return;
   }
   if (operation.kind === 'remove-background') {
-    if (!backgroundRenderer) throw new Error('人物去背模型尚未就緒');
     const trackedBox = interpolateBox(path, time);
     const crop = trackedFrameCrop(
       video.videoWidth,
@@ -496,6 +498,11 @@ function drawOutputFrame(
       canvas.width / canvas.height,
       operation.subjectScale,
     );
+    if (backgroundTimeline) {
+      backgroundTimeline.draw(video, canvas, trackedBox, operation.bodyTightness, crop);
+      return;
+    }
+    if (!backgroundRenderer) throw new Error('人物去背模型尚未就緒');
     backgroundRenderer.render(video, canvas, trackedBox, crop, operation.bodyTightness);
     return;
   }
@@ -606,14 +613,14 @@ export class RealtimeVideoExporter {
     let recorderStarted = false;
     let backgroundRenderer: PersonBackgroundRenderer | null = null;
     try {
-      if (options.operation.kind === 'remove-background') {
+      if (options.operation.kind === 'remove-background' && !options.backgroundTimeline) {
         const { PersonBackgroundRenderer: Renderer } = await import('./person-background-removal');
         backgroundRenderer = await Renderer.create();
       }
       this.video.pause();
       await seek(this.video, 0);
       this.video.playbackRate = 1;
-      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer, backgroundRenderer);
+      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer, backgroundRenderer, options.backgroundTimeline ?? null);
       recorder.start(1000);
       recorderStarted = true;
 
@@ -641,7 +648,7 @@ export class RealtimeVideoExporter {
             return false;
           }
           try {
-            drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation, filterRenderer, backgroundRenderer);
+            drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation, filterRenderer, backgroundRenderer, options.backgroundTimeline ?? null);
             options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
             return true;
           } catch (error) {

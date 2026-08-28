@@ -34,6 +34,8 @@ try {
     inputs: session.inputNames,
     outputs: session.outputNames,
     dims: output.dims,
+    type: output.type,
+    dataConstructor: output.data.constructor.name,
     length: data.length,
     finite,
     minimum,
