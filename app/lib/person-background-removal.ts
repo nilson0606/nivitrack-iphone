@@ -91,12 +91,54 @@ export function selectTrackedSubjectAlpha(
     const normalizedY = (y - gateCenterY) / gateRadiusY;
     return Math.pow(Math.abs(normalizedX), 8) + Math.pow(Math.abs(normalizedY), 8) <= 1;
   };
-  const selected = new Uint8Array(pixelCount);
+  const eligible = new Uint8Array(pixelCount);
+  for (let index = 0; index < pixelCount; index += 1) {
+    if (isInsideTrackedDancer(index) && confidence[index] >= threshold) eligible[index] = 1;
+  }
+
+  // Erode one pixel before selecting the connected component. This breaks the
+  // narrow bridge that can appear when a dancer touches a background object or
+  // another person. We restore one edge pixel
+  // after selecting the tracked core so hands and feet are not over-trimmed.
+  const core = new Uint8Array(pixelCount);
+  for (let y = 1; y + 1 < maskHeight; y += 1) {
+    for (let x = 1; x + 1 < maskWidth; x += 1) {
+      const index = y * maskWidth + x;
+      if (eligible[index]
+        && eligible[index - 1]
+        && eligible[index + 1]
+        && eligible[index - maskWidth]
+        && eligible[index + maskWidth]) {
+        core[index] = 1;
+      }
+    }
+  }
+
+  const bodyCenterX = gateCenterX;
+  const bodyCenterY = ((boxY + boxHeight * 0.42) / sourceHeight) * maskHeight;
+  let coreSeed = -1;
+  let bestCoreScore = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < pixelCount; index += 1) {
+    if (!core[index]) continue;
+    const x = index % maskWidth;
+    const y = Math.floor(index / maskWidth);
+    const distanceX = (x - bodyCenterX) / Math.max(2, gateRadiusX);
+    const distanceY = (y - bodyCenterY) / Math.max(2, gateRadiusY);
+    const score = confidence[index] - (distanceX * distanceX + distanceY * distanceY) * 0.18;
+    if (score > bestCoreScore) {
+      bestCoreScore = score;
+      coreSeed = index;
+    }
+  }
+
+  const walkable = coreSeed >= 0 ? core : eligible;
+  const startIndex = coreSeed >= 0 ? coreSeed : seed.index;
+  const selectedCore = new Uint8Array(pixelCount);
   const queue = new Int32Array(pixelCount);
   let head = 0;
   let tail = 0;
-  selected[seed.index] = 1;
-  queue[tail++] = seed.index;
+  selectedCore[startIndex] = 1;
+  queue[tail++] = startIndex;
 
   while (head < tail) {
     const current = queue[head++];
@@ -110,9 +152,28 @@ export function selectTrackedSubjectAlpha(
         const nextX = currentX + offsetX;
         if (nextX < 0 || nextX >= maskWidth) continue;
         const next = nextY * maskWidth + nextX;
-        if (selected[next] || !isInsideTrackedDancer(next) || confidence[next] < threshold) continue;
-        selected[next] = 1;
+        if (selectedCore[next] || !walkable[next]) continue;
+        selectedCore[next] = 1;
         queue[tail++] = next;
+      }
+    }
+  }
+
+  const selected = new Uint8Array(selectedCore);
+  if (coreSeed >= 0) {
+    for (let index = 0; index < pixelCount; index += 1) {
+      if (!selectedCore[index]) continue;
+      const currentX = index % maskWidth;
+      const currentY = Math.floor(index / maskWidth);
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        const nextY = currentY + offsetY;
+        if (nextY < 0 || nextY >= maskHeight) continue;
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          const nextX = currentX + offsetX;
+          if (nextX < 0 || nextX >= maskWidth) continue;
+          const next = nextY * maskWidth + nextX;
+          if (eligible[next]) selected[next] = 1;
+        }
       }
     }
   }

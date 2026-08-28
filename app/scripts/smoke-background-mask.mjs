@@ -41,6 +41,32 @@ function testTouchingDancers() {
   return countSides(selectTrackedSubjectAlpha(mask, width, height, trackedBox, 100, 50));
 }
 
+function testNarrowBackgroundBridge() {
+  const mask = new Float32Array(width * height);
+  for (let y = 1; y <= 8; y += 1) {
+    for (let x = 3; x <= 7; x += 1) mask[y * width + x] = 0.92;
+  }
+  for (let y = 2; y <= 5; y += 1) {
+    for (let x = 11; x <= 14; x += 1) mask[y * width + x] = 0.76;
+  }
+  for (let y = 5; y <= 8; y += 1) {
+    for (let x = 12; x <= 13; x += 1) mask[y * width + x] = 0.76;
+  }
+  for (let x = 8; x <= 10; x += 1) mask[4 * width + x] = 0.7;
+
+  const alpha = selectTrackedSubjectAlpha(mask, width, height, [10, 0, 70, 50], 100, 50);
+  let dancer = 0;
+  let backgroundObject = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if ((alpha?.[y * width + x] ?? 0) <= 0.1) continue;
+      if (x <= 8) dancer += 1;
+      if (x >= 10) backgroundObject += 1;
+    }
+  }
+  return { dancer, backgroundObject };
+}
+
 function testLowConfidenceDancer() {
   const mask = new Float32Array(width * height);
   for (let y = 2; y <= 7; y += 1) {
@@ -114,6 +140,7 @@ function testAdjustableFraming() {
 
 const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
+const narrowBackgroundBridge = testNarrowBackgroundBridge();
 const lowConfidence = testLowConfidenceDancer();
 const recovery = testMissingFrameRecovery();
 const region = testTrackedRegion();
@@ -122,6 +149,7 @@ const edges = testEdgeTightening();
 const framing = testAdjustableFraming();
 const pass = separated.selected > 0 && separated.leaked === 0
   && touching.selected > 0 && touching.leaked === 0
+  && narrowBackgroundBridge.dancer > 0 && narrowBackgroundBridge.backgroundObject === 0
   && lowConfidence.selected > 0 && lowConfidence.leaked === 0
   && recovery.firstMissingIsBlack
   && recovery.temporaryMissingRetained
@@ -139,6 +167,7 @@ const pass = separated.selected > 0 && separated.leaked === 0
 console.log(JSON.stringify({
   separated,
   touching,
+  narrowBackgroundBridge,
   lowConfidence,
   recovery,
   region,
