@@ -155,7 +155,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '主角記憶', detail: 'EdgeTAM Video', available: 'gpu' in navigator },
+        { label: '人物去背', detail: 'MagicTouch × Pose', available: typeof WebAssembly !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -241,16 +241,15 @@ export default function Home() {
     setNotice('3 秒測試將從 ' + next.toFixed(1) + ' 秒開始');
   }
 
-  async function getPersonEffectRenderer(
-    onLoadProgress?: (step: number, total: number, label: string) => void,
-  ) {
+  async function getPersonEffectRenderer() {
     if (!personEffectRendererRef.current) {
-      const wasmBase = new URL('litert/', document.baseURI).href;
-      const modelBase = new URL('models/edgetam-video/', document.baseURI).href;
+      const wasmBase = new URL('mediapipe/', document.baseURI).href;
+      const subjectModelUrl = new URL('models/magic_touch.tflite', document.baseURI).href;
+      const poseModelUrl = new URL('models/pose_landmarker_full.task', document.baseURI).href;
       personEffectRendererRef.current = await PersonEffectRenderer.create(
         wasmBase,
-        modelBase,
-        onLoadProgress,
+        subjectModelUrl,
+        poseModelUrl,
       );
     }
     return personEffectRendererRef.current;
@@ -293,8 +292,14 @@ export default function Home() {
   }
 
   function activateDirectMode(video: HTMLVideoElement) {
-    selectionRef.current = null;
-    setTrackPath([]);
+    const fullBox: Box = [0, 0, video.videoWidth, video.videoHeight];
+    const endTime = Number.isFinite(video.duration) ? Math.max(0.001, video.duration) : 0.001;
+    const directPath: TrackPoint[] = [
+      { time: 0, box: [...fullBox] as Box, score: 1, accepted: true },
+      { time: endTime, box: [...fullBox] as Box, score: 1, accepted: true },
+    ];
+    selectionRef.current = { time: 0, box: fullBox };
+    setTrackPath(directPath);
     setAspect(video.videoWidth / video.videoHeight < 0.8 ? '9:16' : video.videoWidth > video.videoHeight ? '16:9' : '1:1');
     setPersonEffects({
       ...DEFAULT_PERSON_EFFECTS,
@@ -305,23 +310,8 @@ export default function Home() {
       cloneCount: 0,
       cloneDelay: 0,
     });
-    setPhase('choose');
-    setNotice('不追蹤模式：停在主角清楚的畫面，再框選一次主角');
-  }
-
-  function confirmDirectSubject() {
-    const video = videoRef.current;
-    const selection = selectionRef.current;
-    if (!video || !selection) return;
-    const fullBox: Box = [0, 0, video.videoWidth, video.videoHeight];
-    const endTime = Number.isFinite(video.duration) ? Math.max(0.001, video.duration) : 0.001;
-    setTrackPath([
-      { time: 0, box: [...fullBox] as Box, score: 1, accepted: true },
-      { time: endTime, box: [...fullBox] as Box, score: 1, accepted: true },
-    ]);
-    setEffectTestStart(Math.min(selection.time, Math.max(0, endTime - 3)));
     setPhase('path-ready');
-    setNotice('主角已指定；不執行 ViT，EdgeTAM 會在原構圖中延續主角記憶');
+    setNotice('不追蹤模式：保留輸入構圖，可直接測試去背');
   }
 
   function readMetadata() {
@@ -431,9 +421,7 @@ export default function Home() {
     setEffectTestPassed(false);
     personEffectRendererRef.current?.reset();
     setCorrectionCount(0);
-    setNotice(sourceModeRef.current === 'direct'
-      ? '用手指框住要記住的主角；只需指定一次，不執行 ViT'
-      : '用手指框住要追蹤的人物或寵物');
+    setNotice('用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawFrame(null));
   }
 
@@ -497,9 +485,7 @@ export default function Home() {
       box: [...next] as Box,
     };
     drawFrame(next);
-    setNotice(sourceModeRef.current === 'direct'
-      ? '主角已指定；確認後會保留原構圖並由 EdgeTAM 延續主角'
-      : '主角已指定；可開始 3 秒 ViT 追蹤測試');
+    setNotice('主角已指定；可開始 3 秒 ViT 追蹤測試');
   }
 
   async function detectSubjects() {
@@ -860,7 +846,7 @@ export default function Home() {
     const previewCanvas = effectPreviewCanvasRef.current;
     const selection = selectionRef.current;
     if (!video || !previewCanvas || !selection || trackPath.length < 2) {
-      setNotice('請先指定主角並完成前一個步驟');
+      setNotice('請先完成整支影片的 ViT 追蹤');
       return;
     }
     if (!personEffects.enabled) {
@@ -873,7 +859,7 @@ export default function Home() {
     setPhase('effect-testing');
     setProgress(0);
     setCurrentScore(null);
-    setNotice('正在載入本機 EdgeTAM 主角記憶模型…');
+    setNotice('正在載入本機指定主角去背模型與時間穩定…');
     const testStart = Math.min(effectTestStart, Math.max(0, video.duration - 3));
     const testEnd = Math.min(video.duration, testStart + 3);
     const testPreviewTime = testStart + (testEnd - testStart) * 0.5;
@@ -881,10 +867,7 @@ export default function Home() {
     const totalFrames = Math.max(1, Math.ceil((testEnd - testStart) / interval));
 
     try {
-      const renderer = await getPersonEffectRenderer((step, total, label) => {
-        setProgress(((step - 1) / total) * 0.08);
-        setNotice(`載入 WebGPU 主角記憶 ${step}/${total} · ${label}`);
-      });
+      const renderer = await getPersonEffectRenderer();
       configureOutputCanvas(previewCanvas, aspect);
       const smoothedPath = smoothTrackPath(trackPath, smoothness);
       video.pause();
@@ -893,13 +876,12 @@ export default function Home() {
         startTime: testStart,
         endTime: testEnd,
         preserveFraming: personEffects.preserveFraming,
-        subjectSelection: sourceModeRef.current === 'direct' ? selection : undefined,
         retainSourceForCorrections: true,
         onProgress: (next) => {
-          setProgress(0.08 + next * 0.82);
-          setNotice('延續指定主角的影片記憶 · ' + Math.round(next * 100) + '%');
+          setProgress(next * 0.9);
         },
         isCancelled: () => cancelRef.current,
+        onStage: (message) => setNotice(message),
       });
       renderer.resetPlayback();
 
@@ -1021,7 +1003,7 @@ export default function Home() {
     const video = videoRef.current;
     const renderCanvas = renderCanvasRef.current;
     if (!video || !renderCanvas || trackPath.length < 2) {
-      setNotice('請先指定主角並完成前一個步驟');
+      setNotice('請先完成整支影片的 ViT 追蹤');
       return;
     }
     if (personEffects.enabled && !effectTestPassed) {
@@ -1044,14 +1026,11 @@ export default function Home() {
           startTime: 0,
           endTime: video.duration,
           preserveFraming: personEffects.preserveFraming,
-          subjectSelection: sourceModeRef.current === 'direct'
-            ? selectionRef.current ?? undefined
-            : undefined,
           onProgress: (next) => {
             setProgress(next * 0.8);
-            setNotice('延續整支影片的主角記憶 · ' + Math.round(next * 100) + '%');
           },
           isCancelled: () => cancelRef.current,
+          onStage: (message) => setNotice(message),
         });
         effectRenderer.resetPlayback();
         setNotice('主角去背完成，正在套用特效與編碼…');
@@ -1130,7 +1109,7 @@ export default function Home() {
         <p>每支 MOV／HEVC／MP4 都可自行選擇追蹤或不追蹤，再於手機本機去背與輸出。影片不會離開這台裝置。</p>
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
-          <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>指定主角</span></div>
+          <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>{sourceMode === 'direct' ? '直接去背' : '指定主角'}</span></div>
           <div className={'step ' + (step >= 3 ? 'active' : '')}><b>03</b><span>{sourceMode === 'direct' ? '特效與輸出' : '追蹤與輸出'}</span></div>
         </div>
       </section>
@@ -1157,7 +1136,7 @@ export default function Home() {
               <div className="video-stage">
                 <video
                   ref={videoRef}
-                  className={phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? '' : 'is-hidden'}
+                  className={sourceMode === 'direct' || phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? '' : 'is-hidden'}
                   src={videoUrl}
                   controls
                   playsInline
@@ -1168,7 +1147,7 @@ export default function Home() {
                 />
                 <canvas
                   ref={canvasRef}
-                  className={phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
+                  className={sourceMode === 'direct' || phase === 'choose' || phase === 'exporting' || phase === 'effect-testing' || showEffectPreview ? 'tracking-canvas is-hidden' : 'tracking-canvas'}
                   onPointerDown={startBox}
                   onPointerMove={moveBox}
                   onPointerUp={finishBox}
@@ -1213,20 +1192,12 @@ export default function Home() {
                     <button type="button" disabled={detecting} onClick={detectSubjects}>
                       {detecting ? 'AI 掃描中…' : 'AI 尋找人物／寵物'}
                     </button>
-                    {sourceMode === 'direct' ? (
-                      <button className="primary" type="button" disabled={!box} onClick={confirmDirectSubject}>
-                        確認主角（不追蹤）
-                      </button>
-                    ) : (
-                      <>
-                        <button type="button" disabled={!box} onClick={runTracking}>
-                          測試 3 秒 ViT
-                        </button>
-                        <button className="primary" type="button" disabled={!box} onClick={runFullTracking}>
-                          追蹤完整影片
-                        </button>
-                      </>
-                    )}
+                    <button type="button" disabled={!box} onClick={runTracking}>
+                      測試 3 秒 ViT
+                    </button>
+                    <button className="primary" type="button" disabled={!box} onClick={runFullTracking}>
+                      追蹤完整影片
+                    </button>
                   </>
                 )}
                 {(phase === 'tracking' || phase === 'effect-testing' || phase === 'exporting') && (
@@ -1238,17 +1209,15 @@ export default function Home() {
                     <button className="primary" type="button" onClick={runFullTracking}>追蹤完整影片</button>
                   </>
                 )}
-                {phase === 'path-ready' && (
-                  <button type="button" onClick={enterSelection}>
-                    {sourceMode === 'direct' ? '重新指定主角' : '重新選角與追蹤'}
-                  </button>
+                {phase === 'path-ready' && sourceMode !== 'direct' && (
+                  <button type="button" onClick={enterSelection}>重新選角與追蹤</button>
                 )}
               </div>
               {phase === 'path-ready' && effectTestPassed && showEffectPreview && effectTestWindow && (
                 <section className={'mask-correction-panel ' + (editingMask ? 'is-editing' : '')}>
                   <div className="mask-correction-heading">
                     <div>
-                      <span>EdgeTAM 跨幀主角記憶已套用</span>
+                      <span>原始背景底圖＋Full Pose＋光流防閃已套用</span>
                       <strong>智慧去背完成</strong>
                     </div>
                     {!editingMask ? (
@@ -1375,7 +1344,7 @@ export default function Home() {
                         {personEffects.enabled ? '已開啟' : '開啟特效'}
                       </button>
                     </div>
-                    <p className="effect-note">{sourceMode === 'direct' ? '保留輸入影片構圖，不執行 ViT；EdgeTAM 會用跨幀記憶延續你框選的主角。' : 'ViT 追蹤與構圖維持原樣；EdgeTAM 另外記住你指定的主角並產生連續遮罩。'} 所有影像仍在這台 iPhone 本機處理。</p>
+                    <p className="effect-note">{sourceMode === 'direct' ? '依使用者選擇保留輸入影片構圖，以 MagicTouch＋Pose 去背；骨架保護人體核心，光流會延續前後遮罩與移動中的背景記憶。不執行 ViT 追蹤。' : 'ViT 追蹤維持原樣；框內使用 MagicTouch＋Pose 去背，骨架保護人體核心，再以光流延續前後遮罩與移動中的背景記憶。'} 所有影像仍在這台 iPhone 本機處理。</p>
 
                     {personEffects.enabled && (
                       <>

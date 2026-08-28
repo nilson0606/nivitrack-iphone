@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-edgetam-video-memory-v1';
+const VERSION = 'nivitrack-stage1-effects-v8-5-original-background-1';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
@@ -10,9 +10,28 @@ const APP_SHELL = [
   appAsset('og.png'),
   appAsset('manual.html'),
 ];
+const MODEL_ASSETS = [
+  appAsset('models/vittrack.onnx'),
+  appAsset('models/magic_touch.tflite'),
+  appAsset('models/pose_landmarker_full.task'),
+  appAsset('mediapipe/vision_wasm_internal.js'),
+  appAsset('mediapipe/vision_wasm_internal.wasm'),
+  appAsset('models/ssdlite_mobilenet_v2/model.json'),
+  appAsset('models/ssdlite_mobilenet_v2/group1-shard1of5'),
+  appAsset('models/ssdlite_mobilenet_v2/group1-shard2of5'),
+  appAsset('models/ssdlite_mobilenet_v2/group1-shard3of5'),
+  appAsset('models/ssdlite_mobilenet_v2/group1-shard4of5'),
+  appAsset('models/ssdlite_mobilenet_v2/group1-shard5of5'),
+  appAsset('ort/ort-wasm-simd-threaded.mjs'),
+  appAsset('ort/ort-wasm-simd-threaded.wasm'),
+];
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(APP_CACHE).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()),
+    Promise.all([
+      caches.open(APP_CACHE).then((cache) => cache.addAll(APP_SHELL)),
+      caches.open(MODEL_CACHE).then((cache) => cache.addAll(MODEL_ASSETS)),
+    ]).then(() => self.skipWaiting()),
   );
 });
 
@@ -61,11 +80,7 @@ self.addEventListener('fetch', (event) => {
       return fetch(request).then((response) => {
         if (!response || !response.ok || response.type !== 'basic') return response;
         const copy = response.clone();
-        const isModelAsset = url.pathname.includes('/models/')
-          || url.pathname.includes('/litert/')
-          || url.pathname.includes('/ort/')
-          || url.pathname.includes('/mediapipe/');
-        caches.open(isModelAsset ? MODEL_CACHE : APP_CACHE).then((cache) => cache.put(request, copy));
+        caches.open(APP_CACHE).then((cache) => cache.put(request, copy));
         return response;
       });
     }),
