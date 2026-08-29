@@ -1259,7 +1259,39 @@ export default function Home() {
       </div>
 
       <div className="effect-block">
-        <div className="effect-label"><b>人物外框</b><em>{outlineWidth === 0 ? '無框' : outlineWidth + 'px'}</em></div>
+        <div className="effect-label">
+          <b>人物外框</b>
+          <em>{outlineWidth === 0 ? '無框' : outlineWidth <= 16 ? '細框 · ' + outlineWidth + 'px' : '粗框 · ' + outlineWidth + 'px'}</em>
+        </div>
+        <div className="effect-options three" aria-label="外框粗細">
+          <button
+            className={outlineWidth === 0 ? 'selected' : ''}
+            type="button"
+            disabled={effectsBusy}
+            aria-pressed={outlineWidth === 0}
+            onClick={() => setOutlineWidth(0)}
+          >
+            無框
+          </button>
+          <button
+            className={outlineWidth > 0 && outlineWidth <= 16 ? 'selected' : ''}
+            type="button"
+            disabled={effectsBusy}
+            aria-pressed={outlineWidth > 0 && outlineWidth <= 16}
+            onClick={() => setOutlineWidth(8)}
+          >
+            細框
+          </button>
+          <button
+            className={outlineWidth > 16 ? 'selected' : ''}
+            type="button"
+            disabled={effectsBusy}
+            aria-pressed={outlineWidth > 16}
+            onClick={() => setOutlineWidth(32)}
+          >
+            粗框
+          </button>
+        </div>
         <div className="outline-controls">
           <label className="color-picker outline-picker">
             <input
@@ -1276,7 +1308,7 @@ export default function Home() {
             <input
               type="range"
               min="0"
-              max="24"
+              max="48"
               value={outlineWidth}
               disabled={effectsBusy}
               onChange={(event) => setOutlineWidth(Number(event.target.value))}

@@ -381,15 +381,27 @@ export class PersonBackgroundRenderer {
     context.globalAlpha = clamp(opacity, 0, 1);
     context.filter = 'none';
     context.imageSmoothingEnabled = true;
-    const outlineWidth = clamp(effects.outlineWidth, 0, 28);
+    const outlineWidth = clamp(effects.outlineWidth, 0, 48);
     if (outlineWidth > 0) {
       context.shadowColor = effects.outlineColor;
-      context.shadowBlur = outlineWidth * 1.55;
-      context.drawImage(source, x, y, width, height);
-      context.shadowBlur = Math.max(1, outlineWidth * 0.7);
-      context.drawImage(source, x, y, width, height);
+      if (outlineWidth > 16) {
+        const radius = outlineWidth * 0.68;
+        context.shadowBlur = outlineWidth * 0.46;
+        for (const [directionX, directionY] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+          context.shadowOffsetX = directionX * radius;
+          context.shadowOffsetY = directionY * radius;
+          context.drawImage(source, x, y, width, height);
+        }
+      } else {
+        context.shadowBlur = outlineWidth * 1.55;
+        context.drawImage(source, x, y, width, height);
+        context.shadowBlur = Math.max(1, outlineWidth * 0.7);
+        context.drawImage(source, x, y, width, height);
+      }
       context.shadowColor = 'transparent';
       context.shadowBlur = 0;
+      context.shadowOffsetX = 0;
+      context.shadowOffsetY = 0;
     }
     context.drawImage(source, x, y, width, height);
     context.restore();
