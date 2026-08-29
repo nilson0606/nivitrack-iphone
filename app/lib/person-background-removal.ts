@@ -1,16 +1,9 @@
-import {
-  FilesetResolver,
-  ImageSegmenter,
-  PoseLandmarker,
-  type NormalizedLandmark,
-} from '@mediapipe/tasks-vision';
+import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 
 import type { Box } from './vit-tracker';
 
 const LOW_CONFIDENCE_LIMIT = 0.12;
 const MAX_MISSED_FRAMES = 12;
-const MAX_MISSED_POSE_FRAMES = 6;
-const MAX_INCOMPLETE_BAND_FRAMES = 1;
 const INFERENCE_SIZE = 256;
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -20,282 +13,6 @@ function clamp(value: number, minimum: number, maximum: number) {
 function smoothstep(edge0: number, edge1: number, value: number) {
   const amount = clamp((value - edge0) / Math.max(0.0001, edge1 - edge0), 0, 1);
   return amount * amount * (3 - 2 * amount);
-}
-
-export function solidifyAndInsetAlpha(
-  alpha: Uint8ClampedArray,
-  width: number,
-  height: number,
-  outlinePixels: number,
-  distance: Uint16Array,
-) {
-  if (alpha.length !== width * height || distance.length !== alpha.length) {
-    throw new Error('黑色安全邊框遮罩尺寸不正確');
-  }
-  for (let index = 0; index < alpha.length; index += 1) {
-    const normalized = alpha[index] / 255;
-    alpha[index] = Math.round(Math.max(
-      normalized,
-      smoothstep(0.08, 0.52, normalized),
-    ) * 255);
-  }
-  const radius = clamp(Math.round(outlinePixels), 0, 6);
-  if (radius === 0) return;
-  const far = 65535;
-  for (let index = 0; index < alpha.length; index += 1) {
-    distance[index] = alpha[index] < 24 ? 0 : far;
-  }
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x;
-      let value = distance[index];
-      if (x > 0) value = Math.min(value, distance[index - 1] + 1);
-      if (y > 0) value = Math.min(value, distance[index - width] + 1);
-      distance[index] = value;
-    }
-  }
-  for (let y = height - 1; y >= 0; y -= 1) {
-    for (let x = width - 1; x >= 0; x -= 1) {
-      const index = y * width + x;
-      let value = distance[index];
-      if (x + 1 < width) value = Math.min(value, distance[index + 1] + 1);
-      if (y + 1 < height) value = Math.min(value, distance[index + width] + 1);
-      distance[index] = value;
-      if (value <= radius) alpha[index] = 0;
-    }
-  }
-}
-
-type EnvelopePoint = { x: number; y: number };
-
-function pointDistance(first: EnvelopePoint, second: EnvelopePoint) {
-  return Math.hypot(first.x - second.x, first.y - second.y);
-}
-
-function midpoint(first: EnvelopePoint, second: EnvelopePoint): EnvelopePoint {
-  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
-}
-
-export function createPoseBodyEnvelope(
-  landmarks: Pick<NormalizedLandmark, 'x' | 'y' | 'visibility'>[],
-  width: number,
-  height: number,
-  tightness: number,
-) {
-  if (landmarks.length < 33 || width < 2 || height < 2) return null;
-  const point = (index: number, minimumVisibility = 0.08): EnvelopePoint | null => {
-    const landmark = landmarks[index];
-    if (!landmark
-      || !Number.isFinite(landmark.x)
-      || !Number.isFinite(landmark.y)
-      || (landmark.visibility ?? 1) < minimumVisibility
-      || landmark.x < -0.25
-      || landmark.x > 1.25
-      || landmark.y < -0.25
-      || landmark.y > 1.25) {
-      return null;
-    }
-    return { x: landmark.x * width, y: landmark.y * height };
-  };
-
-  const leftShoulder = point(11, 0.04);
-  const rightShoulder = point(12, 0.04);
-  const leftHip = point(23, 0.04);
-  const rightHip = point(24, 0.04);
-  if (!leftShoulder || !rightShoulder || !leftHip || !rightHip) return null;
-
-  const shoulderCenter = midpoint(leftShoulder, rightShoulder);
-  const hipCenter = midpoint(leftHip, rightHip);
-  const shoulderWidth = pointDistance(leftShoulder, rightShoulder);
-  const hipWidth = pointDistance(leftHip, rightHip);
-  const torsoLength = pointDistance(shoulderCenter, hipCenter);
-  const bodyUnit = Math.max(8, shoulderWidth, hipWidth, torsoLength * 0.72);
-  const amount = clamp(tightness, 0, 1);
-  const looseness = 1 - amount;
-  const envelope = new Float32Array(width * height);
-
-  const addCapsule = (start: EnvelopePoint | null, end: EnvelopePoint | null, radius: number) => {
-    if (!start || !end || radius <= 0) return;
-    const minimumX = clamp(Math.floor(Math.min(start.x, end.x) - radius * 1.12), 0, width - 1);
-    const maximumX = clamp(Math.ceil(Math.max(start.x, end.x) + radius * 1.12), 0, width - 1);
-    const minimumY = clamp(Math.floor(Math.min(start.y, end.y) - radius * 1.12), 0, height - 1);
-    const maximumY = clamp(Math.ceil(Math.max(start.y, end.y) + radius * 1.12), 0, height - 1);
-    const deltaX = end.x - start.x;
-    const deltaY = end.y - start.y;
-    const lengthSquared = deltaX * deltaX + deltaY * deltaY;
-    for (let y = minimumY; y <= maximumY; y += 1) {
-      for (let x = minimumX; x <= maximumX; x += 1) {
-        const projection = lengthSquared > 0
-          ? clamp(((x - start.x) * deltaX + (y - start.y) * deltaY) / lengthSquared, 0, 1)
-          : 0;
-        const closestX = start.x + deltaX * projection;
-        const closestY = start.y + deltaY * projection;
-        const normalizedDistance = Math.hypot(x - closestX, y - closestY) / radius;
-        const membership = 1 - smoothstep(0.82, 1.1, normalizedDistance);
-        const index = y * width + x;
-        if (membership > envelope[index]) envelope[index] = membership;
-      }
-    }
-  };
-
-  const addEllipse = (center: EnvelopePoint | null, radiusX: number, radiusY: number) => {
-    if (!center || radiusX <= 0 || radiusY <= 0) return;
-    const minimumX = clamp(Math.floor(center.x - radiusX * 1.12), 0, width - 1);
-    const maximumX = clamp(Math.ceil(center.x + radiusX * 1.12), 0, width - 1);
-    const minimumY = clamp(Math.floor(center.y - radiusY * 1.12), 0, height - 1);
-    const maximumY = clamp(Math.ceil(center.y + radiusY * 1.12), 0, height - 1);
-    for (let y = minimumY; y <= maximumY; y += 1) {
-      for (let x = minimumX; x <= maximumX; x += 1) {
-        const normalizedDistance = Math.hypot(
-          (x - center.x) / radiusX,
-          (y - center.y) / radiusY,
-        );
-        const membership = 1 - smoothstep(0.82, 1.1, normalizedDistance);
-        const index = y * width + x;
-        if (membership > envelope[index]) envelope[index] = membership;
-      }
-    }
-  };
-
-  const nose = point(0);
-  const leftEar = point(7);
-  const rightEar = point(8);
-  const visibleHeadPoints = [nose, leftEar, rightEar].filter((item): item is EnvelopePoint => Boolean(item));
-  const headCenter = visibleHeadPoints.length > 0
-    ? {
-      x: visibleHeadPoints.reduce((sum, item) => sum + item.x, 0) / visibleHeadPoints.length,
-      y: visibleHeadPoints.reduce((sum, item) => sum + item.y, 0) / visibleHeadPoints.length,
-    }
-    : { x: shoulderCenter.x, y: shoulderCenter.y - torsoLength * 0.42 };
-
-  addEllipse(
-    headCenter,
-    bodyUnit * (0.3 + looseness * 0.11),
-    bodyUnit * (0.39 + looseness * 0.13),
-  );
-  addCapsule(headCenter, shoulderCenter, bodyUnit * (0.18 + looseness * 0.09));
-  addCapsule(
-    shoulderCenter,
-    hipCenter,
-    Math.max(shoulderWidth, hipWidth) * (0.47 + looseness * 0.2),
-  );
-  addCapsule(leftShoulder, rightShoulder, bodyUnit * (0.16 + looseness * 0.08));
-  addCapsule(leftHip, rightHip, bodyUnit * (0.18 + looseness * 0.08));
-
-  const limbSegments: Array<[number, number, number, number]> = [
-    [11, 13, 0.19, 0.09],
-    [12, 14, 0.19, 0.09],
-    [13, 15, 0.15, 0.08],
-    [14, 16, 0.15, 0.08],
-    [15, 19, 0.13, 0.07],
-    [16, 20, 0.13, 0.07],
-    [23, 25, 0.23, 0.1],
-    [24, 26, 0.23, 0.1],
-    [25, 27, 0.18, 0.08],
-    [26, 28, 0.18, 0.08],
-    [27, 31, 0.14, 0.07],
-    [28, 32, 0.14, 0.07],
-  ];
-  for (const [startIndex, endIndex, baseRadius, looseRadius] of limbSegments) {
-    addCapsule(
-      point(startIndex),
-      point(endIndex),
-      bodyUnit * (baseRadius + looseness * looseRadius),
-    );
-  }
-  return envelope;
-}
-
-export function constrainAlphaToBodyEnvelope(
-  alpha: Float32Array,
-  envelope: Float32Array,
-) {
-  if (alpha.length !== envelope.length) throw new Error('人體骨架範圍尺寸不正確');
-  const constrained = new Float32Array(alpha.length);
-  for (let index = 0; index < alpha.length; index += 1) {
-    constrained[index] = alpha[index] * envelope[index];
-  }
-  return constrained;
-}
-
-export function constrainSubjectConfidenceToPose(
-  confidence: Float32Array,
-  width: number,
-  height: number,
-  poseConfidence: Float32Array,
-  poseWidth: number,
-  poseHeight: number,
-) {
-  if (confidence.length !== width * height || poseConfidence.length !== poseWidth * poseHeight) {
-    throw new Error('MediaPipe 人體姿態遮罩尺寸不正確');
-  }
-
-  // The pose mask is a body prior, not the final matte. Expand it slightly so
-  // fast limbs, hair and loose clothing still use the finer selfie mask edge.
-  const radius = Math.max(2, Math.round(Math.max(poseWidth, poseHeight) * 0.012));
-  const horizontal = new Float32Array(poseConfidence.length);
-  const expanded = new Float32Array(poseConfidence.length);
-  for (let y = 0; y < poseHeight; y += 1) {
-    const row = y * poseWidth;
-    for (let x = 0; x < poseWidth; x += 1) {
-      let maximum = 0;
-      for (let offset = -radius; offset <= radius; offset += 1) {
-        const sampleX = clamp(x + offset, 0, poseWidth - 1);
-        maximum = Math.max(maximum, poseConfidence[row + sampleX]);
-      }
-      horizontal[row + x] = maximum;
-    }
-  }
-  for (let y = 0; y < poseHeight; y += 1) {
-    for (let x = 0; x < poseWidth; x += 1) {
-      let maximum = 0;
-      for (let offset = -radius; offset <= radius; offset += 1) {
-        const sampleY = clamp(y + offset, 0, poseHeight - 1);
-        maximum = Math.max(maximum, horizontal[sampleY * poseWidth + x]);
-      }
-      expanded[y * poseWidth + x] = maximum;
-    }
-  }
-
-  const constrained = new Float32Array(confidence.length);
-  for (let y = 0; y < height; y += 1) {
-    const poseY = clamp(Math.floor(((y + 0.5) / height) * poseHeight), 0, poseHeight - 1);
-    for (let x = 0; x < width; x += 1) {
-      const poseX = clamp(Math.floor(((x + 0.5) / width) * poseWidth), 0, poseWidth - 1);
-      const bodyPrior = smoothstep(0.08, 0.5, expanded[poseY * poseWidth + poseX]);
-      // A very small floor keeps anti-aliased body edges recoverable, but pushes
-      // confident non-body regions below the existing subject threshold.
-      constrained[y * width + x] = confidence[y * width + x] * (0.035 + bodyPrior * 0.965);
-    }
-  }
-  return constrained;
-}
-
-export function preferUsablePoseAlpha(
-  poseAlpha: Float32Array | null,
-  fallbackAlpha: Float32Array | null,
-) {
-  if (!fallbackAlpha) return poseAlpha;
-  if (!poseAlpha || poseAlpha.length !== fallbackAlpha.length) return fallbackAlpha;
-  let posePixels = 0;
-  let fallbackPixels = 0;
-  let poseWeight = 0;
-  let fallbackWeight = 0;
-  for (let index = 0; index < fallbackAlpha.length; index += 1) {
-    const pose = poseAlpha[index];
-    const fallback = fallbackAlpha[index];
-    if (pose > 0.08) posePixels += 1;
-    if (fallback > 0.08) fallbackPixels += 1;
-    poseWeight += pose;
-    fallbackWeight += fallback;
-  }
-  if (fallbackPixels === 0 || fallbackWeight === 0) return poseAlpha;
-
-  // A pose prior is allowed to trim attached background, but never to erase the
-  // tracked dancer. Low-coverage results fall back to the proven selfie matte.
-  const enoughPixels = posePixels >= Math.max(8, Math.floor(fallbackPixels * 0.18));
-  const enoughWeight = poseWeight >= fallbackWeight * 0.14;
-  return enoughPixels && enoughWeight ? poseAlpha : fallbackAlpha;
 }
 
 export function tightenTrackedSubjectEdges(alpha: Float32Array, width: number, height: number) {
@@ -343,64 +60,6 @@ function findSeed(
     }
   }
   return { index: bestIndex, confidence: bestConfidence };
-}
-
-export function selectModnetTrackedAlpha(
-  confidence: Float32Array,
-  maskWidth: number,
-  maskHeight: number,
-  box: Box,
-  sourceWidth: number,
-  sourceHeight: number,
-) {
-  const pixelCount = maskWidth * maskHeight;
-  if (confidence.length !== pixelCount) throw new Error('MODNet 人物遮罩尺寸不正確');
-  const [boxX, boxY, boxWidth, boxHeight] = box;
-  const left = clamp(Math.floor((boxX / sourceWidth) * maskWidth), 0, maskWidth - 1);
-  const right = clamp(Math.ceil(((boxX + boxWidth) / sourceWidth) * maskWidth), left + 1, maskWidth);
-  const top = clamp(Math.floor((boxY / sourceHeight) * maskHeight), 0, maskHeight - 1);
-  const bottom = clamp(Math.ceil(((boxY + boxHeight) / sourceHeight) * maskHeight), top + 1, maskHeight);
-  let peak = 0;
-  const histogram = new Uint32Array(256);
-  let samples = 0;
-  for (let y = top; y < bottom; y += 1) {
-    for (let x = left; x < right; x += 1) {
-      const value = clamp(confidence[y * maskWidth + x], 0, 1);
-      peak = Math.max(peak, value);
-      histogram[Math.min(255, Math.floor(value * 255))] += 1;
-      samples += 1;
-    }
-  }
-  if (samples === 0 || peak < 0.008) return null;
-  const percentileTarget = Math.max(1, Math.floor(samples * 0.98));
-  let cumulative = 0;
-  let percentile = 0;
-  for (let bucket = 0; bucket < histogram.length; bucket += 1) {
-    cumulative += histogram[bucket];
-    if (cumulative >= percentileTarget) {
-      percentile = bucket / 255;
-      break;
-    }
-  }
-  const reference = Math.max(percentile, peak * 0.65);
-  const low = clamp(reference * 0.08, 0.004, 0.08);
-  const high = clamp(reference * 0.55, low + 0.02, 0.68);
-  const centerX = ((boxX + boxWidth / 2) / sourceWidth) * maskWidth;
-  const centerY = ((boxY + boxHeight / 2) / sourceHeight) * maskHeight;
-  const radiusX = Math.max(3, (boxWidth / sourceWidth) * maskWidth * 0.72);
-  const radiusY = Math.max(3, (boxHeight / sourceHeight) * maskHeight * 0.64);
-  const alpha = new Float32Array(pixelCount);
-  for (let index = 0; index < pixelCount; index += 1) {
-    const x = index % maskWidth;
-    const y = Math.floor(index / maskWidth);
-    const normalizedX = Math.abs((x - centerX) / radiusX);
-    const normalizedY = Math.abs((y - centerY) / radiusY);
-    const distance = Math.pow(normalizedX, 8) + Math.pow(normalizedY, 8);
-    if (distance >= 1) continue;
-    const gate = 1 - smoothstep(0.62, 1, distance);
-    alpha[index] = smoothstep(low, high, clamp(confidence[index], 0, 1)) * gate;
-  }
-  return alpha;
 }
 
 export function selectTrackedSubjectAlpha(
@@ -556,93 +215,6 @@ export function recoverTrackedSubjectAlpha(
   return { alpha, missedFrames: nextMissedFrames, fresh: false };
 }
 
-export type SubjectCompletenessState = {
-  referenceAlpha: Float32Array | null;
-  incompleteBandFrames: [number, number, number];
-};
-
-export function preserveSuddenSubjectLoss(
-  currentAlpha: Float32Array,
-  maskWidth: number,
-  maskHeight: number,
-  box: Box,
-  sourceWidth: number,
-  sourceHeight: number,
-  state: SubjectCompletenessState,
-) {
-  const pixelCount = maskWidth * maskHeight;
-  if (currentAlpha.length !== pixelCount) throw new Error('人物完整度遮罩尺寸不正確');
-  const previous = state.referenceAlpha;
-  if (previous?.length !== pixelCount) {
-    return {
-      alpha: new Float32Array(currentAlpha),
-      state: {
-        referenceAlpha: new Float32Array(currentAlpha),
-        incompleteBandFrames: [0, 0, 0] as [number, number, number],
-      },
-      guardedBands: 0,
-    };
-  }
-
-  const [boxX, boxY, boxWidth, boxHeight] = box;
-  const left = clamp(Math.floor((boxX / sourceWidth) * maskWidth), 0, maskWidth - 1);
-  const right = clamp(Math.ceil(((boxX + boxWidth) / sourceWidth) * maskWidth), left + 1, maskWidth);
-  const top = clamp(Math.floor((boxY / sourceHeight) * maskHeight), 0, maskHeight - 1);
-  const bottom = clamp(Math.ceil(((boxY + boxHeight) / sourceHeight) * maskHeight), top + 1, maskHeight);
-  const output = new Float32Array(currentAlpha);
-  const reference = new Float32Array(currentAlpha);
-  const incompleteBandFrames: [number, number, number] = [0, 0, 0];
-  let guardedBands = 0;
-
-  for (let band = 0; band < 3; band += 1) {
-    const bandTop = Math.floor(top + ((bottom - top) * band) / 3);
-    const bandBottom = Math.max(bandTop + 1, Math.floor(top + ((bottom - top) * (band + 1)) / 3));
-    let previousMass = 0;
-    let currentMass = 0;
-    let overlapMass = 0;
-    for (let y = bandTop; y < Math.min(bottom, bandBottom); y += 1) {
-      const row = y * maskWidth;
-      for (let x = left; x < right; x += 1) {
-        const index = row + x;
-        const oldValue = previous[index];
-        const newValue = currentAlpha[index];
-        previousMass += oldValue;
-        currentMass += newValue;
-        overlapMass += Math.min(oldValue, newValue);
-      }
-    }
-
-    const bandArea = Math.max(1, (Math.min(bottom, bandBottom) - bandTop) * (right - left));
-    const priorWasUsable = previousMass / bandArea >= 0.035;
-    const massRatio = currentMass / Math.max(0.001, previousMass);
-    const overlapRatio = overlapMass / Math.max(0.001, previousMass);
-    const suddenlyIncomplete = priorWasUsable
-      && (massRatio < 0.46 || (massRatio < 0.78 && overlapRatio < 0.22));
-    const priorIncompleteFrames = state.incompleteBandFrames[band] ?? 0;
-
-    if (suddenlyIncomplete && priorIncompleteFrames < MAX_INCOMPLETE_BAND_FRAMES) {
-      const nextIncompleteFrames = priorIncompleteFrames + 1;
-      const retention = 0.82;
-      incompleteBandFrames[band] = nextIncompleteFrames;
-      guardedBands += 1;
-      for (let y = bandTop; y < Math.min(bottom, bandBottom); y += 1) {
-        const row = y * maskWidth;
-        for (let x = left; x < right; x += 1) {
-          const index = row + x;
-          output[index] = Math.max(currentAlpha[index], previous[index] * retention);
-          reference[index] = previous[index];
-        }
-      }
-    }
-  }
-
-  return {
-    alpha: output,
-    state: { referenceAlpha: reference, incompleteBandFrames },
-    guardedBands,
-  };
-}
-
 export function stabilizeTrackedSubjectAlpha(
   currentAlpha: Float32Array,
   previousAlpha: Float32Array | null,
@@ -669,7 +241,6 @@ export function stabilizeTrackedSubjectAlpha(
 
 export class PersonBackgroundRenderer {
   private readonly segmenter: ImageSegmenter;
-  private readonly poseLandmarker: PoseLandmarker;
   private readonly inferenceCanvas = document.createElement('canvas');
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
@@ -677,68 +248,34 @@ export class PersonBackgroundRenderer {
   private pendingAlpha: Float32Array | null = null;
   private timestamp = 0;
   private missedFrames = 0;
-  private poseEnabled = true;
-  private previousPoseEnvelope: Float32Array | null = null;
-  private missedPoseFrames = 0;
 
-  private constructor(segmenter: ImageSegmenter, poseLandmarker: PoseLandmarker) {
+  private constructor(segmenter: ImageSegmenter) {
     this.segmenter = segmenter;
-    this.poseLandmarker = poseLandmarker;
   }
 
   static async create() {
     const wasmRoot = new URL('mediapipe/', document.baseURI).href;
     const modelUrl = new URL('models/selfie_segmenter.tflite', document.baseURI).href;
-    const poseModelUrl = new URL('models/pose_landmarker_lite.task', document.baseURI).href;
     const fileset = await FilesetResolver.forVisionTasks(wasmRoot);
-    const segmenterCanvas = document.createElement('canvas');
-    const segmenterOptions = {
+    const canvas = document.createElement('canvas');
+    const common = {
       baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' as const },
       runningMode: 'VIDEO' as const,
       outputConfidenceMasks: true,
       outputCategoryMask: false,
-      canvas: segmenterCanvas,
+      canvas,
     };
-    let segmenter: ImageSegmenter;
     try {
-      segmenter = await ImageSegmenter.createFromOptions(fileset, segmenterOptions);
+      return new PersonBackgroundRenderer(await ImageSegmenter.createFromOptions(fileset, common));
     } catch {
-      segmenter = await ImageSegmenter.createFromOptions(fileset, {
-        ...segmenterOptions,
+      return new PersonBackgroundRenderer(await ImageSegmenter.createFromOptions(fileset, {
+        ...common,
         baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' },
-      });
+      }));
     }
-
-    const poseCanvas = document.createElement('canvas');
-    const poseOptions = {
-      baseOptions: { modelAssetPath: poseModelUrl, delegate: 'GPU' as const },
-      runningMode: 'VIDEO' as const,
-      numPoses: 1,
-      minPoseDetectionConfidence: 0.35,
-      minPosePresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
-      outputSegmentationMasks: false,
-      canvas: poseCanvas,
-    };
-    let poseLandmarker: PoseLandmarker;
-    try {
-      poseLandmarker = await PoseLandmarker.createFromOptions(fileset, poseOptions);
-    } catch {
-      poseLandmarker = await PoseLandmarker.createFromOptions(fileset, {
-        ...poseOptions,
-        baseOptions: { modelAssetPath: poseModelUrl, delegate: 'CPU' },
-      });
-    }
-    return new PersonBackgroundRenderer(segmenter, poseLandmarker);
   }
 
-  render(
-    video: HTMLVideoElement,
-    outputCanvas: HTMLCanvasElement,
-    box: Box,
-    crop?: Box,
-    bodyTightness = 0.62,
-  ) {
+  render(video: HTMLVideoElement, outputCanvas: HTMLCanvasElement, box: Box, crop?: Box) {
     if (!video.videoWidth || !video.videoHeight) return;
     const [regionX, regionY, regionWidth, regionHeight] = trackedSubjectRegion(
       box,
@@ -766,8 +303,6 @@ export class PersonBackgroundRenderer {
     );
     this.timestamp += 1;
     let currentAlpha: Float32Array | null = null;
-    let personConfidence: Float32Array | null = null;
-    let poseLandmarks: NormalizedLandmark[] | null = null;
     let maskWidth = inferenceWidth;
     let maskHeight = inferenceHeight;
     const relativeBox: Box = [
@@ -782,53 +317,15 @@ export class PersonBackgroundRenderer {
       if (!mask) return;
       maskWidth = mask.width;
       maskHeight = mask.height;
-      personConfidence = new Float32Array(mask.getAsFloat32Array());
-    });
-
-    if (this.poseEnabled) {
-      try {
-        this.poseLandmarker.detectForVideo(this.inferenceCanvas, this.timestamp, (result) => {
-          poseLandmarks = result.landmarks?.[0] ?? null;
-        });
-      } catch {
-        // Some Safari/WebGL combinations can initialize both tasks but reject
-        // the second per-frame inference. Keep export working with the original
-        // local selfie matte instead of leaving the output canvas black.
-        this.poseEnabled = false;
-      }
-    }
-
-    if (personConfidence) {
-      const fallbackAlpha = selectTrackedSubjectAlpha(
-        personConfidence,
+      currentAlpha = selectTrackedSubjectAlpha(
+        mask.getAsFloat32Array(),
         maskWidth,
         maskHeight,
         relativeBox,
         regionWidth,
         regionHeight,
       );
-      let poseAlpha: Float32Array | null = null;
-      let poseEnvelope: Float32Array | null = poseLandmarks
-        ? createPoseBodyEnvelope(poseLandmarks, maskWidth, maskHeight, bodyTightness)
-        : null;
-      if (poseEnvelope) {
-        this.previousPoseEnvelope = new Float32Array(poseEnvelope);
-        this.missedPoseFrames = 0;
-      } else {
-        this.missedPoseFrames += 1;
-        if (this.previousPoseEnvelope?.length === maskWidth * maskHeight
-          && this.missedPoseFrames <= MAX_MISSED_POSE_FRAMES) {
-          poseEnvelope = this.previousPoseEnvelope;
-        }
-      }
-      if (fallbackAlpha && poseEnvelope) {
-        poseAlpha = constrainAlphaToBodyEnvelope(
-          fallbackAlpha,
-          poseEnvelope,
-        );
-      }
-      currentAlpha = preferUsablePoseAlpha(poseAlpha, fallbackAlpha);
-    }
+    });
 
     const recovered = recoverTrackedSubjectAlpha(
       currentAlpha,
@@ -909,17 +406,13 @@ export class PersonBackgroundRenderer {
 
   close() {
     this.segmenter.close();
-    this.poseLandmarker.close();
     this.previousAlpha = null;
     this.pendingAlpha = null;
-    this.previousPoseEnvelope = null;
   }
 
   reset() {
     this.previousAlpha = null;
     this.pendingAlpha = null;
     this.missedFrames = 0;
-    this.previousPoseEnvelope = null;
-    this.missedPoseFrames = 0;
   }
 }

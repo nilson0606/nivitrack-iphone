@@ -1,6 +1,5 @@
 import type { Box } from './vit-tracker';
 import type { PersonBackgroundRenderer } from './person-background-removal';
-import type { ModnetPreviewTimeline } from './modnet-background-preview';
 
 export type AspectPreset = '9:16' | '1:1' | '16:9';
 
@@ -31,8 +30,6 @@ export type ExportOperation =
       aspect: AspectPreset;
       subjectScale: number;
       smoothness: number;
-      bodyTightness: number;
-      blackOutline: number;
     };
 
 export type TrackPoint = {
@@ -50,8 +47,6 @@ export type RecorderSupport = {
 export type ExportOptions = {
   operation: ExportOperation;
   codec: 'h264' | 'hevc';
-  backgroundTimeline?: ModnetPreviewTimeline;
-  onStage?: (stage: 'audio' | 'recorder' | 'seek' | 'playback') => void;
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
 };
@@ -76,7 +71,7 @@ const HEVC_TYPES = [
   'video/mp4;codecs=hev1,mp4a.40.2',
 ];
 
-export const OUTPUT_SIZES: Record<AspectPreset, [number, number]> = {
+const OUTPUT_SIZES: Record<AspectPreset, [number, number]> = {
   '9:16': [720, 1280],
   '1:1': [720, 720],
   '16:9': [1280, 720],
@@ -288,47 +283,6 @@ function even(value: number) {
   return rounded % 2 === 0 ? rounded : rounded - 1;
 }
 
-function withTimeout<T>(operation: Promise<T>, milliseconds: number, message: string) {
-  return new Promise<T>((resolve, reject) => {
-    const timeout = window.setTimeout(() => reject(new Error(message)), milliseconds);
-    operation.then(
-      (value) => {
-        window.clearTimeout(timeout);
-        resolve(value);
-      },
-      (error) => {
-        window.clearTimeout(timeout);
-        reject(error);
-      },
-    );
-  });
-}
-
-function withCancellation<T>(
-  operation: Promise<T>,
-  isCancelled: () => boolean,
-  message = '使用者已取消輸出',
-) {
-  return new Promise<T>((resolve, reject) => {
-    const poll = window.setInterval(() => {
-      if (!isCancelled()) return;
-      cleanup();
-      reject(new Error(message));
-    }, 100);
-    const cleanup = () => window.clearInterval(poll);
-    operation.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
-}
-
 function sourceOutputSize(video: HTMLVideoElement): [number, number] {
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
@@ -359,7 +313,7 @@ function configureOutputCanvas(
   [canvas.width, canvas.height] = OUTPUT_SIZES[operation.aspect];
 }
 
-export function interpolateBox(path: TrackPoint[], time: number): Box {
+function interpolateBox(path: TrackPoint[], time: number): Box {
   if (path.length === 0) return [0, 0, 1, 1];
   if (time <= path[0].time) return [...path[0].box] as Box;
   const last = path[path.length - 1];
@@ -522,7 +476,6 @@ function drawOutputFrame(
   operation: ExportOperation,
   filterRenderer: WebGLFilterRenderer | null,
   backgroundRenderer: PersonBackgroundRenderer | null,
-  backgroundTimeline: ModnetPreviewTimeline | null,
 ) {
   if (operation.kind === 'track') {
     drawTrackedFrame(video, canvas, path, time, operation.subjectScale);
@@ -533,6 +486,7 @@ function drawOutputFrame(
     return;
   }
   if (operation.kind === 'remove-background') {
+    if (!backgroundRenderer) throw new Error('人物去背模型尚未就緒');
     const trackedBox = interpolateBox(path, time);
     const crop = trackedFrameCrop(
       video.videoWidth,
@@ -541,19 +495,7 @@ function drawOutputFrame(
       canvas.width / canvas.height,
       operation.subjectScale,
     );
-    if (backgroundTimeline) {
-      backgroundTimeline.draw(
-        video,
-        canvas,
-        trackedBox,
-        operation.bodyTightness,
-        crop,
-        operation.blackOutline,
-      );
-      return;
-    }
-    if (!backgroundRenderer) throw new Error('人物去背模型尚未就緒');
-    backgroundRenderer.render(video, canvas, trackedBox, crop, operation.bodyTightness);
+    backgroundRenderer.render(video, canvas, trackedBox, crop);
     return;
   }
   if (!filterRenderer) throw new Error('濾鏡輸出器尚未就緒');
@@ -608,37 +550,8 @@ export class RealtimeVideoExporter {
       this.monitor.connect(this.audioContext.destination);
     }
     this.monitor!.gain.value = 0;
-    await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(
-        () => reject(new Error('Safari 啟用原聲逾時，請重新點一次輸出')),
-        6000,
-      );
-      this.audioContext!.resume().then(
-        () => {
-          window.clearTimeout(timeout);
-          resolve();
-        },
-        (error) => {
-          window.clearTimeout(timeout);
-          reject(error);
-        },
-      );
-    });
+    await this.audioContext.resume();
     return this.destination!.stream.getAudioTracks();
-  }
-
-  async unlockMediaForExport() {
-    const audioReady = this.prepareAudio();
-    const playbackReady = withTimeout(
-      this.video.play(),
-      6000,
-      'Safari 預先啟用影片播放逾時，請重新點一次輸出',
-    );
-    try {
-      await Promise.all([audioReady, playbackReady]);
-    } finally {
-      this.video.pause();
-    }
   }
 
   async export(
@@ -666,9 +579,7 @@ export class RealtimeVideoExporter {
       : null;
     const originalTime = this.video.currentTime;
     const originalRate = this.video.playbackRate;
-    options.onStage?.('audio');
-    const audioTracks = await withCancellation(this.prepareAudio(), options.isCancelled);
-    options.onStage?.('recorder');
+    const audioTracks = await this.prepareAudio();
     const canvasStream = canvas.captureStream(30);
     const stream = new MediaStream([
       ...canvasStream.getVideoTracks(),
@@ -694,31 +605,20 @@ export class RealtimeVideoExporter {
     let recorderStarted = false;
     let backgroundRenderer: PersonBackgroundRenderer | null = null;
     try {
-      if (options.operation.kind === 'remove-background' && !options.backgroundTimeline) {
+      if (options.operation.kind === 'remove-background') {
         const { PersonBackgroundRenderer: Renderer } = await import('./person-background-removal');
         backgroundRenderer = await Renderer.create();
       }
       this.video.pause();
-      options.onStage?.('seek');
-      await withCancellation(seek(this.video, 0), options.isCancelled);
+      await seek(this.video, 0);
       this.video.playbackRate = 1;
-      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer, backgroundRenderer, options.backgroundTimeline ?? null);
+      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer, backgroundRenderer);
       recorder.start(1000);
       recorderStarted = true;
-      options.onStage?.('playback');
 
       await new Promise<void>((resolve, reject) => {
         let finished = false;
-        const playbackTimeout = window.setTimeout(
-          () => settle(new Error('Safari 啟動影片編碼播放逾時，請重新點一次輸出')),
-          10000,
-        );
-        const cancelPoll = window.setInterval(() => {
-          if (options.isCancelled()) settle(new Error('使用者已取消輸出'));
-        }, 100);
         const cleanup = () => {
-          window.clearTimeout(playbackTimeout);
-          window.clearInterval(cancelPoll);
           this.video.removeEventListener('ended', ended);
           this.video.removeEventListener('error', failed);
           if (frameCallback && 'cancelVideoFrameCallback' in this.video) {
@@ -734,14 +634,13 @@ export class RealtimeVideoExporter {
           else resolve();
         };
         const render = (mediaTime: number) => {
-          window.clearTimeout(playbackTimeout);
           if (options.isCancelled()) {
             this.video.pause();
             settle(new Error('使用者已取消輸出'));
             return false;
           }
           try {
-            drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation, filterRenderer, backgroundRenderer, options.backgroundTimeline ?? null);
+            drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation, filterRenderer, backgroundRenderer);
             options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
             return true;
           } catch (error) {
@@ -759,7 +658,6 @@ export class RealtimeVideoExporter {
           animationFrame = requestAnimationFrame(animation);
         };
         const ended = () => {
-          window.clearTimeout(playbackTimeout);
           render(this.video.duration);
           settle();
         };
