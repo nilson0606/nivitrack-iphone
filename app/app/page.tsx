@@ -20,7 +20,12 @@ import {
   RecorderSupport,
   TrackPoint,
 } from '../lib/video-export';
-import type { PersonBackgroundRenderer } from '../lib/person-background-removal';
+import type {
+  BackgroundFillMode,
+  CloneLayout,
+  PersonBackgroundEffects,
+  PersonBackgroundRenderer,
+} from '../lib/person-background-removal';
 
 type Capability = {
   label: string;
@@ -69,7 +74,16 @@ const TOOL_CHOICES: ToolChoice[] = [
   { id: 'crop-16-9', group: '裁切', name: '橫式 16:9', detail: '標準寬螢幕比例', fileTag: '16x9' },
   { id: 'crop-free', group: '裁切', name: '自由裁切', detail: '手指框出任意範圍', fileTag: 'FreeCrop' },
   { id: 'track', group: '鎖定', name: '主角鎖定置中', detail: 'ViT 追蹤人物或寵物', fileTag: 'SubjectLock' },
-  { id: 'remove-background', group: '去背', name: '單一舞者去背', detail: '只留選定舞者，背景純黑', fileTag: 'SoloBlack' },
+  { id: 'remove-background', group: '去背', name: '單一舞者去背', detail: '去背後加入背景、外框與分身', fileTag: 'SoloFX' },
+];
+
+const BACKGROUND_COLORS = [
+  { name: '黑', value: '#000000' },
+  { name: '白', value: '#ffffff' },
+  { name: '萊姆', value: '#d9f06f' },
+  { name: '藍', value: '#2563eb' },
+  { name: '粉', value: '#ec4899' },
+  { name: '紫', value: '#7c3aed' },
 ];
 
 function filterPresetFor(tool: ToolId | null): FilterPreset | null {
@@ -191,6 +205,13 @@ export default function Home() {
   const [aspect, setAspect] = useState<AspectPreset>('9:16');
   const [subjectScale, setSubjectScale] = useState(0.55);
   const [smoothness, setSmoothness] = useState(0.72);
+  const [backgroundMode, setBackgroundMode] = useState<BackgroundFillMode>('color');
+  const [backgroundColor, setBackgroundColor] = useState('#000000');
+  const [backgroundBlur, setBackgroundBlur] = useState(18);
+  const [outlineColor, setOutlineColor] = useState('#d9f06f');
+  const [outlineWidth, setOutlineWidth] = useState(0);
+  const [cloneCount, setCloneCount] = useState(0);
+  const [cloneLayout, setCloneLayout] = useState<CloneLayout>('trail');
   const [recorderSupport, setRecorderSupport] = useState<RecorderSupport>({
     h264: null,
     hevc: null,
@@ -281,6 +302,18 @@ export default function Home() {
     setBackgroundPreviewReady(false);
   }
 
+  function getBackgroundEffects(): PersonBackgroundEffects {
+    return {
+      backgroundMode,
+      backgroundColor,
+      backgroundBlur,
+      outlineColor,
+      outlineWidth,
+      cloneCount,
+      cloneLayout,
+    };
+  }
+
   function chooseVideo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -305,6 +338,13 @@ export default function Home() {
     setAspect('9:16');
     setSubjectScale(0.55);
     setSmoothness(0.72);
+    setBackgroundMode('color');
+    setBackgroundColor('#000000');
+    setBackgroundBlur(18);
+    setOutlineColor('#d9f06f');
+    setOutlineWidth(0);
+    setCloneCount(0);
+    setCloneLayout('trail');
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
@@ -345,6 +385,13 @@ export default function Home() {
     setAspect('9:16');
     setSubjectScale(0.55);
     setSmoothness(0.72);
+    setBackgroundMode('color');
+    setBackgroundColor('#000000');
+    setBackgroundBlur(18);
+    setOutlineColor('#d9f06f');
+    setOutlineWidth(0);
+    setCloneCount(0);
+    setCloneLayout('trail');
     setCropBox(null);
     resetExportResult();
     if (tool === 'track' || tool === 'remove-background') {
@@ -795,7 +842,7 @@ export default function Home() {
     video.currentTime = preview.startTime;
     setPhase('previewing');
     setProgress(0);
-    setNotice('正在播放 3 秒純黑背景預覽…');
+    setNotice('正在播放 3 秒去背特效預覽…');
 
     let finished = false;
     let cleanupListeners = () => {};
@@ -826,7 +873,7 @@ export default function Home() {
         return;
       }
       try {
-        renderer.render(video, canvas, previewBoxAt(preview.path, mediaTime));
+        renderer.render(video, canvas, previewBoxAt(preview.path, mediaTime), undefined, getBackgroundEffects());
         setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
         if (mediaTime >= preview.endTime - 0.01) finish();
       } catch (error) {
@@ -1026,7 +1073,13 @@ export default function Home() {
     } else if (selectedTool === 'track') {
       operation = { kind: 'track', aspect, subjectScale, smoothness };
     } else if (selectedTool === 'remove-background') {
-      operation = { kind: 'remove-background', aspect, subjectScale, smoothness };
+      operation = {
+        kind: 'remove-background',
+        aspect,
+        subjectScale,
+        smoothness,
+        effects: getBackgroundEffects(),
+      };
     }
     if (!video || !renderCanvas || !operation) {
       setNotice('請先選擇一項後製功能');
@@ -1132,6 +1185,148 @@ export default function Home() {
     transform: cropPreviewActive ? `scale(${cropZoom})` : undefined,
   };
   const step = !videoInfo ? 1 : selectedTool === null ? 2 : 3;
+  const effectsBusy = phase === 'tracking' || phase === 'previewing' || phase === 'exporting';
+  const backgroundEffectPanel = selectedTool === 'remove-background' && videoInfo ? (
+    <section className="effect-panel" aria-label="去背後製特效">
+      <div className="effect-heading">
+        <div>
+          <span>去背完成後套用</span>
+          <strong>背景、外框與分身</strong>
+        </div>
+        <b>本機後製</b>
+      </div>
+
+      <div className="effect-block">
+        <div className="effect-label"><b>背景</b><em>{backgroundMode === 'color' ? '純色' : '模糊原片'}</em></div>
+        <div className="effect-options two">
+          <button
+            className={backgroundMode === 'color' ? 'selected' : ''}
+            type="button"
+            disabled={effectsBusy}
+            aria-pressed={backgroundMode === 'color'}
+            onClick={() => setBackgroundMode('color')}
+          >
+            背景顏色
+          </button>
+          <button
+            className={backgroundMode === 'blur' ? 'selected' : ''}
+            type="button"
+            disabled={effectsBusy}
+            aria-pressed={backgroundMode === 'blur'}
+            onClick={() => setBackgroundMode('blur')}
+          >
+            模糊原片
+          </button>
+        </div>
+        {backgroundMode === 'color' ? (
+          <div className="effect-swatches" aria-label="背景顏色">
+            {BACKGROUND_COLORS.map((color) => (
+              <button
+                className={backgroundColor === color.value ? 'selected' : ''}
+                type="button"
+                key={color.value}
+                disabled={effectsBusy}
+                aria-label={color.name + '色背景'}
+                aria-pressed={backgroundColor === color.value}
+                style={{ backgroundColor: color.value }}
+                onClick={() => setBackgroundColor(color.value)}
+              />
+            ))}
+            <label className="color-picker">
+              <input
+                type="color"
+                value={backgroundColor}
+                disabled={effectsBusy}
+                aria-label="自訂背景顏色"
+                onChange={(event) => setBackgroundColor(event.target.value)}
+              />
+              <span>自訂</span>
+            </label>
+          </div>
+        ) : (
+          <label className="range-control compact">
+            <span><b>模糊程度</b><em>{backgroundBlur}px</em></span>
+            <input
+              type="range"
+              min="4"
+              max="36"
+              value={backgroundBlur}
+              disabled={effectsBusy}
+              onChange={(event) => setBackgroundBlur(Number(event.target.value))}
+            />
+          </label>
+        )}
+      </div>
+
+      <div className="effect-block">
+        <div className="effect-label"><b>人物外框</b><em>{outlineWidth === 0 ? '無框' : outlineWidth + 'px'}</em></div>
+        <div className="outline-controls">
+          <label className="color-picker outline-picker">
+            <input
+              type="color"
+              value={outlineColor}
+              disabled={effectsBusy || outlineWidth === 0}
+              aria-label="自訂外框顏色"
+              onChange={(event) => setOutlineColor(event.target.value)}
+            />
+            <span>外框顏色</span>
+          </label>
+          <label className="range-control compact">
+            <span><b>厚度</b><em>{outlineWidth === 0 ? '無框' : outlineWidth + 'px'}</em></span>
+            <input
+              type="range"
+              min="0"
+              max="24"
+              value={outlineWidth}
+              disabled={effectsBusy}
+              onChange={(event) => setOutlineWidth(Number(event.target.value))}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="effect-block">
+        <div className="effect-label"><b>分身</b><em>{cloneCount === 0 ? '關閉' : cloneCount + ' 人'}</em></div>
+        <div className="effect-options five" aria-label="分身數量">
+          {[0, 1, 2, 3, 4].map((count) => (
+            <button
+              className={cloneCount === count ? 'selected' : ''}
+              type="button"
+              key={count}
+              disabled={effectsBusy}
+              aria-pressed={cloneCount === count}
+              onClick={() => setCloneCount(count)}
+            >
+              {count}
+            </button>
+          ))}
+        </div>
+        {cloneCount > 0 && (
+          <div className="effect-options two">
+            <button
+              className={cloneLayout === 'trail' ? 'selected' : ''}
+              type="button"
+              disabled={effectsBusy}
+              aria-pressed={cloneLayout === 'trail'}
+              onClick={() => setCloneLayout('trail')}
+            >
+              前後殘影
+            </button>
+            <button
+              className={cloneLayout === 'row' ? 'selected' : ''}
+              type="button"
+              disabled={effectsBusy}
+              aria-pressed={cloneLayout === 'row'}
+              onClick={() => setCloneLayout('row')}
+            >
+              左右併排
+            </button>
+          </div>
+        )}
+      </div>
+      <p className="effect-note">處理順序：先去背，再加外框與分身，最後合成背景。</p>
+    </section>
+  ) : null;
 
   return (
     <main className="app-shell">
@@ -1204,12 +1399,12 @@ export default function Home() {
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectionPlaying ? '播放中 · 暫停後框選' : selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'previewing' ? '3 秒純黑背景預覽' : phase === 'exporting' ? (selectedTool === 'remove-background' ? 'MediaPipe 本機去背' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
+                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectionPlaying ? '播放中 · 暫停後框選' : selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'previewing' ? '3 秒去背特效預覽' : phase === 'exporting' ? (selectedTool === 'remove-background' ? '去背與特效合成' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'previewing' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>{phase === 'exporting' ? '保留原聲' : phase === 'previewing' ? '純黑背景預覽' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
+                    <span>{phase === 'exporting' ? '保留原聲' : phase === 'previewing' ? '去背後製預覽' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
                   </div>
                 )}
               </div>
@@ -1262,6 +1457,7 @@ export default function Home() {
                   </>
                 )}
               </div>
+              {backgroundEffectPanel}
               {(phase === 'choose' || phase === 'tool-ready') && videoInfo && (
                 <section className="tool-panel" aria-label="選擇一項影片後製功能">
                   <div className="tool-heading">
@@ -1373,7 +1569,13 @@ export default function Home() {
                     <>
                       <div className="crop-summary">
                         <span>輸出方式</span>
-                        <strong>放大並置中選定舞者 · 其餘畫面為純黑</strong>
+                        <strong>
+                          {backgroundMode === 'color' ? '背景顏色' : '模糊原片'}
+                          {' · '}
+                          {outlineWidth === 0 ? '無框' : outlineWidth + 'px 外框'}
+                          {' · '}
+                          {cloneCount === 0 ? '無分身' : cloneCount + ' 人' + (cloneLayout === 'trail' ? '前後殘影' : '左右併排')}
+                        </strong>
                       </div>
                       <div className="background-preview-actions">
                         <button
@@ -1454,7 +1656,7 @@ export default function Home() {
 
                   {selectedTool === 'remove-background' && (
                     <p className="export-note">
-                      遮罩會柔性內縮並抑制單幀閃漏；推論、去背、放大置中與原聲合成都只在這台 iPhone 執行。主角手持物品會視為背景移除。
+                      先完成原本的人物去背，再套用背景、外框與分身；推論、後製、放大置中與原聲合成都只在這台 iPhone 執行。
                     </p>
                   )}
 

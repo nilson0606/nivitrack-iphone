@@ -1,5 +1,5 @@
 import type { Box } from './vit-tracker';
-import type { PersonBackgroundRenderer } from './person-background-removal';
+import type { PersonBackgroundEffects, PersonBackgroundRenderer } from './person-background-removal';
 
 export type AspectPreset = '9:16' | '1:1' | '16:9';
 
@@ -30,6 +30,7 @@ export type ExportOperation =
       aspect: AspectPreset;
       subjectScale: number;
       smoothness: number;
+      effects: PersonBackgroundEffects;
     };
 
 export type TrackPoint = {
@@ -495,7 +496,7 @@ function drawOutputFrame(
       canvas.width / canvas.height,
       operation.subjectScale,
     );
-    backgroundRenderer.render(video, canvas, trackedBox, crop);
+    backgroundRenderer.render(video, canvas, trackedBox, crop, operation.effects);
     return;
   }
   if (!filterRenderer) throw new Error('濾鏡輸出器尚未就緒');

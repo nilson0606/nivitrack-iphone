@@ -5,6 +5,39 @@ import type { Box } from './vit-tracker';
 const LOW_CONFIDENCE_LIMIT = 0.12;
 const MAX_MISSED_FRAMES = 12;
 const INFERENCE_SIZE = 256;
+const TRAIL_CAPTURE_INTERVAL = 3;
+const MAX_TRAIL_SNAPSHOT_SIZE = 480;
+
+export type BackgroundFillMode = 'color' | 'blur';
+export type CloneLayout = 'trail' | 'row';
+
+export type PersonBackgroundEffects = {
+  backgroundMode: BackgroundFillMode;
+  backgroundColor: string;
+  backgroundBlur: number;
+  outlineColor: string;
+  outlineWidth: number;
+  cloneCount: number;
+  cloneLayout: CloneLayout;
+};
+
+export const DEFAULT_PERSON_BACKGROUND_EFFECTS: PersonBackgroundEffects = {
+  backgroundMode: 'color',
+  backgroundColor: '#000000',
+  backgroundBlur: 18,
+  outlineColor: '#d9f06f',
+  outlineWidth: 0,
+  cloneCount: 0,
+  cloneLayout: 'trail',
+};
+
+type TrailFrame = {
+  canvas: HTMLCanvasElement;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -244,10 +277,14 @@ export class PersonBackgroundRenderer {
   private readonly inferenceCanvas = document.createElement('canvas');
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
+  private readonly backgroundCanvas = document.createElement('canvas');
   private previousAlpha: Float32Array | null = null;
   private pendingAlpha: Float32Array | null = null;
   private timestamp = 0;
   private missedFrames = 0;
+  private trailCaptureTick = 0;
+  private trailFrames: TrailFrame[] = [];
+  private lastCloneLayout: CloneLayout = 'trail';
 
   private constructor(segmenter: ImageSegmenter) {
     this.segmenter = segmenter;
@@ -275,7 +312,208 @@ export class PersonBackgroundRenderer {
     }
   }
 
-  render(video: HTMLVideoElement, outputCanvas: HTMLCanvasElement, box: Box, crop?: Box) {
+  private clearTrailFrames() {
+    for (const frame of this.trailFrames) {
+      frame.canvas.width = 1;
+      frame.canvas.height = 1;
+    }
+    this.trailFrames = [];
+    this.trailCaptureTick = 0;
+  }
+
+  private drawBackdrop(
+    video: HTMLVideoElement,
+    context: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    crop: Box,
+    effects: PersonBackgroundEffects,
+  ) {
+    context.save();
+    context.globalCompositeOperation = 'source-over';
+    context.filter = 'none';
+    context.globalAlpha = 1;
+    context.fillStyle = effects.backgroundColor;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    if (effects.backgroundMode === 'blur') {
+      const blur = clamp(effects.backgroundBlur, 4, 36);
+      const maxSide = Math.round(320 - ((blur - 4) / 32) * 240);
+      const scale = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
+      const blurredWidth = Math.max(24, Math.round(canvas.width * scale));
+      const blurredHeight = Math.max(24, Math.round(canvas.height * scale));
+      if (this.backgroundCanvas.width !== blurredWidth || this.backgroundCanvas.height !== blurredHeight) {
+        this.backgroundCanvas.width = blurredWidth;
+        this.backgroundCanvas.height = blurredHeight;
+      }
+      const backgroundContext = this.backgroundCanvas.getContext('2d', { alpha: false });
+      if (!backgroundContext) throw new Error('Safari 無法建立模糊背景畫布');
+      backgroundContext.imageSmoothingEnabled = true;
+      backgroundContext.drawImage(
+        video,
+        crop[0],
+        crop[1],
+        crop[2],
+        crop[3],
+        0,
+        0,
+        blurredWidth,
+        blurredHeight,
+      );
+      context.imageSmoothingEnabled = true;
+      context.drawImage(this.backgroundCanvas, 0, 0, blurredWidth, blurredHeight, 0, 0, canvas.width, canvas.height);
+      context.fillStyle = 'rgba(0,0,0,.24)';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    context.restore();
+  }
+
+  private drawStyledSubject(
+    context: CanvasRenderingContext2D,
+    source: CanvasImageSource,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    effects: PersonBackgroundEffects,
+    opacity = 1,
+  ) {
+    context.save();
+    context.globalCompositeOperation = 'source-over';
+    context.globalAlpha = clamp(opacity, 0, 1);
+    context.filter = 'none';
+    context.imageSmoothingEnabled = true;
+    const outlineWidth = clamp(effects.outlineWidth, 0, 28);
+    if (outlineWidth > 0) {
+      context.shadowColor = effects.outlineColor;
+      context.shadowBlur = outlineWidth * 1.55;
+      context.drawImage(source, x, y, width, height);
+      context.shadowBlur = Math.max(1, outlineWidth * 0.7);
+      context.drawImage(source, x, y, width, height);
+      context.shadowColor = 'transparent';
+      context.shadowBlur = 0;
+    }
+    context.drawImage(source, x, y, width, height);
+    context.restore();
+  }
+
+  private captureTrailFrame(x: number, y: number, width: number, height: number) {
+    this.trailCaptureTick += 1;
+    if (this.trailCaptureTick % TRAIL_CAPTURE_INTERVAL !== 0) return;
+    const left = clamp(Math.floor(x), 0, this.subjectCanvas.width);
+    const top = clamp(Math.floor(y), 0, this.subjectCanvas.height);
+    const right = clamp(Math.ceil(x + width), left, this.subjectCanvas.width);
+    const bottom = clamp(Math.ceil(y + height), top, this.subjectCanvas.height);
+    const clippedWidth = right - left;
+    const clippedHeight = bottom - top;
+    if (clippedWidth < 2 || clippedHeight < 2) return;
+
+    const scale = Math.min(1, MAX_TRAIL_SNAPSHOT_SIZE / Math.max(clippedWidth, clippedHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(2, Math.round(clippedWidth * scale));
+    canvas.height = Math.max(2, Math.round(clippedHeight * scale));
+    const context = canvas.getContext('2d', { alpha: true });
+    if (!context) return;
+    context.drawImage(
+      this.subjectCanvas,
+      left,
+      top,
+      clippedWidth,
+      clippedHeight,
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    );
+    this.trailFrames.unshift({ canvas, x: left, y: top, width: clippedWidth, height: clippedHeight });
+    while (this.trailFrames.length > 4) {
+      const removed = this.trailFrames.pop();
+      if (removed) {
+        removed.canvas.width = 1;
+        removed.canvas.height = 1;
+      }
+    }
+  }
+
+  private compositeEffects(
+    video: HTMLVideoElement,
+    outputCanvas: HTMLCanvasElement,
+    crop: Box,
+    subjectBounds: Box,
+    effects: PersonBackgroundEffects,
+  ) {
+    const outputContext = outputCanvas.getContext('2d', { alpha: false });
+    if (!outputContext) throw new Error('Safari 無法建立人物特效合成畫布');
+    this.drawBackdrop(video, outputContext, outputCanvas, crop, effects);
+
+    const cloneCount = Math.round(clamp(effects.cloneCount, 0, 4));
+    if (effects.cloneLayout !== this.lastCloneLayout) {
+      this.clearTrailFrames();
+      this.lastCloneLayout = effects.cloneLayout;
+    }
+
+    if (effects.cloneLayout === 'row' && cloneCount > 0) {
+      this.clearTrailFrames();
+      const total = cloneCount + 1;
+      const scale = Math.max(0.46, 1 - cloneCount * 0.13);
+      const spacing = outputCanvas.width * (total <= 2 ? 0.28 : 0.19);
+      const firstCenter = outputCanvas.width / 2 - spacing * (total - 1) / 2;
+      for (let index = 0; index < total; index += 1) {
+        const destinationWidth = outputCanvas.width * scale;
+        const destinationHeight = outputCanvas.height * scale;
+        const destinationX = firstCenter + spacing * index - destinationWidth / 2;
+        const destinationY = (outputCanvas.height - destinationHeight) / 2;
+        const isMiddle = Math.abs(index - (total - 1) / 2) < 0.51;
+        this.drawStyledSubject(
+          outputContext,
+          this.subjectCanvas,
+          destinationX,
+          destinationY,
+          destinationWidth,
+          destinationHeight,
+          effects,
+          isMiddle ? 1 : 0.9,
+        );
+      }
+      return;
+    }
+
+    if (effects.cloneLayout === 'trail' && cloneCount > 0) {
+      const frames = this.trailFrames.slice(0, cloneCount).reverse();
+      for (let index = 0; index < frames.length; index += 1) {
+        const frame = frames[index];
+        const depth = frames.length - index;
+        const scale = 1 - depth * 0.035;
+        const width = frame.width * scale;
+        const height = frame.height * scale;
+        const x = frame.x + (frame.width - width) / 2 - depth * outputCanvas.width * 0.018;
+        const y = frame.y + (frame.height - height) / 2 + depth * outputCanvas.height * 0.007;
+        const opacity = 0.22 + (index / Math.max(1, frames.length)) * 0.48;
+        this.drawStyledSubject(outputContext, frame.canvas, x, y, width, height, effects, opacity);
+      }
+    } else if (cloneCount === 0) {
+      this.clearTrailFrames();
+    }
+
+    this.drawStyledSubject(
+      outputContext,
+      this.subjectCanvas,
+      0,
+      0,
+      outputCanvas.width,
+      outputCanvas.height,
+      effects,
+    );
+    if (effects.cloneLayout === 'trail' && cloneCount > 0) {
+      this.captureTrailFrame(subjectBounds[0], subjectBounds[1], subjectBounds[2], subjectBounds[3]);
+    }
+  }
+
+  render(
+    video: HTMLVideoElement,
+    outputCanvas: HTMLCanvasElement,
+    box: Box,
+    crop?: Box,
+    effects: PersonBackgroundEffects = DEFAULT_PERSON_BACKGROUND_EFFECTS,
+  ) {
     if (!video.videoWidth || !video.videoHeight) return;
     const [regionX, regionY, regionWidth, regionHeight] = trackedSubjectRegion(
       box,
@@ -362,12 +600,12 @@ export class PersonBackgroundRenderer {
     maskContext.putImageData(image, 0, 0);
 
     if (this.subjectCanvas.width !== outputCanvas.width || this.subjectCanvas.height !== outputCanvas.height) {
+      this.clearTrailFrames();
       this.subjectCanvas.width = outputCanvas.width;
       this.subjectCanvas.height = outputCanvas.height;
     }
     const subjectContext = this.subjectCanvas.getContext('2d', { alpha: true });
-    const outputContext = outputCanvas.getContext('2d', { alpha: false });
-    if (!subjectContext || !outputContext) throw new Error('Safari 無法建立人物去背合成畫布');
+    if (!subjectContext) throw new Error('Safari 無法建立人物去背合成畫布');
 
     subjectContext.globalCompositeOperation = 'source-over';
     subjectContext.clearRect(0, 0, this.subjectCanvas.width, this.subjectCanvas.height);
@@ -399,20 +637,26 @@ export class PersonBackgroundRenderer {
     );
     subjectContext.globalCompositeOperation = 'source-over';
 
-    outputContext.fillStyle = '#000';
-    outputContext.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
-    outputContext.drawImage(this.subjectCanvas, 0, 0);
+    this.compositeEffects(
+      video,
+      outputCanvas,
+      [cropX, cropY, cropWidth, cropHeight],
+      [destinationX, destinationY, destinationWidth, destinationHeight],
+      effects,
+    );
   }
 
   close() {
     this.segmenter.close();
     this.previousAlpha = null;
     this.pendingAlpha = null;
+    this.clearTrailFrames();
   }
 
   reset() {
     this.previousAlpha = null;
     this.pendingAlpha = null;
     this.missedFrames = 0;
+    this.clearTrailFrames();
   }
 }
