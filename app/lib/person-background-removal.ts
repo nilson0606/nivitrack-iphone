@@ -363,6 +363,186 @@ export function stabilizeTrackedSubjectAlpha(
   return stabilized;
 }
 
+export type StrictSubjectLockResult = {
+  alpha: Float32Array;
+  referenceArea: number;
+  retainedPixels: number;
+  rejectedPixels: number;
+};
+
+function countVisiblePixels(alpha: Float32Array, threshold = 0.035) {
+  let count = 0;
+  for (let index = 0; index < alpha.length; index += 1) {
+    if (alpha[index] >= threshold) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Keeps the accepted subject attached to the previously tracked silhouette.
+ * MediaPipe returns a person-category mask rather than separate person
+ * instances, so two touching people can otherwise become one growing blob.
+ */
+export function lockTrackedSubjectIdentity(
+  currentAlpha: Float32Array,
+  previousAlpha: Float32Array | null,
+  width: number,
+  height: number,
+  referenceArea = 0,
+  motionRatio = 0,
+): StrictSubjectLockResult {
+  const pixelCount = width * height;
+  if (currentAlpha.length !== pixelCount) throw new Error('單人鎖定遮罩尺寸不正確');
+  const currentPixels = countVisiblePixels(currentAlpha);
+  const hasPrevious = previousAlpha?.length === pixelCount;
+  const previousPixels = hasPrevious ? countVisiblePixels(previousAlpha!) : 0;
+  if (!hasPrevious || previousPixels < 8) {
+    return {
+      alpha: new Float32Array(currentAlpha),
+      referenceArea: Math.max(1, currentPixels),
+      retainedPixels: currentPixels,
+      rejectedPixels: 0,
+    };
+  }
+  if (currentPixels < 8) {
+    return {
+      alpha: new Float32Array(currentAlpha),
+      referenceArea: Math.max(1, referenceArea || previousPixels),
+      retainedPixels: currentPixels,
+      rejectedPixels: 0,
+    };
+  }
+
+  const safeMotion = clamp(motionRatio, 0, 1);
+  const growthRadius = Math.round(7 + safeMotion * 11);
+  const unreachable = width + height + 1;
+  const distance = new Uint16Array(pixelCount);
+  distance.fill(unreachable);
+  for (let index = 0; index < pixelCount; index += 1) {
+    if (previousAlpha![index] >= 0.035) distance[index] = 0;
+  }
+
+  // Eight-neighbour distance transform. This is linear in the 256x256 mask
+  // and is considerably cheaper than another neural-network pass.
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      let best = distance[index];
+      if (x > 0) best = Math.min(best, distance[index - 1] + 1);
+      if (y > 0) {
+        best = Math.min(best, distance[index - width] + 1);
+        if (x > 0) best = Math.min(best, distance[index - width - 1] + 1);
+        if (x + 1 < width) best = Math.min(best, distance[index - width + 1] + 1);
+      }
+      distance[index] = best;
+    }
+  }
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = width - 1; x >= 0; x -= 1) {
+      const index = y * width + x;
+      let best = distance[index];
+      if (x + 1 < width) best = Math.min(best, distance[index + 1] + 1);
+      if (y + 1 < height) {
+        best = Math.min(best, distance[index + width] + 1);
+        if (x > 0) best = Math.min(best, distance[index + width - 1] + 1);
+        if (x + 1 < width) best = Math.min(best, distance[index + width + 1] + 1);
+      }
+      distance[index] = best;
+    }
+  }
+
+  const stableReference = referenceArea > 0 ? referenceArea : previousPixels;
+  const maximumArea = Math.ceil(stableReference * (1.42 + safeMotion * 0.2));
+  const layerCounts = new Uint32Array(growthRadius + 1);
+  let candidates = 0;
+  for (let index = 0; index < pixelCount; index += 1) {
+    if (currentAlpha[index] < 0.035) continue;
+    const layer = distance[index];
+    if (layer > growthRadius) continue;
+    layerCounts[layer] += 1;
+    candidates += 1;
+  }
+
+  let boundaryLayer = growthRadius;
+  let pixelsBeforeBoundary = 0;
+  for (let layer = 0; layer <= growthRadius; layer += 1) {
+    if (pixelsBeforeBoundary + layerCounts[layer] >= maximumArea) {
+      boundaryLayer = layer;
+      break;
+    }
+    pixelsBeforeBoundary += layerCounts[layer];
+  }
+  const boundaryBudget = Math.max(0, maximumArea - pixelsBeforeBoundary);
+  const boundaryHistogram = new Uint32Array(16);
+  if (candidates > maximumArea) {
+    for (let index = 0; index < pixelCount; index += 1) {
+      if (distance[index] !== boundaryLayer || currentAlpha[index] < 0.035) continue;
+      const bin = clamp(Math.floor(currentAlpha[index] * 15), 0, 15);
+      boundaryHistogram[bin] += 1;
+    }
+  }
+  let boundaryBin = 0;
+  let pixelsAboveBoundaryBin = 0;
+  if (candidates > maximumArea) {
+    for (let bin = 15; bin >= 0; bin -= 1) {
+      if (pixelsAboveBoundaryBin + boundaryHistogram[bin] >= boundaryBudget) {
+        boundaryBin = bin;
+        break;
+      }
+      pixelsAboveBoundaryBin += boundaryHistogram[bin];
+    }
+  }
+  let boundaryBinBudget = Math.max(0, boundaryBudget - pixelsAboveBoundaryBin);
+  const locked = new Float32Array(pixelCount);
+  let retainedPixels = 0;
+  for (let index = 0; index < pixelCount; index += 1) {
+    const alpha = currentAlpha[index];
+    if (alpha < 0.035 || distance[index] > growthRadius) continue;
+    let keep = candidates <= maximumArea || distance[index] < boundaryLayer;
+    if (!keep && distance[index] === boundaryLayer) {
+      const bin = clamp(Math.floor(alpha * 15), 0, 15);
+      if (bin > boundaryBin) keep = true;
+      else if (bin === boundaryBin && boundaryBinBudget > 0) {
+        keep = true;
+        boundaryBinBudget -= 1;
+      }
+    }
+    if (!keep) continue;
+    locked[index] = alpha;
+    retainedPixels += 1;
+  }
+
+  // Do not let a long-lived passer-by slowly inflate the identity baseline.
+  // Normal pose changes below 18% can still update it gradually.
+  let nextReference = stableReference;
+  if (retainedPixels >= stableReference * 0.68 && retainedPixels <= stableReference * 1.18) {
+    nextReference = stableReference * 0.95 + retainedPixels * 0.05;
+  }
+  return {
+    alpha: locked,
+    referenceArea: Math.max(1, nextReference),
+    retainedPixels,
+    rejectedPixels: Math.max(0, currentPixels - retainedPixels),
+  };
+}
+
+function trackedBoxMotion(previousBox: Box | null, currentBox: Box) {
+  if (!previousBox) return 0;
+  const previousCenterX = previousBox[0] + previousBox[2] / 2;
+  const previousCenterY = previousBox[1] + previousBox[3] / 2;
+  const currentCenterX = currentBox[0] + currentBox[2] / 2;
+  const currentCenterY = currentBox[1] + currentBox[3] / 2;
+  const centerDistance = Math.hypot(
+    currentCenterX - previousCenterX,
+    currentCenterY - previousCenterY,
+  ) / Math.max(2, Math.hypot(previousBox[2], previousBox[3]));
+  const sizeChange = Math.max(
+    Math.abs(Math.log(Math.max(2, currentBox[2]) / Math.max(2, previousBox[2]))),
+    Math.abs(Math.log(Math.max(2, currentBox[3]) / Math.max(2, previousBox[3]))),
+  );
+  return clamp(centerDistance * 2.4 + sizeChange * 1.4, 0, 1);
+}
+
 export class PersonBackgroundRenderer {
   private readonly segmenter: ImageSegmenter;
   private readonly inferenceCanvas = document.createElement('canvas');
@@ -380,6 +560,8 @@ export class PersonBackgroundRenderer {
   private trailCaptureTick = 0;
   private trailFrames: TrailFrame[] = [];
   private lastCloneLayout: CloneLayout = 'trail';
+  private previousBox: Box | null = null;
+  private subjectAreaReference = 0;
 
   private constructor(segmenter: ImageSegmenter) {
     this.segmenter = segmenter;
@@ -908,6 +1090,8 @@ export class PersonBackgroundRenderer {
     effects: PersonBackgroundEffects = DEFAULT_PERSON_BACKGROUND_EFFECTS,
   ) {
     if (!video.videoWidth || !video.videoHeight) return;
+    const motionRatio = trackedBoxMotion(this.previousBox, box);
+    this.previousBox = [...box];
     const [regionX, regionY, regionWidth, regionHeight] = trackedSubjectRegion(
       box,
       video.videoWidth,
@@ -970,6 +1154,16 @@ export class PersonBackgroundRenderer {
     if (recovered.fresh) {
       const freshAlpha = currentAlpha;
       currentAlpha = stabilizeTrackedSubjectAlpha(freshAlpha, this.previousAlpha, this.pendingAlpha);
+      const locked = lockTrackedSubjectIdentity(
+        currentAlpha,
+        this.previousAlpha,
+        maskWidth,
+        maskHeight,
+        this.subjectAreaReference,
+        motionRatio,
+      );
+      currentAlpha = locked.alpha;
+      this.subjectAreaReference = locked.referenceArea;
       this.pendingAlpha = new Float32Array(freshAlpha);
     } else {
       this.pendingAlpha = null;
@@ -1043,6 +1237,8 @@ export class PersonBackgroundRenderer {
     this.segmenter.close();
     this.previousAlpha = null;
     this.pendingAlpha = null;
+    this.previousBox = null;
+    this.subjectAreaReference = 0;
     this.outlineCloneCanvas.width = 1;
     this.outlineCloneCanvas.height = 1;
     this.rowSubjectCanvas.width = 1;
@@ -1059,6 +1255,8 @@ export class PersonBackgroundRenderer {
   reset() {
     this.previousAlpha = null;
     this.pendingAlpha = null;
+    this.previousBox = null;
+    this.subjectAreaReference = 0;
     this.missedFrames = 0;
     this.clearTrailFrames();
   }

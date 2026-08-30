@@ -1,5 +1,6 @@
 import {
   equalRowCloneFrames,
+  lockTrackedSubjectIdentity,
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
   smoothBackdropParameters,
@@ -141,6 +142,81 @@ function testAdjustableFraming() {
   };
 }
 
+function testStrictSubjectIdentityLock() {
+  const lockWidth = 32;
+  const lockHeight = 16;
+  const previous = new Float32Array(lockWidth * lockHeight);
+  for (let y = 3; y <= 12; y += 1) {
+    for (let x = 4; x <= 10; x += 1) previous[y * lockWidth + x] = 0.92;
+  }
+  const withPasserBy = new Float32Array(previous);
+  for (let y = 3; y <= 12; y += 1) {
+    for (let x = 11; x <= 25; x += 1) withPasserBy[y * lockWidth + x] = 0.9;
+  }
+  let locked = lockTrackedSubjectIdentity(
+    withPasserBy,
+    previous,
+    lockWidth,
+    lockHeight,
+    70,
+    0,
+  );
+  let farPasserPixels = 0;
+  let mainPixels = 0;
+  for (let y = 0; y < lockHeight; y += 1) {
+    for (let x = 0; x < lockWidth; x += 1) {
+      if (locked.alpha[y * lockWidth + x] < 0.035) continue;
+      if (x <= 10) mainPixels += 1;
+      if (x >= 16) farPasserPixels += 1;
+    }
+  }
+  for (let frame = 0; frame < 6; frame += 1) {
+    locked = lockTrackedSubjectIdentity(
+      withPasserBy,
+      locked.alpha,
+      lockWidth,
+      lockHeight,
+      locked.referenceArea,
+      0,
+    );
+  }
+  let sustainedFarPasserPixels = 0;
+  for (let y = 0; y < lockHeight; y += 1) {
+    for (let x = 16; x < lockWidth; x += 1) {
+      if (locked.alpha[y * lockWidth + x] >= 0.035) sustainedFarPasserPixels += 1;
+    }
+  }
+
+  const movedSubject = new Float32Array(lockWidth * lockHeight);
+  for (let y = 3; y <= 12; y += 1) {
+    for (let x = 7; x <= 13; x += 1) movedSubject[y * lockWidth + x] = 0.9;
+  }
+  const moved = lockTrackedSubjectIdentity(
+    movedSubject,
+    previous,
+    lockWidth,
+    lockHeight,
+    70,
+    0.5,
+  );
+  const weakFrame = lockTrackedSubjectIdentity(
+    new Float32Array(lockWidth * lockHeight),
+    previous,
+    lockWidth,
+    lockHeight,
+    70,
+    0,
+  );
+  return {
+    mainSubjectRetained: mainPixels === 70,
+    farPasserRejected: farPasserPixels === 0,
+    sustainedPasserCannotCreepIn: sustainedFarPasserPixels === 0,
+    suddenGrowthWasTrimmed: locked.rejectedPixels > 0,
+    normalMotionRetained: moved.retainedPixels === 70,
+    weakFrameKeepsIdentityBaseline: weakFrame.referenceArea === 70,
+  };
+}
+
 function testEqualRowCloneSizes() {
   const frames = equalRowCloneFrames(1080, 1920, 420, 980, 4);
   const oneClone = equalRowCloneFrames(1080, 1920, 420, 980, 1);
@@ -199,6 +275,7 @@ const lowConfidence = testLowConfidenceDancer();
 const recovery = testMissingFrameRecovery();
 const region = testTrackedRegion();
 const temporal = testTemporalStability();
+const strictIdentity = testStrictSubjectIdentityLock();
 const edges = testEdgeTightening();
 const framing = testAdjustableFraming();
 const rowClones = testEqualRowCloneSizes();
@@ -216,6 +293,12 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && temporal.oneFrameLeakRejected
   && temporal.confirmedSubjectAccepted
   && temporal.persistentSubjectRetained
+  && strictIdentity.mainSubjectRetained
+  && strictIdentity.farPasserRejected
+  && strictIdentity.sustainedPasserCannotCreepIn
+  && strictIdentity.suddenGrowthWasTrimmed
+  && strictIdentity.normalMotionRetained
+  && strictIdentity.weakFrameKeepsIdentityBaseline
   && edges.centerPreserved
   && edges.edgeFeathered
   && framing.largerSubjectUsesTighterCrop
@@ -243,6 +326,7 @@ console.log(JSON.stringify({
   recovery,
   region,
   temporal,
+  strictIdentity,
   edges,
   framing,
   rowClones,
