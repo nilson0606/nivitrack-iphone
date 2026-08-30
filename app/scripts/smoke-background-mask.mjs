@@ -1,12 +1,15 @@
 import {
+  chooseTrackedPoseMask,
   equalRowCloneFrames,
   lockTrackedSubjectIdentity,
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
   smoothBackdropParameters,
+  stabilizeTrackedPoseAlpha,
   stabilizeTrackedSubjectAlpha,
   tightenTrackedSubjectEdges,
   trackedBackdropPatch,
+  trackedPoseAlpha,
   trackedSubjectRegion,
 } from '../lib/person-background-removal.ts';
 import { trackedFrameCrop } from '../lib/video-export.ts';
@@ -230,6 +233,37 @@ function testStrictSubjectIdentityLock() {
   };
 }
 
+function testPoseInstanceIdentity() {
+  const poseWidth = 24;
+  const poseHeight = 12;
+  const main = new Float32Array(poseWidth * poseHeight);
+  const passer = new Float32Array(poseWidth * poseHeight);
+  for (let y = 2; y <= 9; y += 1) {
+    for (let x = 4; x <= 9; x += 1) main[y * poseWidth + x] = 0.92;
+    for (let x = 13; x <= 18; x += 1) passer[y * poseWidth + x] = 0.94;
+  }
+  const selected = chooseTrackedPoseMask([
+    { alpha: main, width: poseWidth, height: poseHeight, centerX: 0.28, centerY: 0.5 },
+    { alpha: passer, width: poseWidth, height: poseHeight, centerX: 0.66, centerY: 0.5 },
+  ], [15, 5, 35, 90], 100, 100, null);
+
+  const continuitySelected = chooseTrackedPoseMask([
+    { alpha: main, width: poseWidth, height: poseHeight, centerX: 0.46, centerY: 0.5 },
+    { alpha: passer, width: poseWidth, height: poseHeight, centerX: 0.5, centerY: 0.5 },
+  ], [30, 5, 40, 90], 100, 100, main);
+
+  const tracked = trackedPoseAlpha(main, poseWidth, poseHeight, [10, 0, 45, 100], 100, 100);
+  const newHand = new Float32Array(4);
+  newHand[3] = 0.9;
+  const gentleTemporal = stabilizeTrackedPoseAlpha(newHand, new Float32Array(4));
+  return {
+    trackedBoxChoosesMainInstance: selected?.alpha === main,
+    previousMaskKeepsIdentity: continuitySelected?.alpha === main,
+    poseMaskRetainsSubject: tracked.some((value) => value > 0.5),
+    newLimbAppearsImmediately: gentleTemporal[3] > 0.7,
+  };
+}
+
 function testEqualRowCloneSizes() {
   const frames = equalRowCloneFrames(1080, 1920, 420, 980, 4);
   const oneClone = equalRowCloneFrames(1080, 1920, 420, 980, 1);
@@ -289,6 +323,7 @@ const recovery = testMissingFrameRecovery();
 const region = testTrackedRegion();
 const temporal = testTemporalStability();
 const strictIdentity = testStrictSubjectIdentityLock();
+const poseIdentity = testPoseInstanceIdentity();
 const edges = testEdgeTightening();
 const framing = testAdjustableFraming();
 const rowClones = testEqualRowCloneSizes();
@@ -313,6 +348,10 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && strictIdentity.normalMotionRetained
   && strictIdentity.attachedThinLimbRetained
   && strictIdentity.weakFrameKeepsIdentityBaseline
+  && poseIdentity.trackedBoxChoosesMainInstance
+  && poseIdentity.previousMaskKeepsIdentity
+  && poseIdentity.poseMaskRetainsSubject
+  && poseIdentity.newLimbAppearsImmediately
   && edges.centerPreserved
   && edges.edgeFeathered
   && framing.largerSubjectUsesTighterCrop
@@ -341,6 +380,7 @@ console.log(JSON.stringify({
   region,
   temporal,
   strictIdentity,
+  poseIdentity,
   edges,
   framing,
   rowClones,

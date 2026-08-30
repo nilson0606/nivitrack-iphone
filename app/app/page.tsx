@@ -246,7 +246,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MediaPipe 本機分割', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
+        { label: '指定人物去背', detail: 'Pose 每人獨立遮罩', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
