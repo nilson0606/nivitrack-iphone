@@ -1,4 +1,5 @@
 import {
+  equalRowCloneFrames,
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
   stabilizeTrackedSubjectAlpha,
@@ -138,6 +139,16 @@ function testAdjustableFraming() {
   };
 }
 
+function testEqualRowCloneSizes() {
+  const frames = equalRowCloneFrames(1080, 1920, 420, 980, 4);
+  return {
+    totalIncludesMain: frames.length === 5,
+    equalWidths: frames.every((frame) => Math.abs(frame[2] - frames[0][2]) < 0.0001),
+    equalHeights: frames.every((frame) => Math.abs(frame[3] - frames[0][3]) < 0.0001),
+    insideCanvas: frames.every((frame) => frame[0] >= 0 && frame[0] + frame[2] <= 1080),
+  };
+}
+
 const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
 const narrowBackgroundBridge = testNarrowBackgroundBridge();
@@ -147,6 +158,7 @@ const region = testTrackedRegion();
 const temporal = testTemporalStability();
 const edges = testEdgeTightening();
 const framing = testAdjustableFraming();
+const rowClones = testEqualRowCloneSizes();
 const pass = separated.selected > 0 && separated.leaked === 0
   && touching.selected > 0 && touching.leaked === 0
   && narrowBackgroundBridge.dancer > 0 && narrowBackgroundBridge.backgroundObject === 0
@@ -162,7 +174,11 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && edges.centerPreserved
   && edges.edgeFeathered
   && framing.largerSubjectUsesTighterCrop
-  && framing.aspectPreserved;
+  && framing.aspectPreserved
+  && rowClones.totalIncludesMain
+  && rowClones.equalWidths
+  && rowClones.equalHeights
+  && rowClones.insideCanvas;
 
 console.log(JSON.stringify({
   separated,
@@ -174,6 +190,7 @@ console.log(JSON.stringify({
   temporal,
   edges,
   framing,
+  rowClones,
   pass,
 }, null, 2));
 if (!pass) process.exitCode = 1;

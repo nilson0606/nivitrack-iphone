@@ -46,6 +46,33 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+export function equalRowCloneFrames(
+  outputWidth: number,
+  outputHeight: number,
+  subjectWidth: number,
+  subjectHeight: number,
+  cloneCount: number,
+): Box[] {
+  const total = Math.round(clamp(cloneCount, 0, 4)) + 1;
+  const gap = outputWidth * 0.025;
+  let destinationHeight = outputHeight * 0.82;
+  let destinationWidth = destinationHeight * (subjectWidth / Math.max(2, subjectHeight));
+  const groupWidth = destinationWidth * total + gap * (total - 1);
+  if (groupWidth > outputWidth * 0.94) {
+    const fitScale = (outputWidth * 0.94 - gap * (total - 1)) / Math.max(2, destinationWidth * total);
+    destinationWidth *= fitScale;
+    destinationHeight *= fitScale;
+  }
+  const firstX = (outputWidth - (destinationWidth * total + gap * (total - 1))) / 2;
+  const destinationY = (outputHeight - destinationHeight) / 2;
+  return Array.from({ length: total }, (_, index) => [
+    firstX + index * (destinationWidth + gap),
+    destinationY,
+    destinationWidth,
+    destinationHeight,
+  ]);
+}
+
 function smoothstep(edge0: number, edge1: number, value: number) {
   const amount = clamp((value - edge0) / Math.max(0.0001, edge1 - edge0), 0, 1);
   return amount * amount * (3 - 2 * amount);
@@ -282,6 +309,7 @@ export class PersonBackgroundRenderer {
   private readonly subjectCanvas = document.createElement('canvas');
   private readonly backgroundCanvas = document.createElement('canvas');
   private readonly outlineCloneCanvas = document.createElement('canvas');
+  private readonly rowSubjectCanvas = document.createElement('canvas');
   private previousAlpha: Float32Array | null = null;
   private pendingAlpha: Float32Array | null = null;
   private timestamp = 0;
@@ -526,6 +554,36 @@ export class PersonBackgroundRenderer {
     }
   }
 
+  private prepareRowSubject(x: number, y: number, width: number, height: number) {
+    const left = clamp(Math.floor(x), 0, this.subjectCanvas.width);
+    const top = clamp(Math.floor(y), 0, this.subjectCanvas.height);
+    const right = clamp(Math.ceil(x + width), left, this.subjectCanvas.width);
+    const bottom = clamp(Math.ceil(y + height), top, this.subjectCanvas.height);
+    const clippedWidth = right - left;
+    const clippedHeight = bottom - top;
+    if (clippedWidth < 2 || clippedHeight < 2) return null;
+    if (this.rowSubjectCanvas.width !== clippedWidth || this.rowSubjectCanvas.height !== clippedHeight) {
+      this.rowSubjectCanvas.width = clippedWidth;
+      this.rowSubjectCanvas.height = clippedHeight;
+    }
+    const context = this.rowSubjectCanvas.getContext('2d', { alpha: true });
+    if (!context) throw new Error('Safari 無法建立並排分身畫布');
+    context.globalCompositeOperation = 'source-over';
+    context.clearRect(0, 0, clippedWidth, clippedHeight);
+    context.drawImage(
+      this.subjectCanvas,
+      left,
+      top,
+      clippedWidth,
+      clippedHeight,
+      0,
+      0,
+      clippedWidth,
+      clippedHeight,
+    );
+    return this.rowSubjectCanvas;
+  }
+
   private compositeEffects(
     video: HTMLVideoElement,
     outputCanvas: HTMLCanvasElement,
@@ -547,19 +605,26 @@ export class PersonBackgroundRenderer {
       this.clearTrailFrames();
       const total = cloneCount + 1;
       const mainIndex = Math.floor(total / 2);
-      const scale = Math.max(0.46, 1 - cloneCount * 0.13);
-      const spacing = outputCanvas.width * (total <= 2 ? 0.28 : 0.19);
-      const firstCenter = outputCanvas.width / 2 - spacing * (total - 1) / 2;
-      for (let index = 0; index < total; index += 1) {
-        const destinationWidth = outputCanvas.width * scale;
-        const destinationHeight = outputCanvas.height * scale;
-        const destinationX = firstCenter + spacing * index - destinationWidth / 2;
-        const destinationY = (outputCanvas.height - destinationHeight) / 2;
-        const isMiddle = Math.abs(index - (total - 1) / 2) < 0.51;
+      const rowSubject = this.prepareRowSubject(
+        subjectBounds[0],
+        subjectBounds[1],
+        subjectBounds[2],
+        subjectBounds[3],
+      );
+      if (!rowSubject) return;
+      const frames = equalRowCloneFrames(
+        outputCanvas.width,
+        outputCanvas.height,
+        rowSubject.width,
+        rowSubject.height,
+        cloneCount,
+      );
+      for (let index = 0; index < frames.length; index += 1) {
+        const [destinationX, destinationY, destinationWidth, destinationHeight] = frames[index];
         if (effects.cloneStyle === 'outline' && index !== mainIndex) {
           this.drawOutlineClone(
             outputContext,
-            this.subjectCanvas,
+            rowSubject,
             destinationX,
             destinationY,
             destinationWidth,
@@ -570,13 +635,13 @@ export class PersonBackgroundRenderer {
         } else {
           this.drawStyledSubject(
             outputContext,
-            this.subjectCanvas,
+            rowSubject,
             destinationX,
             destinationY,
             destinationWidth,
             destinationHeight,
             effects,
-            isMiddle || index === mainIndex ? 1 : 0.9,
+            1,
           );
         }
       }
@@ -588,11 +653,11 @@ export class PersonBackgroundRenderer {
       for (let index = 0; index < frames.length; index += 1) {
         const frame = frames[index];
         const depth = frames.length - index;
-        const scale = 1 - depth * 0.035;
+        const scale = subjectBounds[3] / Math.max(2, frame.height);
         const width = frame.width * scale;
         const height = frame.height * scale;
-        const x = frame.x + (frame.width - width) / 2 - depth * outputCanvas.width * 0.018;
-        const y = frame.y + (frame.height - height) / 2 + depth * outputCanvas.height * 0.007;
+        const x = subjectBounds[0] + (subjectBounds[2] - width) / 2 - depth * outputCanvas.width * 0.018;
+        const y = subjectBounds[1] + (subjectBounds[3] - height) / 2 + depth * outputCanvas.height * 0.007;
         const opacity = 0.22 + (index / Math.max(1, frames.length)) * 0.48;
         this.drawCloneSubject(outputContext, frame.canvas, x, y, width, height, effects, opacity);
       }
@@ -759,6 +824,8 @@ export class PersonBackgroundRenderer {
     this.pendingAlpha = null;
     this.outlineCloneCanvas.width = 1;
     this.outlineCloneCanvas.height = 1;
+    this.rowSubjectCanvas.width = 1;
+    this.rowSubjectCanvas.height = 1;
     this.clearTrailFrames();
   }
 

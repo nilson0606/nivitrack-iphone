@@ -1355,7 +1355,10 @@ export default function Home() {
       </div>
 
       <div className="effect-block">
-        <div className="effect-label"><b>分身</b><em>{cloneCount === 0 ? '關閉' : cloneCount + ' 人'}</em></div>
+        <div className="effect-label">
+          <b>分身</b>
+          <em>{cloneCount === 0 ? '關閉 · 共 1 人' : '+' + cloneCount + ' 個分身 · 共 ' + (cloneCount + 1) + ' 人'}</em>
+        </div>
         <div className="effect-options five" aria-label="分身數量">
           {[0, 1, 2, 3, 4].map((count) => (
             <button
@@ -1366,7 +1369,7 @@ export default function Home() {
               aria-pressed={cloneCount === count}
               onClick={() => setCloneCount(count)}
             >
-              {count}
+              {count === 0 ? '無' : '+' + count}
             </button>
           ))}
         </div>
@@ -1685,7 +1688,8 @@ export default function Home() {
                           {' · '}
                           {cloneCount === 0
                             ? '無分身'
-                            : cloneCount + ' 個' + (cloneStyle === 'subject' ? '人物分身' : '線框分身') + ' · ' + (cloneLayout === 'trail' ? '前後殘影' : '左右併排')}
+                            : '主角 1 + ' + cloneCount + ' 個' + (cloneStyle === 'subject' ? '人物分身' : '線框分身')
+                              + ' = 共 ' + (cloneCount + 1) + ' 人 · ' + (cloneLayout === 'trail' ? '前後殘影' : '左右併排')}
                         </strong>
                       </div>
                       <div className="background-preview-actions">
