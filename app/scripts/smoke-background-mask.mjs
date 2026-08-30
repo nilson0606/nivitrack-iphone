@@ -2,6 +2,7 @@ import {
   equalRowCloneFrames,
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
+  smoothBackdropParameters,
   stabilizeTrackedSubjectAlpha,
   tightenTrackedSubjectEdges,
   trackedSubjectRegion,
@@ -149,6 +150,19 @@ function testEqualRowCloneSizes() {
   };
 }
 
+function testSmoothBackdrop() {
+  const minimum = smoothBackdropParameters(12, 1080, 1920);
+  const normal = smoothBackdropParameters(36, 1080, 1920);
+  const maximum = smoothBackdropParameters(64, 1080, 1920);
+  return {
+    keepsSmoothResolution: minimum.height === 420 && maximum.height === 420,
+    avoidsTinyPixelBuffer: maximum.width >= 200,
+    strengthIncreasesRadius: minimum.filterRadius < normal.filterRadius
+      && normal.filterRadius < maximum.filterRadius,
+    padsBlurredEdges: maximum.paddingX > maximum.filterRadius,
+  };
+}
+
 const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
 const narrowBackgroundBridge = testNarrowBackgroundBridge();
@@ -159,6 +173,7 @@ const temporal = testTemporalStability();
 const edges = testEdgeTightening();
 const framing = testAdjustableFraming();
 const rowClones = testEqualRowCloneSizes();
+const smoothBackdrop = testSmoothBackdrop();
 const pass = separated.selected > 0 && separated.leaked === 0
   && touching.selected > 0 && touching.leaked === 0
   && narrowBackgroundBridge.dancer > 0 && narrowBackgroundBridge.backgroundObject === 0
@@ -178,7 +193,11 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && rowClones.totalIncludesMain
   && rowClones.equalWidths
   && rowClones.equalHeights
-  && rowClones.insideCanvas;
+  && rowClones.insideCanvas
+  && smoothBackdrop.keepsSmoothResolution
+  && smoothBackdrop.avoidsTinyPixelBuffer
+  && smoothBackdrop.strengthIncreasesRadius
+  && smoothBackdrop.padsBlurredEdges;
 
 console.log(JSON.stringify({
   separated,
@@ -191,6 +210,7 @@ console.log(JSON.stringify({
   edges,
   framing,
   rowClones,
+  smoothBackdrop,
   pass,
 }, null, 2));
 if (!pass) process.exitCode = 1;

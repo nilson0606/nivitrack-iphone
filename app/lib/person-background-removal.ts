@@ -46,6 +46,27 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+export function smoothBackdropParameters(
+  strength: number,
+  outputWidth: number,
+  outputHeight: number,
+) {
+  const normalizedStrength = clamp(strength, 12, 64);
+  const maxSide = 420;
+  const scale = Math.min(1, maxSide / Math.max(outputWidth, outputHeight));
+  const width = Math.max(48, Math.round(outputWidth * scale));
+  const height = Math.max(48, Math.round(outputHeight * scale));
+  const filterRadius = Math.round(10 + ((normalizedStrength - 12) / 52) * 26);
+  const paddingRatio = Math.min(0.18, (filterRadius * 1.5) / Math.min(width, height));
+  return {
+    width,
+    height,
+    filterRadius,
+    paddingX: Math.round(width * paddingRatio),
+    paddingY: Math.round(height * paddingRatio),
+  };
+}
+
 export function equalRowCloneFrames(
   outputWidth: number,
   outputHeight: number,
@@ -308,6 +329,7 @@ export class PersonBackgroundRenderer {
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
   private readonly backgroundCanvas = document.createElement('canvas');
+  private readonly smoothBackgroundCanvas = document.createElement('canvas');
   private readonly outlineCloneCanvas = document.createElement('canvas');
   private readonly rowSubjectCanvas = document.createElement('canvas');
   private previousAlpha: Float32Array | null = null;
@@ -367,20 +389,16 @@ export class PersonBackgroundRenderer {
     context.fillStyle = effects.backgroundColor;
     context.fillRect(0, 0, canvas.width, canvas.height);
     if (effects.backgroundMode === 'blur') {
-      const blur = clamp(effects.backgroundBlur, 12, 64);
-      // Keep the iPhone-friendly downsampled backdrop, but allow a much
-      // stronger blur without adding a costly full-resolution filter pass.
-      const maxSide = Math.round(240 - ((blur - 12) / 52) * 192);
-      const scale = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
-      const blurredWidth = Math.max(24, Math.round(canvas.width * scale));
-      const blurredHeight = Math.max(24, Math.round(canvas.height * scale));
-      if (this.backgroundCanvas.width !== blurredWidth || this.backgroundCanvas.height !== blurredHeight) {
-        this.backgroundCanvas.width = blurredWidth;
-        this.backgroundCanvas.height = blurredHeight;
+      const backdrop = smoothBackdropParameters(effects.backgroundBlur, canvas.width, canvas.height);
+      if (this.backgroundCanvas.width !== backdrop.width || this.backgroundCanvas.height !== backdrop.height) {
+        this.backgroundCanvas.width = backdrop.width;
+        this.backgroundCanvas.height = backdrop.height;
       }
       const backgroundContext = this.backgroundCanvas.getContext('2d', { alpha: false });
       if (!backgroundContext) throw new Error('Safari 無法建立模糊背景畫布');
       backgroundContext.imageSmoothingEnabled = true;
+      backgroundContext.imageSmoothingQuality = 'high';
+      backgroundContext.globalCompositeOperation = 'copy';
       backgroundContext.drawImage(
         video,
         crop[0],
@@ -389,12 +407,52 @@ export class PersonBackgroundRenderer {
         crop[3],
         0,
         0,
-        blurredWidth,
-        blurredHeight,
+        backdrop.width,
+        backdrop.height,
       );
+      backgroundContext.globalCompositeOperation = 'source-over';
+
+      if (
+        this.smoothBackgroundCanvas.width !== backdrop.width
+        || this.smoothBackgroundCanvas.height !== backdrop.height
+      ) {
+        this.smoothBackgroundCanvas.width = backdrop.width;
+        this.smoothBackgroundCanvas.height = backdrop.height;
+      }
+      const smoothContext = this.smoothBackgroundCanvas.getContext('2d', { alpha: false });
+      if (!smoothContext) throw new Error('Safari 無法建立平滑背景畫布');
+      smoothContext.save();
+      smoothContext.globalCompositeOperation = 'source-over';
+      smoothContext.globalAlpha = 1;
+      smoothContext.filter = 'none';
+      smoothContext.fillStyle = effects.backgroundColor;
+      smoothContext.fillRect(0, 0, backdrop.width, backdrop.height);
+      smoothContext.imageSmoothingEnabled = true;
+      smoothContext.imageSmoothingQuality = 'high';
+      smoothContext.filter = `blur(${backdrop.filterRadius}px)`;
+      smoothContext.drawImage(
+        this.backgroundCanvas,
+        -backdrop.paddingX,
+        -backdrop.paddingY,
+        backdrop.width + backdrop.paddingX * 2,
+        backdrop.height + backdrop.paddingY * 2,
+      );
+      smoothContext.restore();
+
       context.imageSmoothingEnabled = true;
-      context.drawImage(this.backgroundCanvas, 0, 0, blurredWidth, blurredHeight, 0, 0, canvas.width, canvas.height);
-      context.fillStyle = 'rgba(0,0,0,.24)';
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(
+        this.smoothBackgroundCanvas,
+        0,
+        0,
+        backdrop.width,
+        backdrop.height,
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+      );
+      context.fillStyle = 'rgba(0,0,0,.12)';
       context.fillRect(0, 0, canvas.width, canvas.height);
     }
     context.restore();
@@ -828,6 +886,10 @@ export class PersonBackgroundRenderer {
     this.outlineCloneCanvas.height = 1;
     this.rowSubjectCanvas.width = 1;
     this.rowSubjectCanvas.height = 1;
+    this.backgroundCanvas.width = 1;
+    this.backgroundCanvas.height = 1;
+    this.smoothBackgroundCanvas.width = 1;
+    this.smoothBackgroundCanvas.height = 1;
     this.clearTrailFrames();
   }
 
