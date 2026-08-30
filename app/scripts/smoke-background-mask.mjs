@@ -199,6 +199,18 @@ function testStrictSubjectIdentityLock() {
     70,
     0.5,
   );
+  const extendedLimb = new Float32Array(previous);
+  for (let y = 4; y <= 5; y += 1) {
+    for (let x = 11; x <= 22; x += 1) extendedLimb[y * lockWidth + x] = 0.9;
+  }
+  const limb = lockTrackedSubjectIdentity(
+    extendedLimb,
+    previous,
+    lockWidth,
+    lockHeight,
+    70,
+    0,
+  );
   const weakFrame = lockTrackedSubjectIdentity(
     new Float32Array(lockWidth * lockHeight),
     previous,
@@ -213,6 +225,7 @@ function testStrictSubjectIdentityLock() {
     sustainedPasserCannotCreepIn: sustainedFarPasserPixels === 0,
     suddenGrowthWasTrimmed: locked.rejectedPixels > 0,
     normalMotionRetained: moved.retainedPixels === 70,
+    attachedThinLimbRetained: limb.alpha[5 * lockWidth + 22] > 0,
     weakFrameKeepsIdentityBaseline: weakFrame.referenceArea === 70,
   };
 }
@@ -298,6 +311,7 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && strictIdentity.sustainedPasserCannotCreepIn
   && strictIdentity.suddenGrowthWasTrimmed
   && strictIdentity.normalMotionRetained
+  && strictIdentity.attachedThinLimbRetained
   && strictIdentity.weakFrameKeepsIdentityBaseline
   && edges.centerPreserved
   && edges.edgeFeathered

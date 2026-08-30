@@ -512,6 +512,64 @@ export function lockTrackedSubjectIdentity(
     retainedPixels += 1;
   }
 
+  // Rescue small, slender regions that remain continuously attached to the
+  // accepted silhouette. They are usually a fast hand, foot, ponytail or
+  // clothing edge. A second person produces a much larger rejected component
+  // and therefore remains excluded.
+  const rejectedVisited = new Uint8Array(pixelCount);
+  const componentQueue = new Int32Array(pixelCount);
+  const rescueComponentLimit = Math.max(
+    8,
+    Math.ceil(stableReference * (0.24 + safeMotion * 0.18)),
+  );
+  let rescueBudget = Math.ceil(stableReference * (0.55 + safeMotion * 0.25));
+  for (let start = 0; start < pixelCount && rescueBudget > 0; start += 1) {
+    if (rejectedVisited[start] || currentAlpha[start] < 0.035 || locked[start] >= 0.035) continue;
+    let head = 0;
+    let tail = 0;
+    let touchesLocked = false;
+    let minimumX = width;
+    let maximumX = 0;
+    let minimumY = height;
+    let maximumY = 0;
+    rejectedVisited[start] = 1;
+    componentQueue[tail++] = start;
+    while (head < tail) {
+      const current = componentQueue[head++];
+      const currentX = current % width;
+      const currentY = Math.floor(current / width);
+      minimumX = Math.min(minimumX, currentX);
+      maximumX = Math.max(maximumX, currentX);
+      minimumY = Math.min(minimumY, currentY);
+      maximumY = Math.max(maximumY, currentY);
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        const nextY = currentY + offsetY;
+        if (nextY < 0 || nextY >= height) continue;
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          if (offsetX === 0 && offsetY === 0) continue;
+          const nextX = currentX + offsetX;
+          if (nextX < 0 || nextX >= width) continue;
+          const next = nextY * width + nextX;
+          if (locked[next] >= 0.035) touchesLocked = true;
+          if (rejectedVisited[next] || currentAlpha[next] < 0.035 || locked[next] >= 0.035) continue;
+          rejectedVisited[next] = 1;
+          componentQueue[tail++] = next;
+        }
+      }
+    }
+    const componentWidth = maximumX - minimumX + 1;
+    const componentHeight = maximumY - minimumY + 1;
+    const slenderLimit = Math.max(6, growthRadius * 1.65);
+    const isLimbLike = Math.min(componentWidth, componentHeight) <= slenderLimit;
+    if (!touchesLocked || !isLimbLike || tail > rescueComponentLimit || tail > rescueBudget) continue;
+    for (let offset = 0; offset < tail; offset += 1) {
+      const index = componentQueue[offset];
+      locked[index] = currentAlpha[index];
+    }
+    retainedPixels += tail;
+    rescueBudget -= tail;
+  }
+
   // Do not let a long-lived passer-by slowly inflate the identity baseline.
   // Normal pose changes below 18% can still update it gradually.
   let nextReference = stableReference;
