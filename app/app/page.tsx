@@ -29,6 +29,12 @@ import type {
   PersonBackgroundEffects,
   PersonBackgroundRenderer,
 } from '../lib/person-background-removal';
+import {
+  selectionCanvasPointToSource,
+  selectionViewport,
+  sourceBoxToSelectionCanvas,
+  type SelectionFocus,
+} from '../lib/selection-zoom';
 
 type Capability = {
   label: string;
@@ -181,6 +187,8 @@ export default function Home() {
   const trackerRef = useRef<VitTracker | null>(null);
   const detectorRef = useRef<ObjectDetection | null>(null);
   const selectionRef = useRef<{ time: number; box: Box } | null>(null);
+  const selectionZoomRef = useRef(1);
+  const selectionFocusRef = useRef<SelectionFocus>(null);
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
   const exportResultRef = useRef<HTMLDivElement>(null);
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
@@ -203,6 +211,7 @@ export default function Home() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [selectionPlaying, setSelectionPlaying] = useState(false);
+  const [selectionZoom, setSelectionZoom] = useState(1);
   const [backgroundPreviewReady, setBackgroundPreviewReady] = useState(false);
   const [trackPath, setTrackPath] = useState<TrackPoint[]>([]);
   const [cropBox, setCropBox] = useState<Box | null>(null);
@@ -331,6 +340,9 @@ export default function Home() {
     if (!file) return;
     videoRef.current?.pause();
     setSelectionPlaying(false);
+    selectionZoomRef.current = 1;
+    selectionFocusRef.current = null;
+    setSelectionZoom(1);
     resetBackgroundPreview();
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setSourceFile(file);
@@ -449,6 +461,7 @@ export default function Home() {
     targetBox: Box | null,
     score?: number,
     visibleCandidates: Candidate[] = candidates,
+    useSelectionZoom = false,
   ) {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -459,12 +472,32 @@ export default function Home() {
     }
     const context = canvas.getContext('2d');
     if (!context) return;
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const viewport = useSelectionZoom
+      ? selectionViewport(
+          video.videoWidth,
+          video.videoHeight,
+          selectionZoomRef.current,
+          selectionFocusRef.current,
+        )
+      : [0, 0, video.videoWidth, video.videoHeight] as Box;
+    context.drawImage(
+      video,
+      viewport[0],
+      viewport[1],
+      viewport[2],
+      viewport[3],
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    );
     const candidateLine = Math.max(3, canvas.width / 500);
     context.lineWidth = candidateLine;
     context.font = '700 ' + Math.max(16, canvas.width / 65) + 'px -apple-system';
     for (const candidate of visibleCandidates) {
-      const [candidateX, candidateY, candidateWidth, candidateHeight] = candidate.box;
+      const [candidateX, candidateY, candidateWidth, candidateHeight] = useSelectionZoom
+        ? sourceBoxToSelectionCanvas(candidate.box, viewport, canvas.width, canvas.height)
+        : candidate.box;
       context.strokeStyle = '#35d292';
       context.strokeRect(candidateX, candidateY, candidateWidth, candidateHeight);
       context.fillStyle = 'rgba(16, 32, 24, 0.82)';
@@ -476,7 +509,9 @@ export default function Home() {
     }
     if (!targetBox) return;
 
-    const [x, y, width, height] = targetBox;
+    const [x, y, width, height] = useSelectionZoom
+      ? sourceBoxToSelectionCanvas(targetBox, viewport, canvas.width, canvas.height)
+      : targetBox;
     const lineWidth = Math.max(4, canvas.width / 320);
     context.fillStyle = 'rgba(217, 240, 111, 0.12)';
     context.fillRect(x, y, width, height);
@@ -490,6 +525,40 @@ export default function Home() {
     context.fillRect(x, Math.max(0, y - lineWidth * 9), labelWidth, lineWidth * 9);
     context.fillStyle = '#d9f06f';
     context.fillText(label, x + lineWidth * 2, Math.max(lineWidth * 6.5, y - lineWidth * 2));
+  }
+
+  function drawSelectionFrame(
+    targetBox: Box | null,
+    score?: number,
+    visibleCandidates: Candidate[] = candidates,
+  ) {
+    drawFrame(targetBox, score, visibleCandidates, true);
+  }
+
+  function changeSelectionZoom(direction: -1 | 1) {
+    const video = videoRef.current;
+    if (!video) return;
+    const levels = [1, 1.5, 2, 3];
+    const currentIndex = Math.max(0, levels.indexOf(selectionZoomRef.current));
+    const nextIndex = Math.max(0, Math.min(levels.length - 1, currentIndex + direction));
+    const nextZoom = levels[nextIndex];
+    if (nextZoom === selectionZoomRef.current) return;
+    const focusBox = selectionRef.current?.box ?? box;
+    if (nextZoom > 1 && focusBox) {
+      selectionFocusRef.current = [
+        focusBox[0] + focusBox[2] / 2,
+        focusBox[1] + focusBox[3] / 2,
+      ];
+    } else if (nextZoom > 1 && !selectionFocusRef.current) {
+      selectionFocusRef.current = [video.videoWidth / 2, video.videoHeight / 2];
+    }
+    if (nextZoom === 1) selectionFocusRef.current = null;
+    selectionZoomRef.current = nextZoom;
+    setSelectionZoom(nextZoom);
+    drawSelectionFrame(box);
+    setNotice(nextZoom === 1
+      ? '已回到完整畫面；可重新框選主角'
+      : '取框畫面已放大 ' + nextZoom + '×；可重新畫框微調主角範圍');
   }
 
   function drawCropFrame(targetBox: Box | null) {
@@ -557,6 +626,9 @@ export default function Home() {
     if (!video) return;
     video.pause();
     setSelectionPlaying(false);
+    selectionZoomRef.current = 1;
+    selectionFocusRef.current = null;
+    setSelectionZoom(1);
     resetBackgroundPreview();
     setPhase('select');
     setBox(null);
@@ -570,7 +642,7 @@ export default function Home() {
     setNotice(selectedTool === 'remove-background'
       ? '用手指緊貼框住要保留的單一舞者，或使用 AI 找人物'
       : '用手指框住要追蹤的人物或寵物');
-    requestAnimationFrame(() => drawFrame(null));
+    requestAnimationFrame(() => drawSelectionFrame(null));
   }
 
   function toggleSelectionPlayback() {
@@ -594,10 +666,20 @@ export default function Home() {
     const canvas = canvasRef.current;
     if (!canvas) return [0, 0];
     const bounds = canvas.getBoundingClientRect();
-    return [
+    const canvasPoint: [number, number] = [
       Math.max(0, Math.min(canvas.width, ((event.clientX - bounds.left) / bounds.width) * canvas.width)),
       Math.max(0, Math.min(canvas.height, ((event.clientY - bounds.top) / bounds.height) * canvas.height)),
     ];
+    if (phase !== 'select' || selectionZoomRef.current === 1) return canvasPoint;
+    const video = videoRef.current;
+    if (!video) return canvasPoint;
+    const viewport = selectionViewport(
+      video.videoWidth,
+      video.videoHeight,
+      selectionZoomRef.current,
+      selectionFocusRef.current,
+    );
+    return selectionCanvasPointToSource(canvasPoint, viewport, canvas.width, canvas.height);
   }
 
   function startBox(event: ReactPointerEvent<HTMLCanvasElement>) {
@@ -622,14 +704,14 @@ export default function Home() {
         time: videoRef.current?.currentTime ?? 0,
         box: [...hit.box] as Box,
       };
-      drawFrame(hit.box);
+      drawSelectionFrame(hit.box);
       setNotice('已選擇 AI 辨識框；也可直接拖曳重新框選');
       return;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
     dragStartRef.current = point;
     setBox(null);
-    drawFrame(null);
+    drawSelectionFrame(null);
   }
 
   function moveBox(event: ReactPointerEvent<HTMLCanvasElement>) {
@@ -643,7 +725,7 @@ export default function Home() {
     }
     if (phase !== 'select') return;
     setBox(next);
-    drawFrame(next);
+    drawSelectionFrame(next);
   }
 
   function finishBox(event: ReactPointerEvent<HTMLCanvasElement>) {
@@ -666,7 +748,7 @@ export default function Home() {
     if (phase !== 'select') return;
     if (next[2] < 12 || next[3] < 12) {
       setBox(null);
-      drawFrame(null);
+      drawSelectionFrame(null);
       setNotice('框選範圍太小，請重新框住完整主角');
       return;
     }
@@ -675,7 +757,7 @@ export default function Home() {
       time: videoRef.current?.currentTime ?? 0,
       box: [...next] as Box,
     };
-    drawFrame(next);
+    drawSelectionFrame(next);
     setNotice(selectedTool === 'remove-background'
       ? '舞者已指定；可先測試 3 秒主角追蹤'
       : '主角已指定；可開始 3 秒 ViT 追蹤測試');
@@ -705,7 +787,7 @@ export default function Home() {
           score: item.score,
         }));
       setCandidates(nextCandidates);
-      drawFrame(box, undefined, nextCandidates);
+      drawSelectionFrame(box, undefined, nextCandidates);
       setNotice(
         nextCandidates.length
           ? '找到 ' + nextCandidates.length + ' 個候選框；點選其中一個或手動畫框'
@@ -843,7 +925,7 @@ export default function Home() {
       setPhase('select');
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
-      drawFrame(box);
+      drawSelectionFrame(box);
     }
   }
 
@@ -1222,6 +1304,37 @@ export default function Home() {
     transform: cropPreviewActive ? `scale(${cropZoom})` : undefined,
   };
   const step = !videoInfo ? 1 : selectedTool === null ? 2 : 3;
+  const nextStepText = !videoInfo
+    ? '點「選擇一支影片」，從照片或檔案匯入影片。'
+    : phase === 'choose'
+      ? '從影片下方選擇一項後製功能。'
+      : phase === 'tool-ready'
+        ? '先播放確認效果；滿意後選擇畫質並輸出。'
+        : phase === 'crop-select'
+          ? cropBox
+            ? '裁切框已畫好，點「使用此裁切框」。'
+            : '在影片上拖曳，框出成品要保留的範圍。'
+          : phase === 'select'
+            ? selectionPlaying
+              ? '看到主角清楚的畫面時，點「暫停並框選」。'
+              : !box
+                ? '先點 AI 候選人物，或用手指粗略框住主角。'
+                : selectionZoom === 1
+                  ? '主角已框好；可按「＋」放大後重新畫精準框。'
+                  : '在放大的畫面重新畫精準框，再開始 3 秒測試或完整追蹤。'
+            : phase === 'tracking'
+              ? '正在追蹤，請保持此頁開啟並等待完成。'
+              : phase === 'previewing'
+                ? '正在產生 3 秒去背預覽，請等待完成。'
+                : phase === 'complete'
+                  ? selectedTool === 'remove-background'
+                    ? '先播放 3 秒去背預覽；滿意後追蹤完整影片。'
+                    : '3 秒測試完成；確認後追蹤完整影片。'
+                  : phase === 'path-ready'
+                    ? '追蹤完成；調整構圖與效果後輸出影片。'
+                    : phase === 'exporting'
+                      ? '正在本機輸出並保留原聲，請保持此頁開啟。'
+                      : '依影片下方按鈕繼續下一步。';
   const effectsBusy = phase === 'tracking' || phase === 'previewing' || phase === 'exporting';
   const backgroundEffectPanel = selectedTool === 'remove-background' && videoInfo ? (
     <section className="effect-panel" aria-label="去背後製特效">
@@ -1484,10 +1597,10 @@ export default function Home() {
                     setNotice(selectedTool === 'remove-background'
                       ? '已暫停；請框住要保留的單一舞者，或使用 AI 找人物'
                       : '已暫停；請用手指框住要追蹤的人物或寵物');
-                    requestAnimationFrame(() => drawFrame(null));
+                    requestAnimationFrame(() => drawSelectionFrame(null));
                   }}
                   onSeeked={() => {
-                    if (phase === 'select' && videoRef.current?.paused) requestAnimationFrame(() => drawFrame(null));
+                    if (phase === 'select' && videoRef.current?.paused) requestAnimationFrame(() => drawSelectionFrame(null));
                   }}
                   onError={() => setNotice('Safari 無法解碼這支影片，請保留檔案供實機記錄')}
                 />
@@ -1509,6 +1622,29 @@ export default function Home() {
                   </div>
                 )}
               </div>
+              <div className="next-step-card" role="status" aria-live="polite">
+                <span>下一步</span>
+                <strong>{nextStepText}</strong>
+              </div>
+              {phase === 'select' && !selectionPlaying && (
+                <div className="selection-zoom-bar" aria-label="取框畫面縮放">
+                  <span>取框放大</span>
+                  <button
+                    type="button"
+                    disabled={selectionZoom <= 1}
+                    aria-label="縮小取框畫面"
+                    onClick={() => changeSelectionZoom(-1)}
+                  >−</button>
+                  <strong>{selectionZoom}×</strong>
+                  <button
+                    type="button"
+                    disabled={selectionZoom >= 3}
+                    aria-label="放大取框畫面"
+                    onClick={() => changeSelectionZoom(1)}
+                  >＋</button>
+                  <small>先粗略框選，再放大重新畫框</small>
+                </div>
+              )}
               <div className="video-actions">
                 {phase !== 'tracking' && phase !== 'previewing' && phase !== 'exporting' && (
                   <button type="button" onClick={openVideoPicker}>重新選擇影片</button>
