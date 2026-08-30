@@ -20,6 +20,7 @@ import {
   RealtimeVideoExporter,
   RecorderSupport,
   TrackPoint,
+  trackedFrameCrop,
 } from '../lib/video-export';
 import type {
   BackgroundFillMode,
@@ -87,6 +88,12 @@ const BACKGROUND_COLORS = [
   { name: '粉', value: '#ec4899' },
   { name: '紫', value: '#7c3aed' },
 ];
+
+const BACKGROUND_PREVIEW_SIZES: Record<AspectPreset, [number, number]> = {
+  '9:16': [720, 1280],
+  '1:1': [720, 720],
+  '16:9': [1280, 720],
+};
 
 function filterPresetFor(tool: ToolId | null): FilterPreset | null {
   return tool?.startsWith('filter-') ? tool.slice(7) as FilterPreset : null;
@@ -889,7 +896,20 @@ export default function Home() {
         return;
       }
       try {
-        renderer.render(video, canvas, previewBoxAt(preview.path, mediaTime), undefined, getBackgroundEffects());
+        const previewBox = previewBoxAt(preview.path, mediaTime);
+        const [previewWidth, previewHeight] = BACKGROUND_PREVIEW_SIZES[aspect];
+        if (canvas.width !== previewWidth || canvas.height !== previewHeight) {
+          canvas.width = previewWidth;
+          canvas.height = previewHeight;
+        }
+        const previewCrop = trackedFrameCrop(
+          video.videoWidth,
+          video.videoHeight,
+          previewBox,
+          previewWidth / previewHeight,
+          subjectScale,
+        );
+        renderer.render(video, canvas, previewBox, previewCrop, getBackgroundEffects());
         setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
         if (mediaTime >= preview.endTime - 0.01) finish();
       } catch (error) {
@@ -1401,7 +1421,7 @@ export default function Home() {
           </>
         )}
       </div>
-      <p className="effect-note">處理順序：先去背，再加外框與分身，最後合成背景。</p>
+      <p className="effect-note">構圖沿用主角鎖定裁切；處理順序為先去背，再加外框與分身，最後合成背景。</p>
     </section>
   ) : null;
 
