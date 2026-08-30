@@ -217,7 +217,7 @@ export default function Home() {
   const [smoothness, setSmoothness] = useState(0.72);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundFillMode>('color');
   const [backgroundColor, setBackgroundColor] = useState('#000000');
-  const [backgroundBlur, setBackgroundBlur] = useState(18);
+  const [backgroundBlur, setBackgroundBlur] = useState(36);
   const [outlineColor, setOutlineColor] = useState('#d9f06f');
   const [outlineWidth, setOutlineWidth] = useState(0);
   const [cloneCount, setCloneCount] = useState(0);
@@ -353,7 +353,7 @@ export default function Home() {
     setSmoothness(0.72);
     setBackgroundMode('color');
     setBackgroundColor('#000000');
-    setBackgroundBlur(18);
+    setBackgroundBlur(36);
     setOutlineColor('#d9f06f');
     setOutlineWidth(0);
     setCloneCount(0);
@@ -409,7 +409,7 @@ export default function Home() {
     setSmoothness(0.72);
     setBackgroundMode('color');
     setBackgroundColor('#000000');
-    setBackgroundBlur(18);
+    setBackgroundBlur(36);
     setOutlineColor('#d9f06f');
     setOutlineWidth(0);
     setCloneCount(0);
@@ -1285,8 +1285,9 @@ export default function Home() {
             <span><b>模糊程度</b><em>{backgroundBlur}px</em></span>
             <input
               type="range"
-              min="4"
-              max="36"
+              min="12"
+              max="64"
+              step="2"
               value={backgroundBlur}
               disabled={effectsBusy}
               onChange={(event) => setBackgroundBlur(Number(event.target.value))}

@@ -26,7 +26,7 @@ export type PersonBackgroundEffects = {
 export const DEFAULT_PERSON_BACKGROUND_EFFECTS: PersonBackgroundEffects = {
   backgroundMode: 'color',
   backgroundColor: '#000000',
-  backgroundBlur: 18,
+  backgroundBlur: 36,
   outlineColor: '#d9f06f',
   outlineWidth: 0,
   cloneCount: 0,
@@ -367,8 +367,10 @@ export class PersonBackgroundRenderer {
     context.fillStyle = effects.backgroundColor;
     context.fillRect(0, 0, canvas.width, canvas.height);
     if (effects.backgroundMode === 'blur') {
-      const blur = clamp(effects.backgroundBlur, 4, 36);
-      const maxSide = Math.round(320 - ((blur - 4) / 32) * 240);
+      const blur = clamp(effects.backgroundBlur, 12, 64);
+      // Keep the iPhone-friendly downsampled backdrop, but allow a much
+      // stronger blur without adding a costly full-resolution filter pass.
+      const maxSide = Math.round(240 - ((blur - 12) / 52) * 192);
       const scale = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
       const blurredWidth = Math.max(24, Math.round(canvas.width * scale));
       const blurredHeight = Math.max(24, Math.round(canvas.height * scale));
