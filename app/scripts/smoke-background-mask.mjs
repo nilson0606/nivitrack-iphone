@@ -5,6 +5,7 @@ import {
   smoothBackdropParameters,
   stabilizeTrackedSubjectAlpha,
   tightenTrackedSubjectEdges,
+  trackedBackdropPatch,
   trackedSubjectRegion,
 } from '../lib/person-background-removal.ts';
 import { trackedFrameCrop } from '../lib/video-export.ts';
@@ -142,11 +143,14 @@ function testAdjustableFraming() {
 
 function testEqualRowCloneSizes() {
   const frames = equalRowCloneFrames(1080, 1920, 420, 980, 4);
+  const oneClone = equalRowCloneFrames(1080, 1920, 420, 980, 1);
   return {
     totalIncludesMain: frames.length === 5,
     equalWidths: frames.every((frame) => Math.abs(frame[2] - frames[0][2]) < 0.0001),
     equalHeights: frames.every((frame) => Math.abs(frame[3] - frames[0][3]) < 0.0001),
     insideCanvas: frames.every((frame) => frame[0] >= 0 && frame[0] + frame[2] <= 1080),
+    plusOneMeansTwoPeople: oneClone.length === 2,
+    plusOneKeepsLargeSubjects: oneClone.every((frame) => frame[3] >= 1920 * 0.7),
   };
 }
 
@@ -163,6 +167,28 @@ function testSmoothBackdrop() {
   };
 }
 
+function testBackdropSubjectRemovalRegion() {
+  const subject = [400, 300, 200, 600];
+  const patch = trackedBackdropPatch(subject, 1080, 1920, 236, 420);
+  const scaledSubject = [
+    subject[0] * 236 / 1080,
+    subject[1] * 420 / 1920,
+    subject[2] * 236 / 1080,
+    subject[3] * 420 / 1920,
+  ];
+  return {
+    patch,
+    containsSubject: patch[0] <= scaledSubject[0]
+      && patch[1] <= scaledSubject[1]
+      && patch[0] + patch[2] >= scaledSubject[0] + scaledSubject[2]
+      && patch[1] + patch[3] >= scaledSubject[1] + scaledSubject[3],
+    staysInsideBackdrop: patch[0] >= 0
+      && patch[1] >= 0
+      && patch[0] + patch[2] <= 236
+      && patch[1] + patch[3] <= 420,
+  };
+}
+
 const separated = testSeparatedDancers();
 const touching = testTouchingDancers();
 const narrowBackgroundBridge = testNarrowBackgroundBridge();
@@ -174,6 +200,7 @@ const edges = testEdgeTightening();
 const framing = testAdjustableFraming();
 const rowClones = testEqualRowCloneSizes();
 const smoothBackdrop = testSmoothBackdrop();
+const backdropSubjectRemoval = testBackdropSubjectRemovalRegion();
 const pass = separated.selected > 0 && separated.leaked === 0
   && touching.selected > 0 && touching.leaked === 0
   && narrowBackgroundBridge.dancer > 0 && narrowBackgroundBridge.backgroundObject === 0
@@ -194,10 +221,14 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && rowClones.equalWidths
   && rowClones.equalHeights
   && rowClones.insideCanvas
+  && rowClones.plusOneMeansTwoPeople
+  && rowClones.plusOneKeepsLargeSubjects
   && smoothBackdrop.keepsSmoothResolution
   && smoothBackdrop.avoidsTinyPixelBuffer
   && smoothBackdrop.strengthIncreasesRadius
-  && smoothBackdrop.padsBlurredEdges;
+  && smoothBackdrop.padsBlurredEdges
+  && backdropSubjectRemoval.containsSubject
+  && backdropSubjectRemoval.staysInsideBackdrop;
 
 console.log(JSON.stringify({
   separated,
@@ -211,6 +242,7 @@ console.log(JSON.stringify({
   framing,
   rowClones,
   smoothBackdrop,
+  backdropSubjectRemoval,
   pass,
 }, null, 2));
 if (!pass) process.exitCode = 1;

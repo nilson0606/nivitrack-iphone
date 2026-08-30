@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v14';
+const VERSION = 'nivitrack-12-tools-v15';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

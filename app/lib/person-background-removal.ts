@@ -26,7 +26,7 @@ export type PersonBackgroundEffects = {
 export const DEFAULT_PERSON_BACKGROUND_EFFECTS: PersonBackgroundEffects = {
   backgroundMode: 'color',
   backgroundColor: '#000000',
-  backgroundBlur: 36,
+  backgroundBlur: 52,
   outlineColor: '#d9f06f',
   outlineWidth: 0,
   cloneCount: 0,
@@ -56,8 +56,8 @@ export function smoothBackdropParameters(
   const scale = Math.min(1, maxSide / Math.max(outputWidth, outputHeight));
   const width = Math.max(48, Math.round(outputWidth * scale));
   const height = Math.max(48, Math.round(outputHeight * scale));
-  const filterRadius = Math.round(10 + ((normalizedStrength - 12) / 52) * 26);
-  const paddingRatio = Math.min(0.18, (filterRadius * 1.5) / Math.min(width, height));
+  const filterRadius = Math.round(36 + ((normalizedStrength - 12) / 52) * 24);
+  const paddingRatio = Math.min(0.3, (filterRadius * 1.35) / Math.min(width, height));
   return {
     width,
     height,
@@ -65,6 +65,32 @@ export function smoothBackdropParameters(
     paddingX: Math.round(width * paddingRatio),
     paddingY: Math.round(height * paddingRatio),
   };
+}
+
+export function trackedBackdropPatch(
+  subjectBounds: Box,
+  outputWidth: number,
+  outputHeight: number,
+  backdropWidth: number,
+  backdropHeight: number,
+): Box {
+  const scaleX = backdropWidth / Math.max(1, outputWidth);
+  const scaleY = backdropHeight / Math.max(1, outputHeight);
+  const paddingX = subjectBounds[2] * 0.24;
+  const paddingY = subjectBounds[3] * 0.14;
+  const left = clamp((subjectBounds[0] - paddingX) * scaleX, 0, backdropWidth);
+  const top = clamp((subjectBounds[1] - paddingY) * scaleY, 0, backdropHeight);
+  const right = clamp(
+    (subjectBounds[0] + subjectBounds[2] + paddingX) * scaleX,
+    left,
+    backdropWidth,
+  );
+  const bottom = clamp(
+    (subjectBounds[1] + subjectBounds[3] + paddingY) * scaleY,
+    top,
+    backdropHeight,
+  );
+  return [left, top, right - left, bottom - top];
 }
 
 export function equalRowCloneFrames(
@@ -75,19 +101,24 @@ export function equalRowCloneFrames(
   cloneCount: number,
 ): Box[] {
   const total = Math.round(clamp(cloneCount, 0, 4)) + 1;
-  const gap = outputWidth * 0.025;
-  let destinationHeight = outputHeight * 0.82;
+  const heightRatios = [0.82, 0.74, 0.66, 0.58, 0.52];
+  let destinationHeight = outputHeight * heightRatios[total - 1];
   let destinationWidth = destinationHeight * (subjectWidth / Math.max(2, subjectHeight));
-  const groupWidth = destinationWidth * total + gap * (total - 1);
-  if (groupWidth > outputWidth * 0.94) {
-    const fitScale = (outputWidth * 0.94 - gap * (total - 1)) / Math.max(2, destinationWidth * total);
+  const maximumWidths = [0.9, 0.62, 0.48, 0.4, 0.34];
+  const maximumWidth = outputWidth * maximumWidths[total - 1];
+  if (destinationWidth > maximumWidth) {
+    const fitScale = maximumWidth / Math.max(2, destinationWidth);
     destinationWidth *= fitScale;
     destinationHeight *= fitScale;
   }
-  const firstX = (outputWidth - (destinationWidth * total + gap * (total - 1))) / 2;
+  const sideMargin = outputWidth * 0.035;
+  const firstX = total === 1 ? (outputWidth - destinationWidth) / 2 : sideMargin;
+  const step = total === 1
+    ? 0
+    : (outputWidth - sideMargin * 2 - destinationWidth) / (total - 1);
   const destinationY = (outputHeight - destinationHeight) / 2;
   return Array.from({ length: total }, (_, index) => [
-    firstX + index * (destinationWidth + gap),
+    firstX + index * step,
     destinationY,
     destinationWidth,
     destinationHeight,
@@ -375,11 +406,83 @@ export class PersonBackgroundRenderer {
     this.trailCaptureTick = 0;
   }
 
+  private concealTrackedSubjectInBackdrop(
+    context: CanvasRenderingContext2D,
+    snapshot: HTMLCanvasElement,
+    subjectBounds: Box,
+    outputWidth: number,
+    outputHeight: number,
+    fillColor: string,
+  ) {
+    const patch = trackedBackdropPatch(
+      subjectBounds,
+      outputWidth,
+      outputHeight,
+      snapshot.width,
+      snapshot.height,
+    );
+    const x = Math.floor(patch[0]);
+    const y = Math.floor(patch[1]);
+    const width = Math.max(0, Math.ceil(patch[2]));
+    const height = Math.max(0, Math.ceil(patch[3]));
+    if (width < 2 || height < 2) return;
+
+    const leftAvailable = x;
+    const rightAvailable = snapshot.width - (x + width);
+    const topAvailable = y;
+    const bottomAvailable = snapshot.height - (y + height);
+    context.save();
+    context.globalCompositeOperation = 'source-over';
+    context.globalAlpha = 1;
+    context.filter = 'none';
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+
+    if (Math.max(leftAvailable, rightAvailable) >= 4) {
+      const useLeft = leftAvailable >= rightAvailable;
+      const available = useLeft ? leftAvailable : rightAvailable;
+      const sampleWidth = Math.max(2, Math.min(available, Math.round(width * 0.32)));
+      const sourceX = useLeft ? x - sampleWidth : x + width;
+      context.drawImage(
+        snapshot,
+        sourceX,
+        y,
+        sampleWidth,
+        height,
+        x,
+        y,
+        width,
+        height,
+      );
+    } else if (Math.max(topAvailable, bottomAvailable) >= 4) {
+      const useTop = topAvailable >= bottomAvailable;
+      const available = useTop ? topAvailable : bottomAvailable;
+      const sampleHeight = Math.max(2, Math.min(available, Math.round(height * 0.24)));
+      const sourceY = useTop ? y - sampleHeight : y + height;
+      context.drawImage(
+        snapshot,
+        x,
+        sourceY,
+        width,
+        sampleHeight,
+        x,
+        y,
+        width,
+        height,
+      );
+    } else {
+      context.fillStyle = fillColor;
+      context.fillRect(x, y, width, height);
+    }
+    context.restore();
+  }
+
   private drawBackdrop(
     video: HTMLVideoElement,
     context: CanvasRenderingContext2D,
     canvas: HTMLCanvasElement,
     crop: Box,
+    subjectBounds: Box,
     effects: PersonBackgroundEffects,
   ) {
     context.save();
@@ -422,6 +525,21 @@ export class PersonBackgroundRenderer {
       const smoothContext = this.smoothBackgroundCanvas.getContext('2d', { alpha: false });
       if (!smoothContext) throw new Error('Safari 無法建立平滑背景畫布');
       smoothContext.save();
+      smoothContext.globalCompositeOperation = 'copy';
+      smoothContext.globalAlpha = 1;
+      smoothContext.filter = 'none';
+      smoothContext.drawImage(this.backgroundCanvas, 0, 0);
+      smoothContext.restore();
+      this.concealTrackedSubjectInBackdrop(
+        backgroundContext,
+        this.smoothBackgroundCanvas,
+        subjectBounds,
+        canvas.width,
+        canvas.height,
+        effects.backgroundColor,
+      );
+
+      smoothContext.save();
       smoothContext.globalCompositeOperation = 'source-over';
       smoothContext.globalAlpha = 1;
       smoothContext.filter = 'none';
@@ -430,19 +548,39 @@ export class PersonBackgroundRenderer {
       smoothContext.imageSmoothingEnabled = true;
       smoothContext.imageSmoothingQuality = 'high';
       smoothContext.filter = `blur(${backdrop.filterRadius}px)`;
+      const passPaddingX = Math.ceil(backdrop.paddingX / 2);
+      const passPaddingY = Math.ceil(backdrop.paddingY / 2);
       smoothContext.drawImage(
         this.backgroundCanvas,
-        -backdrop.paddingX,
-        -backdrop.paddingY,
-        backdrop.width + backdrop.paddingX * 2,
-        backdrop.height + backdrop.paddingY * 2,
+        -passPaddingX,
+        -passPaddingY,
+        backdrop.width + passPaddingX * 2,
+        backdrop.height + passPaddingY * 2,
       );
       smoothContext.restore();
+
+      backgroundContext.save();
+      backgroundContext.globalCompositeOperation = 'source-over';
+      backgroundContext.globalAlpha = 1;
+      backgroundContext.filter = 'none';
+      backgroundContext.fillStyle = effects.backgroundColor;
+      backgroundContext.fillRect(0, 0, backdrop.width, backdrop.height);
+      backgroundContext.imageSmoothingEnabled = true;
+      backgroundContext.imageSmoothingQuality = 'high';
+      backgroundContext.filter = `blur(${backdrop.filterRadius}px)`;
+      backgroundContext.drawImage(
+        this.smoothBackgroundCanvas,
+        -passPaddingX,
+        -passPaddingY,
+        backdrop.width + passPaddingX * 2,
+        backdrop.height + passPaddingY * 2,
+      );
+      backgroundContext.restore();
 
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = 'high';
       context.drawImage(
-        this.smoothBackgroundCanvas,
+        this.backgroundCanvas,
         0,
         0,
         backdrop.width,
@@ -653,7 +791,7 @@ export class PersonBackgroundRenderer {
   ) {
     const outputContext = outputCanvas.getContext('2d', { alpha: false });
     if (!outputContext) throw new Error('Safari 無法建立人物特效合成畫布');
-    this.drawBackdrop(video, outputContext, outputCanvas, crop, effects);
+    this.drawBackdrop(video, outputContext, outputCanvas, crop, subjectBounds, effects);
 
     const cloneCount = Math.round(clamp(effects.cloneCount, 0, 4));
     if (effects.cloneLayout !== this.lastCloneLayout) {

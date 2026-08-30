@@ -217,7 +217,7 @@ export default function Home() {
   const [smoothness, setSmoothness] = useState(0.72);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundFillMode>('color');
   const [backgroundColor, setBackgroundColor] = useState('#000000');
-  const [backgroundBlur, setBackgroundBlur] = useState(36);
+  const [backgroundBlur, setBackgroundBlur] = useState(52);
   const [outlineColor, setOutlineColor] = useState('#d9f06f');
   const [outlineWidth, setOutlineWidth] = useState(0);
   const [cloneCount, setCloneCount] = useState(0);
@@ -353,7 +353,7 @@ export default function Home() {
     setSmoothness(0.72);
     setBackgroundMode('color');
     setBackgroundColor('#000000');
-    setBackgroundBlur(36);
+    setBackgroundBlur(52);
     setOutlineColor('#d9f06f');
     setOutlineWidth(0);
     setCloneCount(0);
@@ -409,7 +409,7 @@ export default function Home() {
     setSmoothness(0.72);
     setBackgroundMode('color');
     setBackgroundColor('#000000');
-    setBackgroundBlur(36);
+    setBackgroundBlur(52);
     setOutlineColor('#d9f06f');
     setOutlineWidth(0);
     setCloneCount(0);
