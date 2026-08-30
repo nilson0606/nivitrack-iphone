@@ -16,6 +16,7 @@ import {
   FilterPreset,
   getFilterCss,
   getRecorderSupport,
+  OutputQuality,
   RealtimeVideoExporter,
   RecorderSupport,
   TrackPoint,
@@ -203,6 +204,7 @@ export default function Home() {
   const [cropCenterY, setCropCenterY] = useState(0.5);
   const [cropZoom, setCropZoom] = useState(1);
   const [aspect, setAspect] = useState<AspectPreset>('9:16');
+  const [outputQuality, setOutputQuality] = useState<OutputQuality>('clear');
   const [subjectScale, setSubjectScale] = useState(0.55);
   const [smoothness, setSmoothness] = useState(0.72);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundFillMode>('color');
@@ -336,6 +338,7 @@ export default function Home() {
     setCropCenterY(0.5);
     setCropZoom(1);
     setAspect('9:16');
+    setOutputQuality('clear');
     setSubjectScale(0.55);
     setSmoothness(0.72);
     setBackgroundMode('color');
@@ -373,6 +376,14 @@ export default function Home() {
     setExportBlob(null);
     setExportInfo(null);
     setProgress(0);
+  }
+
+  function selectOutputQuality(quality: OutputQuality) {
+    setOutputQuality(quality);
+    resetExportResult();
+    setNotice(quality === 'clear'
+      ? '已選清晰畫質；最高輸出 1080p，檔案較大、編碼較久'
+      : '已選標準畫質；最高輸出 720p，速度較快');
   }
 
   function chooseTool(tool: ToolId) {
@@ -1100,6 +1111,7 @@ export default function Home() {
       if (!exporterRef.current) exporterRef.current = new RealtimeVideoExporter(video);
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         operation,
+        quality: outputQuality,
         codec,
         onProgress: (next) => {
           setProgress(next);
@@ -1109,7 +1121,7 @@ export default function Home() {
       });
       const baseName = (sourceFile?.name ?? 'NiviTrack').replace(/\.[^.]+$/, '');
       const fileTag = TOOL_CHOICES.find((item) => item.id === selectedTool)?.fileTag ?? 'Edit';
-      const name = baseName + '-NiviTrack-' + fileTag + '.mp4';
+      const name = baseName + '-NiviTrack-' + fileTag + '-' + (outputQuality === 'clear' ? 'Clear' : 'Standard') + '.mp4';
       setExportBlob(result.blob);
       setExportUrl(URL.createObjectURL(result.blob));
       setExportInfo({
@@ -1564,6 +1576,18 @@ export default function Home() {
                     </>
                   )}
 
+                  <div className="quality-control">
+                    <span><b>輸出畫質</b><em>{outputQuality === 'clear' ? '預設 · 最高 1080p' : '較快 · 最高 720p'}</em></span>
+                    <div className="aspect-options quality-options" aria-label="輸出畫質">
+                      <button className={outputQuality === 'clear' ? 'selected' : ''} type="button" disabled={phase === 'exporting'} aria-pressed={outputQuality === 'clear'} onClick={() => selectOutputQuality('clear')}>
+                        清晰
+                      </button>
+                      <button className={outputQuality === 'standard' ? 'selected' : ''} type="button" disabled={phase === 'exporting'} aria-pressed={outputQuality === 'standard'} onClick={() => selectOutputQuality('standard')}>
+                        標準
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="export-buttons">
                     <button className="primary" type="button" disabled={phase === 'exporting' || !recorderSupport.h264} onClick={() => void exportVideo('h264')}>
                       輸出相容 MP4
@@ -1661,6 +1685,18 @@ export default function Home() {
                       onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
                     />
                   </label>
+
+                  <div className="quality-control">
+                    <span><b>輸出畫質</b><em>{outputQuality === 'clear' ? '預設 · 最高 1080p' : '較快 · 最高 720p'}</em></span>
+                    <div className="aspect-options quality-options" aria-label="輸出畫質">
+                      <button className={outputQuality === 'clear' ? 'selected' : ''} type="button" disabled={phase === 'exporting'} aria-pressed={outputQuality === 'clear'} onClick={() => selectOutputQuality('clear')}>
+                        清晰
+                      </button>
+                      <button className={outputQuality === 'standard' ? 'selected' : ''} type="button" disabled={phase === 'exporting'} aria-pressed={outputQuality === 'standard'} onClick={() => selectOutputQuality('standard')}>
+                        標準
+                      </button>
+                    </div>
+                  </div>
 
                   <div className="export-buttons">
                     <button

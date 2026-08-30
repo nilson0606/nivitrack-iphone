@@ -2,6 +2,7 @@ import type { Box } from './vit-tracker';
 import type { PersonBackgroundEffects, PersonBackgroundRenderer } from './person-background-removal';
 
 export type AspectPreset = '9:16' | '1:1' | '16:9';
+export type OutputQuality = 'standard' | 'clear';
 
 export type FilterPreset = 'vivid' | 'soft' | 'cinematic' | 'warm' | 'mono' | 'vintage';
 
@@ -47,6 +48,7 @@ export type RecorderSupport = {
 
 export type ExportOptions = {
   operation: ExportOperation;
+  quality: OutputQuality;
   codec: 'h264' | 'hevc';
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
@@ -72,10 +74,17 @@ const HEVC_TYPES = [
   'video/mp4;codecs=hev1,mp4a.40.2',
 ];
 
-const OUTPUT_SIZES: Record<AspectPreset, [number, number]> = {
-  '9:16': [720, 1280],
-  '1:1': [720, 720],
-  '16:9': [1280, 720],
+const OUTPUT_SIZES: Record<OutputQuality, Record<AspectPreset, [number, number]>> = {
+  standard: {
+    '9:16': [720, 1280],
+    '1:1': [720, 720],
+    '16:9': [1280, 720],
+  },
+  clear: {
+    '9:16': [1080, 1920],
+    '1:1': [1080, 1080],
+    '16:9': [1920, 1080],
+  },
 };
 
 const FILTER_INDEX: Record<FilterPreset, number> = {
@@ -284,34 +293,38 @@ function even(value: number) {
   return rounded % 2 === 0 ? rounded : rounded - 1;
 }
 
-function sourceOutputSize(video: HTMLVideoElement): [number, number] {
-  const sourceWidth = video.videoWidth;
-  const sourceHeight = video.videoHeight;
-  const scale = Math.min(1, 1280 / Math.max(sourceWidth, sourceHeight));
-  return [even(sourceWidth * scale), even(sourceHeight * scale)];
+function fittedOutputSize(width: number, height: number, quality: OutputQuality): [number, number] {
+  const landscape = width > height;
+  const portrait = height > width;
+  const maxWidth = quality === 'clear' ? (landscape ? 1920 : 1080) : (landscape ? 1280 : 720);
+  const maxHeight = quality === 'clear' ? (portrait ? 1920 : 1080) : (portrait ? 1280 : 720);
+  const scale = Math.min(1, maxWidth / Math.max(2, width), maxHeight / Math.max(2, height));
+  return [even(width * scale), even(height * scale)];
 }
 
-function selectionOutputSize(box: Box): [number, number] {
-  const width = Math.max(2, box[2]);
-  const height = Math.max(2, box[3]);
-  const scale = Math.min(1, 1280 / Math.max(width, height));
-  return [even(width * scale), even(height * scale)];
+function sourceOutputSize(video: HTMLVideoElement, quality: OutputQuality): [number, number] {
+  return fittedOutputSize(video.videoWidth, video.videoHeight, quality);
+}
+
+function selectionOutputSize(box: Box, quality: OutputQuality): [number, number] {
+  return fittedOutputSize(Math.max(2, box[2]), Math.max(2, box[3]), quality);
 }
 
 function configureOutputCanvas(
   video: HTMLVideoElement,
   canvas: HTMLCanvasElement,
   operation: ExportOperation,
+  quality: OutputQuality,
 ) {
   if (operation.kind === 'crop' && operation.selectionBox) {
-    [canvas.width, canvas.height] = selectionOutputSize(operation.selectionBox);
+    [canvas.width, canvas.height] = selectionOutputSize(operation.selectionBox, quality);
     return;
   }
   if (operation.kind === 'filter' || operation.aspect === 'source') {
-    [canvas.width, canvas.height] = sourceOutputSize(video);
+    [canvas.width, canvas.height] = sourceOutputSize(video, quality);
     return;
   }
-  [canvas.width, canvas.height] = OUTPUT_SIZES[operation.aspect];
+  [canvas.width, canvas.height] = OUTPUT_SIZES[quality][operation.aspect];
 }
 
 function interpolateBox(path: TrackPoint[], time: number): Box {
@@ -569,7 +582,7 @@ export class RealtimeVideoExporter {
       throw new Error(options.codec === 'hevc' ? '這台 iPhone 的 Safari 不支援 HEVC 網頁輸出' : '這台 iPhone 的 Safari 不支援 H.264 MP4 網頁輸出');
     }
 
-    configureOutputCanvas(this.video, canvas, options.operation);
+    configureOutputCanvas(this.video, canvas, options.operation, options.quality);
     const width = canvas.width;
     const height = canvas.height;
     const smoothedPath = options.operation.kind === 'track' || options.operation.kind === 'remove-background'
@@ -589,7 +602,9 @@ export class RealtimeVideoExporter {
     const chunks: Blob[] = [];
     const recorder = new MediaRecorder(stream, {
       mimeType: requestedType,
-      videoBitsPerSecond: width > 720 ? 8_000_000 : 5_000_000,
+      videoBitsPerSecond: options.quality === 'clear'
+        ? options.codec === 'hevc' ? 12_000_000 : 16_000_000
+        : width > 720 ? 8_000_000 : 5_000_000,
       audioBitsPerSecond: 160_000,
     });
     recorder.addEventListener('dataavailable', (event) => {

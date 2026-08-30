@@ -553,6 +553,28 @@ footer p span { margin-right: 7px; color: #20a866; }
 }
 .aspect-options button:disabled,
 .export-buttons button:disabled { opacity: .42; }
+.quality-control {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.quality-control > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.quality-control b { font-size: 12px; }
+.quality-control em {
+  color: var(--green);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 750;
+}
+.quality-options {
+  grid-template-columns: repeat(2,1fr);
+  margin-top: 9px;
+}
 .range-control {
   display: grid;
   gap: 8px;
