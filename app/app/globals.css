@@ -433,6 +433,16 @@ footer p span { margin-right: 7px; color: #20a866; }
   display: grid;
   gap: 7px;
 }
+.effect-subgroup {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+.effect-subgroup > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+}
 .effect-options.two { grid-template-columns: repeat(2,minmax(0,1fr)); }
 .effect-options.three { grid-template-columns: repeat(3,minmax(0,1fr)); margin-bottom: 10px; }
 .effect-options.five { grid-template-columns: repeat(5,minmax(0,1fr)); margin-bottom: 8px; }

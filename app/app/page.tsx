@@ -24,6 +24,7 @@ import {
 import type {
   BackgroundFillMode,
   CloneLayout,
+  CloneStyle,
   PersonBackgroundEffects,
   PersonBackgroundRenderer,
 } from '../lib/person-background-removal';
@@ -214,6 +215,7 @@ export default function Home() {
   const [outlineWidth, setOutlineWidth] = useState(0);
   const [cloneCount, setCloneCount] = useState(0);
   const [cloneLayout, setCloneLayout] = useState<CloneLayout>('trail');
+  const [cloneStyle, setCloneStyle] = useState<CloneStyle>('subject');
   const [recorderSupport, setRecorderSupport] = useState<RecorderSupport>({
     h264: null,
     hevc: null,
@@ -313,6 +315,7 @@ export default function Home() {
       outlineWidth,
       cloneCount,
       cloneLayout,
+      cloneStyle,
     };
   }
 
@@ -348,6 +351,7 @@ export default function Home() {
     setOutlineWidth(0);
     setCloneCount(0);
     setCloneLayout('trail');
+    setCloneStyle('subject');
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
@@ -403,6 +407,7 @@ export default function Home() {
     setOutlineWidth(0);
     setCloneCount(0);
     setCloneLayout('trail');
+    setCloneStyle('subject');
     setCropBox(null);
     resetExportResult();
     if (tool === 'track' || tool === 'remove-background') {
@@ -1346,26 +1351,54 @@ export default function Home() {
           ))}
         </div>
         {cloneCount > 0 && (
-          <div className="effect-options two">
-            <button
-              className={cloneLayout === 'trail' ? 'selected' : ''}
-              type="button"
-              disabled={effectsBusy}
-              aria-pressed={cloneLayout === 'trail'}
-              onClick={() => setCloneLayout('trail')}
-            >
-              前後殘影
-            </button>
-            <button
-              className={cloneLayout === 'row' ? 'selected' : ''}
-              type="button"
-              disabled={effectsBusy}
-              aria-pressed={cloneLayout === 'row'}
-              onClick={() => setCloneLayout('row')}
-            >
-              左右併排
-            </button>
-          </div>
+          <>
+            <div className="effect-subgroup">
+              <span>分身樣式</span>
+              <div className="effect-options two">
+                <button
+                  className={cloneStyle === 'subject' ? 'selected' : ''}
+                  type="button"
+                  disabled={effectsBusy}
+                  aria-pressed={cloneStyle === 'subject'}
+                  onClick={() => setCloneStyle('subject')}
+                >
+                  人物分身
+                </button>
+                <button
+                  className={cloneStyle === 'outline' ? 'selected' : ''}
+                  type="button"
+                  disabled={effectsBusy}
+                  aria-pressed={cloneStyle === 'outline'}
+                  onClick={() => setCloneStyle('outline')}
+                >
+                  線框分身
+                </button>
+              </div>
+            </div>
+            <div className="effect-subgroup">
+              <span>排列方式</span>
+              <div className="effect-options two">
+                <button
+                  className={cloneLayout === 'trail' ? 'selected' : ''}
+                  type="button"
+                  disabled={effectsBusy}
+                  aria-pressed={cloneLayout === 'trail'}
+                  onClick={() => setCloneLayout('trail')}
+                >
+                  前後殘影
+                </button>
+                <button
+                  className={cloneLayout === 'row' ? 'selected' : ''}
+                  type="button"
+                  disabled={effectsBusy}
+                  aria-pressed={cloneLayout === 'row'}
+                  onClick={() => setCloneLayout('row')}
+                >
+                  左右併排
+                </button>
+              </div>
+            </div>
+          </>
         )}
       </div>
       <p className="effect-note">處理順序：先去背，再加外框與分身，最後合成背景。</p>
@@ -1630,7 +1663,9 @@ export default function Home() {
                           {' · '}
                           {outlineWidth === 0 ? '無框' : outlineWidth + 'px 外框'}
                           {' · '}
-                          {cloneCount === 0 ? '無分身' : cloneCount + ' 人' + (cloneLayout === 'trail' ? '前後殘影' : '左右併排')}
+                          {cloneCount === 0
+                            ? '無分身'
+                            : cloneCount + ' 個' + (cloneStyle === 'subject' ? '人物分身' : '線框分身') + ' · ' + (cloneLayout === 'trail' ? '前後殘影' : '左右併排')}
                         </strong>
                       </div>
                       <div className="background-preview-actions">

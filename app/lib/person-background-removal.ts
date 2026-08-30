@@ -10,6 +10,7 @@ const MAX_TRAIL_SNAPSHOT_SIZE = 480;
 
 export type BackgroundFillMode = 'color' | 'blur';
 export type CloneLayout = 'trail' | 'row';
+export type CloneStyle = 'subject' | 'outline';
 
 export type PersonBackgroundEffects = {
   backgroundMode: BackgroundFillMode;
@@ -19,6 +20,7 @@ export type PersonBackgroundEffects = {
   outlineWidth: number;
   cloneCount: number;
   cloneLayout: CloneLayout;
+  cloneStyle: CloneStyle;
 };
 
 export const DEFAULT_PERSON_BACKGROUND_EFFECTS: PersonBackgroundEffects = {
@@ -29,6 +31,7 @@ export const DEFAULT_PERSON_BACKGROUND_EFFECTS: PersonBackgroundEffects = {
   outlineWidth: 0,
   cloneCount: 0,
   cloneLayout: 'trail',
+  cloneStyle: 'subject',
 };
 
 type TrailFrame = {
@@ -278,6 +281,7 @@ export class PersonBackgroundRenderer {
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
   private readonly backgroundCanvas = document.createElement('canvas');
+  private readonly outlineCloneCanvas = document.createElement('canvas');
   private previousAlpha: Float32Array | null = null;
   private pendingAlpha: Float32Array | null = null;
   private timestamp = 0;
@@ -407,6 +411,83 @@ export class PersonBackgroundRenderer {
     context.restore();
   }
 
+  private drawOutlineClone(
+    context: CanvasRenderingContext2D,
+    source: CanvasImageSource,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    effects: PersonBackgroundEffects,
+    opacity: number,
+  ) {
+    const outlineWidth = Math.max(8, clamp(effects.outlineWidth, 0, 48));
+    const padding = Math.ceil(outlineWidth * 2);
+    const canvasWidth = Math.max(2, Math.ceil(width + padding * 2));
+    const canvasHeight = Math.max(2, Math.ceil(height + padding * 2));
+    if (this.outlineCloneCanvas.width !== canvasWidth || this.outlineCloneCanvas.height !== canvasHeight) {
+      this.outlineCloneCanvas.width = canvasWidth;
+      this.outlineCloneCanvas.height = canvasHeight;
+    }
+    const outlineContext = this.outlineCloneCanvas.getContext('2d', { alpha: true });
+    if (!outlineContext) throw new Error('Safari 無法建立線框分身畫布');
+    outlineContext.globalCompositeOperation = 'source-over';
+    outlineContext.globalAlpha = 1;
+    outlineContext.filter = 'none';
+    outlineContext.clearRect(0, 0, canvasWidth, canvasHeight);
+    outlineContext.imageSmoothingEnabled = true;
+    outlineContext.shadowColor = effects.outlineColor;
+    outlineContext.shadowBlur = outlineWidth * 0.48;
+    const radius = outlineWidth * 0.72;
+    const diagonal = radius * Math.SQRT1_2;
+    const directions = [
+      [-radius, 0],
+      [radius, 0],
+      [0, -radius],
+      [0, radius],
+      [-diagonal, -diagonal],
+      [diagonal, -diagonal],
+      [-diagonal, diagonal],
+      [diagonal, diagonal],
+    ];
+    for (const [offsetX, offsetY] of directions) {
+      outlineContext.shadowOffsetX = offsetX;
+      outlineContext.shadowOffsetY = offsetY;
+      outlineContext.drawImage(source, padding, padding, width, height);
+    }
+    outlineContext.shadowColor = 'transparent';
+    outlineContext.shadowBlur = 0;
+    outlineContext.shadowOffsetX = 0;
+    outlineContext.shadowOffsetY = 0;
+    outlineContext.globalCompositeOperation = 'destination-out';
+    outlineContext.drawImage(source, padding, padding, width, height);
+    outlineContext.globalCompositeOperation = 'source-over';
+
+    context.save();
+    context.globalCompositeOperation = 'source-over';
+    context.globalAlpha = clamp(opacity, 0, 1);
+    context.filter = 'none';
+    context.drawImage(this.outlineCloneCanvas, x - padding, y - padding);
+    context.restore();
+  }
+
+  private drawCloneSubject(
+    context: CanvasRenderingContext2D,
+    source: CanvasImageSource,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    effects: PersonBackgroundEffects,
+    opacity: number,
+  ) {
+    if (effects.cloneStyle === 'outline') {
+      this.drawOutlineClone(context, source, x, y, width, height, effects, opacity);
+      return;
+    }
+    this.drawStyledSubject(context, source, x, y, width, height, effects, opacity);
+  }
+
   private captureTrailFrame(x: number, y: number, width: number, height: number) {
     this.trailCaptureTick += 1;
     if (this.trailCaptureTick % TRAIL_CAPTURE_INTERVAL !== 0) return;
@@ -465,6 +546,7 @@ export class PersonBackgroundRenderer {
     if (effects.cloneLayout === 'row' && cloneCount > 0) {
       this.clearTrailFrames();
       const total = cloneCount + 1;
+      const mainIndex = Math.floor(total / 2);
       const scale = Math.max(0.46, 1 - cloneCount * 0.13);
       const spacing = outputCanvas.width * (total <= 2 ? 0.28 : 0.19);
       const firstCenter = outputCanvas.width / 2 - spacing * (total - 1) / 2;
@@ -474,16 +556,29 @@ export class PersonBackgroundRenderer {
         const destinationX = firstCenter + spacing * index - destinationWidth / 2;
         const destinationY = (outputCanvas.height - destinationHeight) / 2;
         const isMiddle = Math.abs(index - (total - 1) / 2) < 0.51;
-        this.drawStyledSubject(
-          outputContext,
-          this.subjectCanvas,
-          destinationX,
-          destinationY,
-          destinationWidth,
-          destinationHeight,
-          effects,
-          isMiddle ? 1 : 0.9,
-        );
+        if (effects.cloneStyle === 'outline' && index !== mainIndex) {
+          this.drawOutlineClone(
+            outputContext,
+            this.subjectCanvas,
+            destinationX,
+            destinationY,
+            destinationWidth,
+            destinationHeight,
+            effects,
+            0.9,
+          );
+        } else {
+          this.drawStyledSubject(
+            outputContext,
+            this.subjectCanvas,
+            destinationX,
+            destinationY,
+            destinationWidth,
+            destinationHeight,
+            effects,
+            isMiddle || index === mainIndex ? 1 : 0.9,
+          );
+        }
       }
       return;
     }
@@ -499,7 +594,7 @@ export class PersonBackgroundRenderer {
         const x = frame.x + (frame.width - width) / 2 - depth * outputCanvas.width * 0.018;
         const y = frame.y + (frame.height - height) / 2 + depth * outputCanvas.height * 0.007;
         const opacity = 0.22 + (index / Math.max(1, frames.length)) * 0.48;
-        this.drawStyledSubject(outputContext, frame.canvas, x, y, width, height, effects, opacity);
+        this.drawCloneSubject(outputContext, frame.canvas, x, y, width, height, effects, opacity);
       }
     } else if (cloneCount === 0) {
       this.clearTrailFrames();
@@ -662,6 +757,8 @@ export class PersonBackgroundRenderer {
     this.segmenter.close();
     this.previousAlpha = null;
     this.pendingAlpha = null;
+    this.outlineCloneCanvas.width = 1;
+    this.outlineCloneCanvas.height = 1;
     this.clearTrailFrames();
   }
 
