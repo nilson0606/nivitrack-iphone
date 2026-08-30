@@ -56,11 +56,20 @@ export function smoothBackdropParameters(
   const scale = Math.min(1, maxSide / Math.max(outputWidth, outputHeight));
   const width = Math.max(48, Math.round(outputWidth * scale));
   const height = Math.max(48, Math.round(outputHeight * scale));
-  const filterRadius = Math.round(36 + ((normalizedStrength - 12) / 52) * 24);
+  const strengthRatio = (normalizedStrength - 12) / 52;
+  const fieldMaxSide = Math.round(112 - strengthRatio * 40);
+  const fieldScale = Math.min(1, fieldMaxSide / Math.max(width, height));
+  const fieldWidth = Math.max(24, Math.round(width * fieldScale));
+  const fieldHeight = Math.max(24, Math.round(height * fieldScale));
+  const fieldRadius = Math.round(10 + strengthRatio * 10);
+  const filterRadius = Math.round(26 + strengthRatio * 18);
   const paddingRatio = Math.min(0.3, (filterRadius * 1.35) / Math.min(width, height));
   return {
     width,
     height,
+    fieldWidth,
+    fieldHeight,
+    fieldRadius,
     filterRadius,
     paddingX: Math.round(width * paddingRatio),
     paddingY: Math.round(height * paddingRatio),
@@ -360,6 +369,7 @@ export class PersonBackgroundRenderer {
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
   private readonly backgroundCanvas = document.createElement('canvas');
+  private readonly backgroundSnapshotCanvas = document.createElement('canvas');
   private readonly smoothBackgroundCanvas = document.createElement('canvas');
   private readonly outlineCloneCanvas = document.createElement('canvas');
   private readonly rowSubjectCanvas = document.createElement('canvas');
@@ -516,46 +526,59 @@ export class PersonBackgroundRenderer {
       backgroundContext.globalCompositeOperation = 'source-over';
 
       if (
-        this.smoothBackgroundCanvas.width !== backdrop.width
-        || this.smoothBackgroundCanvas.height !== backdrop.height
+        this.backgroundSnapshotCanvas.width !== backdrop.width
+        || this.backgroundSnapshotCanvas.height !== backdrop.height
       ) {
-        this.smoothBackgroundCanvas.width = backdrop.width;
-        this.smoothBackgroundCanvas.height = backdrop.height;
+        this.backgroundSnapshotCanvas.width = backdrop.width;
+        this.backgroundSnapshotCanvas.height = backdrop.height;
       }
-      const smoothContext = this.smoothBackgroundCanvas.getContext('2d', { alpha: false });
-      if (!smoothContext) throw new Error('Safari 無法建立平滑背景畫布');
-      smoothContext.save();
-      smoothContext.globalCompositeOperation = 'copy';
-      smoothContext.globalAlpha = 1;
-      smoothContext.filter = 'none';
-      smoothContext.drawImage(this.backgroundCanvas, 0, 0);
-      smoothContext.restore();
+      const snapshotContext = this.backgroundSnapshotCanvas.getContext('2d', { alpha: false });
+      if (!snapshotContext) throw new Error('Safari 無法建立背景暫存畫布');
+      snapshotContext.save();
+      snapshotContext.globalCompositeOperation = 'copy';
+      snapshotContext.globalAlpha = 1;
+      snapshotContext.filter = 'none';
+      snapshotContext.drawImage(this.backgroundCanvas, 0, 0);
+      snapshotContext.restore();
       this.concealTrackedSubjectInBackdrop(
         backgroundContext,
-        this.smoothBackgroundCanvas,
+        this.backgroundSnapshotCanvas,
         subjectBounds,
         canvas.width,
         canvas.height,
         effects.backgroundColor,
       );
 
+      if (
+        this.smoothBackgroundCanvas.width !== backdrop.fieldWidth
+        || this.smoothBackgroundCanvas.height !== backdrop.fieldHeight
+      ) {
+        this.smoothBackgroundCanvas.width = backdrop.fieldWidth;
+        this.smoothBackgroundCanvas.height = backdrop.fieldHeight;
+      }
+      const smoothContext = this.smoothBackgroundCanvas.getContext('2d', { alpha: false });
+      if (!smoothContext) throw new Error('Safari 無法建立柔焦色場畫布');
       smoothContext.save();
       smoothContext.globalCompositeOperation = 'source-over';
       smoothContext.globalAlpha = 1;
       smoothContext.filter = 'none';
       smoothContext.fillStyle = effects.backgroundColor;
-      smoothContext.fillRect(0, 0, backdrop.width, backdrop.height);
+      smoothContext.fillRect(0, 0, backdrop.fieldWidth, backdrop.fieldHeight);
       smoothContext.imageSmoothingEnabled = true;
       smoothContext.imageSmoothingQuality = 'high';
-      smoothContext.filter = `blur(${backdrop.filterRadius}px)`;
-      const passPaddingX = Math.ceil(backdrop.paddingX / 2);
-      const passPaddingY = Math.ceil(backdrop.paddingY / 2);
+      smoothContext.filter = `blur(${backdrop.fieldRadius}px)`;
+      const fieldPaddingRatio = Math.min(
+        0.34,
+        (backdrop.fieldRadius * 1.25) / Math.min(backdrop.fieldWidth, backdrop.fieldHeight),
+      );
+      const fieldPaddingX = Math.ceil(backdrop.fieldWidth * fieldPaddingRatio);
+      const fieldPaddingY = Math.ceil(backdrop.fieldHeight * fieldPaddingRatio);
       smoothContext.drawImage(
         this.backgroundCanvas,
-        -passPaddingX,
-        -passPaddingY,
-        backdrop.width + passPaddingX * 2,
-        backdrop.height + passPaddingY * 2,
+        -fieldPaddingX,
+        -fieldPaddingY,
+        backdrop.fieldWidth + fieldPaddingX * 2,
+        backdrop.fieldHeight + fieldPaddingY * 2,
       );
       smoothContext.restore();
 
@@ -570,10 +593,10 @@ export class PersonBackgroundRenderer {
       backgroundContext.filter = `blur(${backdrop.filterRadius}px)`;
       backgroundContext.drawImage(
         this.smoothBackgroundCanvas,
-        -passPaddingX,
-        -passPaddingY,
-        backdrop.width + passPaddingX * 2,
-        backdrop.height + passPaddingY * 2,
+        -backdrop.paddingX,
+        -backdrop.paddingY,
+        backdrop.width + backdrop.paddingX * 2,
+        backdrop.height + backdrop.paddingY * 2,
       );
       backgroundContext.restore();
 
@@ -1026,6 +1049,8 @@ export class PersonBackgroundRenderer {
     this.rowSubjectCanvas.height = 1;
     this.backgroundCanvas.width = 1;
     this.backgroundCanvas.height = 1;
+    this.backgroundSnapshotCanvas.width = 1;
+    this.backgroundSnapshotCanvas.height = 1;
     this.smoothBackgroundCanvas.width = 1;
     this.smoothBackgroundCanvas.height = 1;
     this.clearTrailFrames();

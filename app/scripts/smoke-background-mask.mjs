@@ -161,6 +161,9 @@ function testSmoothBackdrop() {
   return {
     keepsSmoothResolution: minimum.height === 420 && maximum.height === 420,
     avoidsTinyPixelBuffer: maximum.width >= 200,
+    reducesToColorField: maximum.fieldHeight <= 80
+      && maximum.fieldWidth < maximum.width,
+    strongerUsesLowerFrequency: maximum.fieldHeight < minimum.fieldHeight,
     strengthIncreasesRadius: minimum.filterRadius < normal.filterRadius
       && normal.filterRadius < maximum.filterRadius,
     padsBlurredEdges: maximum.paddingX > maximum.filterRadius,
@@ -225,6 +228,8 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && rowClones.plusOneKeepsLargeSubjects
   && smoothBackdrop.keepsSmoothResolution
   && smoothBackdrop.avoidsTinyPixelBuffer
+  && smoothBackdrop.reducesToColorField
+  && smoothBackdrop.strongerUsesLowerFrequency
   && smoothBackdrop.strengthIncreasesRadius
   && smoothBackdrop.padsBlurredEdges
   && backdropSubjectRemoval.containsSubject
