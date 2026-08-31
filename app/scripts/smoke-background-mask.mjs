@@ -4,9 +4,13 @@ import {
   recoverTrackedSubjectAlpha,
   selectTrackedSubjectAlpha,
   smoothBackdropParameters,
+  stabilizeTrackedPromptAlpha,
   stabilizeTrackedSubjectAlpha,
   tightenTrackedSubjectEdges,
   trackedBackdropPatch,
+  trackedMaskOverlap,
+  trackedPromptAlpha,
+  trackedPromptPoint,
   trackedSubjectRegion,
 } from '../lib/person-background-removal.ts';
 import { trackedFrameCrop } from '../lib/video-export.ts';
@@ -119,6 +123,40 @@ function testTemporalStability() {
     oneFrameLeakRejected: firstAppearance[0] === 0,
     confirmedSubjectAccepted: confirmedAppearance[0] > 0.5,
     persistentSubjectRetained: persistentSubject[0] > 0.6,
+  };
+}
+
+function testPointPromptedObjectIdentity() {
+  const promptWidth = 20;
+  const promptHeight = 20;
+  const box = [5, 4, 10, 12];
+  const fallback = trackedPromptPoint(null, promptWidth, promptHeight, box, 20, 20);
+  const previous = new Float32Array(promptWidth * promptHeight);
+  for (let y = 5; y <= 14; y += 1) {
+    for (let x = 6; x <= 11; x += 1) previous[y * promptWidth + x] = 0.9;
+  }
+  const continued = trackedPromptPoint(previous, promptWidth, promptHeight, box, 20, 20);
+  const confidence = new Float32Array(promptWidth * promptHeight);
+  for (let y = 5; y <= 14; y += 1) {
+    for (let x = 6; x <= 11; x += 1) confidence[y * promptWidth + x] = 0.95;
+  }
+  for (let x = 12; x <= 15; x += 1) confidence[7 * promptWidth + x] = 0.9;
+  for (let y = 5; y <= 14; y += 1) {
+    for (let x = 17; x <= 19; x += 1) confidence[y * promptWidth + x] = 0.98;
+  }
+  const alpha = trackedPromptAlpha(confidence, promptWidth, promptHeight, box, 20, 20);
+  const unrelated = new Float32Array(promptWidth * promptHeight);
+  for (let y = 5; y <= 14; y += 1) {
+    for (let x = 14; x <= 18; x += 1) unrelated[y * promptWidth + x] = 0.95;
+  }
+  const stabilized = stabilizeTrackedPromptAlpha(alpha, previous);
+  return {
+    fallbackUsesTorso: Math.abs(fallback.x - 0.5) < 0.001
+      && Math.abs(fallback.y - 0.452) < 0.001,
+    promptFollowsPreviousMask: continued.x < 0.5 && continued.y > 0.4,
+    newLimbAcceptedImmediately: stabilized[7 * promptWidth + 14] > 0.5,
+    farObjectExcludedByTrackedRegion: alpha[7 * promptWidth + 19] === 0,
+    unrelatedMaskRejectedByOverlap: trackedMaskOverlap(unrelated, previous) < 0.12,
   };
 }
 
@@ -288,6 +326,7 @@ const lowConfidence = testLowConfidenceDancer();
 const recovery = testMissingFrameRecovery();
 const region = testTrackedRegion();
 const temporal = testTemporalStability();
+const promptedIdentity = testPointPromptedObjectIdentity();
 const strictIdentity = testStrictSubjectIdentityLock();
 const edges = testEdgeTightening();
 const framing = testAdjustableFraming();
@@ -306,6 +345,11 @@ const pass = separated.selected > 0 && separated.leaked === 0
   && temporal.oneFrameLeakRejected
   && temporal.confirmedSubjectAccepted
   && temporal.persistentSubjectRetained
+  && promptedIdentity.fallbackUsesTorso
+  && promptedIdentity.promptFollowsPreviousMask
+  && promptedIdentity.newLimbAcceptedImmediately
+  && promptedIdentity.farObjectExcludedByTrackedRegion
+  && promptedIdentity.unrelatedMaskRejectedByOverlap
   && strictIdentity.mainSubjectRetained
   && strictIdentity.farPasserRejected
   && strictIdentity.sustainedPasserCannotCreepIn
@@ -340,6 +384,7 @@ console.log(JSON.stringify({
   recovery,
   region,
   temporal,
+  promptedIdentity,
   strictIdentity,
   edges,
   framing,

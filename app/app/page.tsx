@@ -246,7 +246,7 @@ export default function Home() {
       setRecorderSupport(support);
       setCapabilities([
         { label: '本機 AI', detail: 'WebAssembly', available: typeof WebAssembly !== 'undefined' },
-        { label: '人物去背', detail: 'MediaPipe 本機分割', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
+        { label: '指定主角去背', detail: 'MagicTouch 本機物件分割', available: typeof WebAssembly !== 'undefined' && typeof HTMLCanvasElement !== 'undefined' },
         { label: '背景運算', detail: 'Web Worker', available: typeof Worker !== 'undefined' },
         { label: '逐幀影像', detail: 'WebCodecs', available: typeof VideoFrame !== 'undefined' },
         { label: 'GPU 加速', detail: 'WebGPU', available: 'gpu' in navigator },
@@ -1920,7 +1920,7 @@ export default function Home() {
 
                   {selectedTool === 'remove-background' && (
                     <p className="export-note">
-                      先完成原本的人物去背，再套用背景、外框與分身；推論、後製、放大置中與原聲合成都只在這台 iPhone 執行。
+                      先以 ViT 追蹤框與框內提示點辨識同一位主角，再套用背景、外框與分身；推論、後製、放大置中與原聲合成都只在這台 iPhone 執行。
                     </p>
                   )}
 

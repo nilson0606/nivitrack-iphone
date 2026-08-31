@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-12-tools-v19';
+const VERSION = 'nivitrack-12-tools-v21-magic-touch-candidate';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
