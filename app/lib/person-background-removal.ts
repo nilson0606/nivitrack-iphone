@@ -1,4 +1,4 @@
-import { FilesetResolver, ImageSegmenter, PoseLandmarker } from '@mediapipe/tasks-vision';
+import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 
 import type { Box } from './vit-tracker';
 
@@ -363,122 +363,6 @@ export function stabilizeTrackedSubjectAlpha(
   return stabilized;
 }
 
-export type PoseMaskCandidate = {
-  alpha: Float32Array;
-  width: number;
-  height: number;
-  centerX: number;
-  centerY: number;
-};
-
-type PosePoint = {
-  x: number;
-  y: number;
-  visibility?: number;
-  presence?: number;
-};
-
-export function poseLandmarkCenter(landmarks: PosePoint[]) {
-  const bodyIndices = [11, 12, 23, 24];
-  const visibleBody = bodyIndices
-    .map((index) => landmarks[index])
-    .filter((point) => point
-      && Number.isFinite(point.x)
-      && Number.isFinite(point.y)
-      && (point.visibility ?? 1) >= 0.2
-      && (point.presence ?? 1) >= 0.2);
-  const points = visibleBody.length >= 2
-    ? visibleBody
-    : landmarks.filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y));
-  if (points.length === 0) return { x: 0.5, y: 0.5 };
-  return {
-    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
-    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
-  };
-}
-
-export function chooseTrackedPoseMask(
-  candidates: PoseMaskCandidate[],
-  box: Box,
-  sourceWidth: number,
-  sourceHeight: number,
-  previousAlpha: Float32Array | null,
-) {
-  if (candidates.length === 0) return null;
-  const targetX = (box[0] + box[2] / 2) / Math.max(1, sourceWidth);
-  const targetY = (box[1] + box[3] * 0.44) / Math.max(1, sourceHeight);
-  let selected: PoseMaskCandidate | null = null;
-  let selectedScore = Number.NEGATIVE_INFINITY;
-  for (const candidate of candidates) {
-    if (candidate.alpha.length !== candidate.width * candidate.height) continue;
-    const distance = Math.hypot(candidate.centerX - targetX, candidate.centerY - targetY);
-    const centerScore = 1 - Math.min(1, distance * 2.2);
-    let overlapScore = 0;
-    if (previousAlpha?.length === candidate.alpha.length) {
-      let overlap = 0;
-      let previousWeight = 0;
-      for (let index = 0; index < candidate.alpha.length; index += 2) {
-        const previous = previousAlpha[index];
-        if (previous < 0.035) continue;
-        previousWeight += previous;
-        overlap += Math.min(previous, candidate.alpha[index]);
-      }
-      overlapScore = previousWeight > 0 ? overlap / previousWeight : 0;
-    }
-    const centerMaskX = clamp(Math.round(targetX * (candidate.width - 1)), 0, candidate.width - 1);
-    const centerMaskY = clamp(Math.round(targetY * (candidate.height - 1)), 0, candidate.height - 1);
-    const targetConfidence = candidate.alpha[centerMaskY * candidate.width + centerMaskX] ?? 0;
-    const score = overlapScore * 3.2 + centerScore * 1.25 + targetConfidence * 0.45;
-    if (score > selectedScore) {
-      selected = candidate;
-      selectedScore = score;
-    }
-  }
-  return selected;
-}
-
-export function trackedPoseAlpha(
-  confidence: Float32Array,
-  maskWidth: number,
-  maskHeight: number,
-  box: Box,
-  sourceWidth: number,
-  sourceHeight: number,
-) {
-  const alpha = new Float32Array(maskWidth * maskHeight);
-  if (confidence.length !== alpha.length) return alpha;
-  const centerX = ((box[0] + box[2] / 2) / Math.max(1, sourceWidth)) * maskWidth;
-  const centerY = ((box[1] + box[3] / 2) / Math.max(1, sourceHeight)) * maskHeight;
-  const radiusX = Math.max(3, (box[2] / Math.max(1, sourceWidth)) * maskWidth * 0.68);
-  const radiusY = Math.max(3, (box[3] / Math.max(1, sourceHeight)) * maskHeight * 0.64);
-  for (let index = 0; index < confidence.length; index += 1) {
-    const x = index % maskWidth;
-    const y = Math.floor(index / maskWidth);
-    const normalizedX = (x - centerX) / radiusX;
-    const normalizedY = (y - centerY) / radiusY;
-    if (Math.pow(Math.abs(normalizedX), 8) + Math.pow(Math.abs(normalizedY), 8) > 1) continue;
-    alpha[index] = smoothstep(0.07, 0.72, confidence[index]);
-  }
-  return alpha;
-}
-
-export function stabilizeTrackedPoseAlpha(
-  currentAlpha: Float32Array,
-  previousAlpha: Float32Array | null,
-) {
-  if (previousAlpha?.length !== currentAlpha.length) return new Float32Array(currentAlpha);
-  const stabilized = new Float32Array(currentAlpha.length);
-  for (let index = 0; index < currentAlpha.length; index += 1) {
-    const current = currentAlpha[index];
-    const previous = previousAlpha[index];
-    const blended = current >= previous
-      ? previous * 0.16 + current * 0.84
-      : previous * 0.42 + current * 0.58;
-    stabilized[index] = blended < 0.02 ? 0 : blended;
-  }
-  return stabilized;
-}
-
 export type StrictSubjectLockResult = {
   alpha: Float32Array;
   referenceArea: number;
@@ -719,7 +603,6 @@ function trackedBoxMotion(previousBox: Box | null, currentBox: Box) {
 
 export class PersonBackgroundRenderer {
   private readonly segmenter: ImageSegmenter;
-  private readonly poseLandmarker: PoseLandmarker | null;
   private readonly inferenceCanvas = document.createElement('canvas');
   private readonly maskCanvas = document.createElement('canvas');
   private readonly subjectCanvas = document.createElement('canvas');
@@ -738,59 +621,30 @@ export class PersonBackgroundRenderer {
   private previousBox: Box | null = null;
   private subjectAreaReference = 0;
 
-  private constructor(segmenter: ImageSegmenter, poseLandmarker: PoseLandmarker | null) {
+  private constructor(segmenter: ImageSegmenter) {
     this.segmenter = segmenter;
-    this.poseLandmarker = poseLandmarker;
   }
 
   static async create() {
     const wasmRoot = new URL('mediapipe/', document.baseURI).href;
     const modelUrl = new URL('models/selfie_segmenter.tflite', document.baseURI).href;
-    const poseModelUrl = new URL('models/pose_landmarker_lite.task', document.baseURI).href;
     const fileset = await FilesetResolver.forVisionTasks(wasmRoot);
-    const segmenterCanvas = document.createElement('canvas');
+    const canvas = document.createElement('canvas');
     const common = {
       baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' as const },
       runningMode: 'VIDEO' as const,
       outputConfidenceMasks: true,
       outputCategoryMask: false,
-      canvas: segmenterCanvas,
+      canvas,
     };
-    let segmenter: ImageSegmenter;
     try {
-      segmenter = await ImageSegmenter.createFromOptions(fileset, common);
+      return new PersonBackgroundRenderer(await ImageSegmenter.createFromOptions(fileset, common));
     } catch {
-      segmenter = await ImageSegmenter.createFromOptions(fileset, {
+      return new PersonBackgroundRenderer(await ImageSegmenter.createFromOptions(fileset, {
         ...common,
         baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' },
-      });
+      }));
     }
-
-    const poseCanvas = document.createElement('canvas');
-    const poseCommon = {
-      baseOptions: { modelAssetPath: poseModelUrl, delegate: 'GPU' as const },
-      runningMode: 'VIDEO' as const,
-      numPoses: 2,
-      minPoseDetectionConfidence: 0.35,
-      minPosePresenceConfidence: 0.35,
-      minTrackingConfidence: 0.4,
-      outputSegmentationMasks: true,
-      canvas: poseCanvas,
-    };
-    let poseLandmarker: PoseLandmarker | null = null;
-    try {
-      poseLandmarker = await PoseLandmarker.createFromOptions(fileset, poseCommon);
-    } catch {
-      try {
-        poseLandmarker = await PoseLandmarker.createFromOptions(fileset, {
-          ...poseCommon,
-          baseOptions: { modelAssetPath: poseModelUrl, delegate: 'CPU' },
-        });
-      } catch {
-        poseLandmarker = null;
-      }
-    }
-    return new PersonBackgroundRenderer(segmenter, poseLandmarker);
   }
 
   private clearTrailFrames() {
@@ -1320,9 +1174,8 @@ export class PersonBackgroundRenderer {
       inferenceWidth,
       inferenceHeight,
     );
-    this.timestamp += 33;
+    this.timestamp += 1;
     let currentAlpha: Float32Array | null = null;
-    let usedPoseIdentity = false;
     let maskWidth = inferenceWidth;
     let maskHeight = inferenceHeight;
     const relativeBox: Box = [
@@ -1332,66 +1185,20 @@ export class PersonBackgroundRenderer {
       box[3],
     ];
 
-    if (this.poseLandmarker) {
-      try {
-        this.poseLandmarker.detectForVideo(this.inferenceCanvas, this.timestamp, (result) => {
-          const candidates: PoseMaskCandidate[] = [];
-          for (let index = 0; index < (result.segmentationMasks?.length ?? 0); index += 1) {
-            const mask = result.segmentationMasks?.[index];
-            if (!mask) continue;
-            const center = poseLandmarkCenter(result.landmarks[index] ?? []);
-            candidates.push({
-              alpha: new Float32Array(mask.getAsFloat32Array()),
-              width: mask.width,
-              height: mask.height,
-              centerX: center.x,
-              centerY: center.y,
-            });
-          }
-          const selectedPose = chooseTrackedPoseMask(
-            candidates,
-            relativeBox,
-            regionWidth,
-            regionHeight,
-            this.previousAlpha,
-          );
-          if (!selectedPose) return;
-          const poseAlpha = trackedPoseAlpha(
-            selectedPose.alpha,
-            selectedPose.width,
-            selectedPose.height,
-            relativeBox,
-            regionWidth,
-            regionHeight,
-          );
-          if (countVisiblePixels(poseAlpha) < 8) return;
-          maskWidth = selectedPose.width;
-          maskHeight = selectedPose.height;
-          currentAlpha = poseAlpha;
-          usedPoseIdentity = true;
-        });
-      } catch {
-        currentAlpha = null;
-        usedPoseIdentity = false;
-      }
-    }
-
-    if (!currentAlpha) {
-      this.segmenter.segmentForVideo(this.inferenceCanvas, this.timestamp, (result) => {
-        const mask = result.confidenceMasks?.[0];
-        if (!mask) return;
-        maskWidth = mask.width;
-        maskHeight = mask.height;
-        currentAlpha = selectTrackedSubjectAlpha(
-          mask.getAsFloat32Array(),
-          maskWidth,
-          maskHeight,
-          relativeBox,
-          regionWidth,
-          regionHeight,
-        );
-      });
-    }
+    this.segmenter.segmentForVideo(this.inferenceCanvas, this.timestamp, (result) => {
+      const mask = result.confidenceMasks?.[0];
+      if (!mask) return;
+      maskWidth = mask.width;
+      maskHeight = mask.height;
+      currentAlpha = selectTrackedSubjectAlpha(
+        mask.getAsFloat32Array(),
+        maskWidth,
+        maskHeight,
+        relativeBox,
+        regionWidth,
+        regionHeight,
+      );
+    });
 
     const recovered = recoverTrackedSubjectAlpha(
       currentAlpha,
@@ -1404,27 +1211,18 @@ export class PersonBackgroundRenderer {
 
     if (recovered.fresh) {
       const freshAlpha = currentAlpha;
-      if (usedPoseIdentity) {
-        currentAlpha = stabilizeTrackedPoseAlpha(freshAlpha, this.previousAlpha);
-        const poseArea = countVisiblePixels(currentAlpha);
-        this.subjectAreaReference = this.subjectAreaReference > 0
-          ? this.subjectAreaReference * 0.9 + poseArea * 0.1
-          : poseArea;
-        this.pendingAlpha = null;
-      } else {
-        currentAlpha = stabilizeTrackedSubjectAlpha(freshAlpha, this.previousAlpha, this.pendingAlpha);
-        const locked = lockTrackedSubjectIdentity(
-          currentAlpha,
-          this.previousAlpha,
-          maskWidth,
-          maskHeight,
-          this.subjectAreaReference,
-          motionRatio,
-        );
-        currentAlpha = locked.alpha;
-        this.subjectAreaReference = locked.referenceArea;
-        this.pendingAlpha = new Float32Array(freshAlpha);
-      }
+      currentAlpha = stabilizeTrackedSubjectAlpha(freshAlpha, this.previousAlpha, this.pendingAlpha);
+      const locked = lockTrackedSubjectIdentity(
+        currentAlpha,
+        this.previousAlpha,
+        maskWidth,
+        maskHeight,
+        this.subjectAreaReference,
+        motionRatio,
+      );
+      currentAlpha = locked.alpha;
+      this.subjectAreaReference = locked.referenceArea;
+      this.pendingAlpha = new Float32Array(freshAlpha);
     } else {
       this.pendingAlpha = null;
     }
@@ -1495,7 +1293,6 @@ export class PersonBackgroundRenderer {
 
   close() {
     this.segmenter.close();
-    this.poseLandmarker?.close();
     this.previousAlpha = null;
     this.pendingAlpha = null;
     this.previousBox = null;
