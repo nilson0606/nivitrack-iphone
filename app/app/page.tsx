@@ -30,6 +30,8 @@ import type {
   PersonBackgroundRenderer,
 } from '../lib/person-background-removal';
 import {
+  createMainHeadTrackingContext,
+  headBoxFromTrackingContext,
   headBoxesAt,
   plausibleDetectedHeadBoxes,
   stabilizeHeadDetectionFrames,
@@ -1002,6 +1004,9 @@ export default function Home() {
     }];
     const headFrames: HeadDetectionFrame[] = [];
     const started = eventClock();
+    const mainHeadTrackingContext = selectedTool === 'mask-faces'
+      ? createMainHeadTrackingContext(box, video.videoWidth, video.videoHeight)
+      : null;
 
     try {
       setNotice('正在載入本機 ViT 模型…');
@@ -1009,7 +1014,7 @@ export default function Home() {
         const modelUrl = new URL('models/vittrack.onnx', document.baseURI).href;
         trackerRef.current = await VitTracker.create(modelUrl);
       }
-      trackerRef.current.initialize(video, box);
+      trackerRef.current.initialize(video, mainHeadTrackingContext?.trackerBox ?? box);
       if (selectedTool === 'mask-faces') {
         setNotice('正在載入本機 360° 人頭辨識…');
         await ensureFaceHeadDetector();
@@ -1022,22 +1027,30 @@ export default function Home() {
         const frameTime = Math.min(at, endTime);
         await seekTo(frameTime);
         const result = await trackerRef.current.update(video);
+        const resultBox = mainHeadTrackingContext
+          ? headBoxFromTrackingContext(
+            result.box,
+            mainHeadTrackingContext,
+            video.videoWidth,
+            video.videoHeight,
+          )
+          : result.box;
         results.push(result);
         previewPoints.push({
           time: frameTime,
-          box: [...result.box] as Box,
+          box: [...resultBox] as Box,
           score: result.score,
           accepted: result.accepted,
         });
         frameIndex += 1;
         if (selectedTool === 'mask-faces' && frameIndex % 2 === 0) {
-          headFrames.push(await detectHeadFrame(video, result.box, frameTime));
+          headFrames.push(await detectHeadFrame(video, resultBox, frameTime));
         }
-        setBox(result.box);
+        setBox(resultBox);
         setCurrentScore(result.score);
         setProgress((frameTime - startTime) / Math.max(0.001, endTime - startTime));
         setNotice((selectedTool === 'mask-faces' ? 'ViT＋人頭追蹤中 · 第 ' : 'ViT 追蹤中 · 第 ') + frameIndex + ' 幀');
-        drawFrame(result.box, result.score);
+        drawFrame(resultBox, result.score);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         if (frameTime >= endTime) break;
       }
@@ -1440,6 +1453,13 @@ export default function Home() {
     const measurements: TrackResult[] = [];
     const started = eventClock();
     let processed = 0;
+    const mainHeadTrackingContext = selectedTool === 'mask-faces'
+      ? createMainHeadTrackingContext(
+        selection.box,
+        video.videoWidth,
+        video.videoHeight,
+      )
+      : null;
 
     try {
       setNotice('正在載入本機 ViT 模型…');
@@ -1456,27 +1476,38 @@ export default function Home() {
 
       const trackDirection = async (times: number[], label: string) => {
         await seekTo(selection.time);
-        trackerRef.current!.initialize(video, selection.box);
+        trackerRef.current!.initialize(
+          video,
+          mainHeadTrackingContext?.trackerBox ?? selection.box,
+        );
         for (const frameTime of times) {
           if (cancelRef.current) throw new Error('使用者已取消追蹤');
           await seekTo(frameTime);
           const result = await trackerRef.current!.update(video);
+          const resultBox = mainHeadTrackingContext
+            ? headBoxFromTrackingContext(
+              result.box,
+              mainHeadTrackingContext,
+              video.videoWidth,
+              video.videoHeight,
+            )
+            : result.box;
           measurements.push(result);
           points.push({
             time: frameTime,
-            box: [...result.box] as Box,
+            box: [...resultBox] as Box,
             score: result.score,
             accepted: result.accepted,
           });
           processed += 1;
           if (selectedTool === 'mask-faces' && processed % 2 === 0) {
-            headFrames.push(await detectHeadFrame(video, result.box, frameTime));
+            headFrames.push(await detectHeadFrame(video, resultBox, frameTime));
           }
-          setBox(result.box);
+          setBox(resultBox);
           setCurrentScore(result.score);
           setProgress(processed / Math.max(1, totalFrames));
           setNotice((selectedTool === 'mask-faces' ? label + '＋人頭辨識' : label) + ' · ' + processed + ' / ' + totalFrames + ' 幀');
-          drawFrame(result.box, result.score);
+          drawFrame(resultBox, result.score);
           await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         }
       };

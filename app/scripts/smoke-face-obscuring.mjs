@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   bystanderFaceBoxes,
   bystanderHeadBoxes,
+  createMainHeadTrackingContext,
   expandFaceBox,
+  headBoxFromTrackingContext,
   headBoxesAt,
   isProtectedMainHead,
   mergeHeadBoxes,
@@ -27,6 +29,47 @@ assert.equal(
 );
 
 const selectedMainHead = [134, 108, 34, 38];
+const mainHeadTrackingContext = createMainHeadTrackingContext(selectedMainHead, 500, 500);
+assert.ok(
+  mainHeadTrackingContext.trackerBox[2] > selectedMainHead[2] * 2,
+  'feature 13 must give ViT shoulder context instead of tracking only a tiny interchangeable head',
+);
+assert.ok(
+  mainHeadTrackingContext.trackerBox[3] > selectedMainHead[3] * 4,
+  'feature 13 identity tracking must include enough upper-body appearance to survive crossings',
+);
+assert.ok(
+  headBoxFromTrackingContext(
+    mainHeadTrackingContext.trackerBox,
+    mainHeadTrackingContext,
+    500,
+    500,
+  ).every((value, index) => Math.abs(value - selectedMainHead[index]) < 1e-6),
+  'the hidden identity context must map back to the exact user-selected main head',
+);
+const movedMainHead = headBoxFromTrackingContext(
+  [
+    mainHeadTrackingContext.trackerBox[0] + 40,
+    mainHeadTrackingContext.trackerBox[1] + 15,
+    mainHeadTrackingContext.trackerBox[2],
+    mainHeadTrackingContext.trackerBox[3],
+  ],
+  mainHeadTrackingContext,
+  500,
+  500,
+);
+assert.ok(
+  movedMainHead.every(
+    (value, index) =>
+      Math.abs(value - [
+        selectedMainHead[0] + 40,
+        selectedMainHead[1] + 15,
+        selectedMainHead[2],
+        selectedMainHead[3],
+      ][index]) < 1e-6,
+  ),
+  'only the tracked identity context may move the protected main-head path',
+);
 assert.equal(
   selectMainFaceIndex([[136, 110, 30, 34], bystanderFace], selectedMainHead, null, false),
   0,

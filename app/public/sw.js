@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-13-tools-v28-yolox-head-detector';
+const VERSION = 'nivitrack-13-tools-v29-main-head-identity-lock';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

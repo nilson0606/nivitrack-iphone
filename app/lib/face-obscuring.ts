@@ -24,6 +24,11 @@ export type HeadDetectionFrame = {
   heads: Box[];
 };
 
+export type MainHeadTrackingContext = {
+  trackerBox: Box;
+  relativeHeadBox: Box;
+};
+
 export type FaceHeadDetection = {
   box: Box;
   score: number;
@@ -113,6 +118,60 @@ function referenceHeadForSubject(
     ] as Box;
   }
   return personBoxToHeadBox(subject, sourceWidth, sourceHeight);
+}
+
+export function createMainHeadTrackingContext(
+  head: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+): MainHeadTrackingContext {
+  const headCenterX = head[0] + head[2] / 2;
+  const desiredWidth = Math.min(sourceWidth, Math.max(head[2], head[2] * 2.35));
+  const desiredHeight = Math.min(sourceHeight, Math.max(head[3], head[3] * 4.35));
+  const trackerX = clamp(
+    headCenterX - desiredWidth / 2,
+    0,
+    Math.max(0, sourceWidth - desiredWidth),
+  );
+  const trackerY = clamp(
+    head[1] - head[3] * 0.32,
+    0,
+    Math.max(0, sourceHeight - desiredHeight),
+  );
+  const trackerBox: Box = [trackerX, trackerY, desiredWidth, desiredHeight];
+  return {
+    trackerBox,
+    relativeHeadBox: [
+      (head[0] - trackerX) / Math.max(1, desiredWidth),
+      (head[1] - trackerY) / Math.max(1, desiredHeight),
+      head[2] / Math.max(1, desiredWidth),
+      head[3] / Math.max(1, desiredHeight),
+    ],
+  };
+}
+
+export function headBoxFromTrackingContext(
+  trackedContextBox: Box,
+  context: MainHeadTrackingContext,
+  sourceWidth: number,
+  sourceHeight: number,
+): Box {
+  const width = Math.min(sourceWidth, Math.max(2, trackedContextBox[2] * context.relativeHeadBox[2]));
+  const height = Math.min(sourceHeight, Math.max(2, trackedContextBox[3] * context.relativeHeadBox[3]));
+  return [
+    clamp(
+      trackedContextBox[0] + trackedContextBox[2] * context.relativeHeadBox[0],
+      0,
+      Math.max(0, sourceWidth - width),
+    ),
+    clamp(
+      trackedContextBox[1] + trackedContextBox[3] * context.relativeHeadBox[1],
+      0,
+      Math.max(0, sourceHeight - height),
+    ),
+    width,
+    height,
+  ];
 }
 
 function faceTrackDistance(left: Box, right: Box) {
@@ -640,7 +699,6 @@ export class FaceObscuringRenderer {
   private readonly pixelCanvas = document.createElement('canvas');
   private readonly stickerImage: HTMLImageElement | null;
   private maskTracks: FaceTrack[] = [];
-  private previousMainHead: Box | null = null;
   private nextTrackId = 1;
 
   private constructor(stickerImage: HTMLImageElement | null) {
@@ -831,15 +889,11 @@ export class FaceObscuringRenderer {
     const plausibleHeads = mergeHeadBoxes(detectedBystanderHeads).filter((head) =>
       isPlausibleHeadBox(head, video.videoWidth, video.videoHeight, referenceHead, 2.6),
     );
-    const mainIndex = selectMainFaceIndex(
-      plausibleHeads,
-      subjectBox,
-      this.previousMainHead,
-      effects.privacyFirst,
-    );
-    if (mainIndex !== null) this.previousMainHead = [...plausibleHeads[mainIndex]] as Box;
-    const maskCandidates = plausibleHeads.filter((head, index) =>
-      index !== mainIndex && !isProtectedMainHead(
+    // ViT already supplies the current main-head path. Do not grant a second
+    // moving detection "main" status: when two dancers cross, that stale
+    // exemption can jump to the bystander and simultaneously mask the real main.
+    const maskCandidates = plausibleHeads.filter((head) =>
+      !isProtectedMainHead(
         head,
         subjectBox,
         video.videoWidth,
@@ -889,13 +943,11 @@ export class FaceObscuringRenderer {
 
   reset() {
     this.maskTracks = [];
-    this.previousMainHead = null;
   }
 
   close() {
     this.pixelCanvas.width = 1;
     this.pixelCanvas.height = 1;
     this.maskTracks = [];
-    this.previousMainHead = null;
   }
 }
