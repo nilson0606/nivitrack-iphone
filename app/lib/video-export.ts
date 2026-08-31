@@ -39,6 +39,7 @@ export type ExportOperation =
       smoothness: number;
       effects: FaceMaskEffects;
       headFrames: HeadDetectionFrame[];
+      cropBox?: Box;
     };
 
 export type TrackPoint = {
@@ -327,6 +328,10 @@ function configureOutputCanvas(
     [canvas.width, canvas.height] = selectionOutputSize(operation.selectionBox, quality);
     return;
   }
+  if (operation.kind === 'mask-faces' && operation.cropBox) {
+    [canvas.width, canvas.height] = selectionOutputSize(operation.cropBox, quality);
+    return;
+  }
   if (operation.kind === 'filter' || operation.kind === 'mask-faces' || operation.aspect === 'source') {
     [canvas.width, canvas.height] = sourceOutputSize(video, quality);
     return;
@@ -543,6 +548,7 @@ function drawOutputFrame(
       interpolateBox(path, time),
       operation.effects,
       detectedHeadsAt(operation.headFrames, time),
+      operation.cropBox,
     );
     return;
   }

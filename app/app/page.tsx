@@ -31,6 +31,7 @@ import type {
 } from '../lib/person-background-removal';
 import {
   createMainHeadTrackingContext,
+  defaultFaceMaskCrop,
   headBoxFromTrackingContext,
   headBoxesAt,
   plausibleDetectedHeadBoxes,
@@ -156,6 +157,7 @@ type BackgroundPreview = {
 
 type FacePreview = BackgroundPreview & {
   headFrames: HeadDetectionFrame[];
+  cropBox?: Box;
 };
 
 function formatBytes(bytes: number) {
@@ -695,6 +697,24 @@ export default function Home() {
     const video = videoRef.current;
     if (!video) return;
     video.pause();
+    if (selectedTool === 'mask-faces') {
+      const mainHead = selectionRef.current?.box ?? box;
+      if (!mainHead) {
+        setNotice('請先選定不需要遮住的主角頭部');
+        return;
+      }
+      const initialCrop = cropBox ?? defaultFaceMaskCrop(
+        mainHead,
+        video.videoWidth,
+        video.videoHeight,
+      );
+      setPhase('crop-select');
+      setCropBox(initialCrop);
+      resetExportResult();
+      setNotice('裁切是可選的；拖曳重畫成品保留範圍，或直接使用完整畫面');
+      requestAnimationFrame(() => drawCropFrame(initialCrop));
+      return;
+    }
     setPhase('crop-select');
     setCropBox(null);
     resetExportResult();
@@ -708,6 +728,29 @@ export default function Home() {
       return;
     }
     const video = videoRef.current;
+    if (selectedTool === 'mask-faces') {
+      const mainHead = selectionRef.current?.box ?? box;
+      if (!mainHead || !video) {
+        setNotice('主角頭部選擇已遺失，請返回重新選定');
+        return;
+      }
+      const mainCenterX = mainHead[0] + mainHead[2] / 2;
+      const mainCenterY = mainHead[1] + mainHead[3] / 2;
+      const containsMain = mainCenterX >= cropBox[0]
+        && mainCenterX <= cropBox[0] + cropBox[2]
+        && mainCenterY >= cropBox[1]
+        && mainCenterY <= cropBox[1] + cropBox[3];
+      if (!containsMain) {
+        setNotice('裁切框必須包含主角頭部，請重新拖曳');
+        return;
+      }
+      resetFacePreview();
+      setTrackPath([]);
+      setPhase('select');
+      setNotice('已啟用真實裁切；接下來只辨識並輸出框內畫面');
+      requestAnimationFrame(() => drawSelectionFrame(mainHead));
+      return;
+    }
     if (video?.videoWidth && video.videoHeight) {
       const targetRatio = cropBox[2] / cropBox[3];
       const sourceRatio = video.videoWidth / video.videoHeight;
@@ -718,6 +761,16 @@ export default function Home() {
     }
     setPhase('tool-ready');
     setNotice('自由裁切框已確認；可輸出影片或重新框選');
+  }
+
+  function useFullFrameFaceMask() {
+    const mainHead = selectionRef.current?.box ?? box;
+    setCropBox(null);
+    resetFacePreview();
+    setTrackPath([]);
+    setPhase('select');
+    setNotice('已選擇完整畫面；不裁切，維持 V30 輸出方式');
+    requestAnimationFrame(() => drawSelectionFrame(mainHead));
   }
 
   function enterSelection() {
@@ -736,6 +789,7 @@ export default function Home() {
     setCandidates([]);
     selectionRef.current = null;
     setTrackPath([]);
+    if (selectedTool === 'mask-faces') setCropBox(null);
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
@@ -757,6 +811,7 @@ export default function Home() {
     setBox(null);
     setCandidates([]);
     selectionRef.current = null;
+    if (selectedTool === 'mask-faces') setCropBox(null);
     setNotice('影片播放中；請暫停在主角清楚的畫面再框選');
     void video.play().catch((error) => {
       setSelectionPlaying(false);
@@ -801,6 +856,7 @@ export default function Home() {
       })
       .sort((a, b) => a.box[2] * a.box[3] - b.box[2] * b.box[3])[0];
     if (hit) {
+      if (selectedTool === 'mask-faces') setCropBox(null);
       setBox(hit.box);
       selectionRef.current = {
         time: videoRef.current?.currentTime ?? 0,
@@ -812,6 +868,7 @@ export default function Home() {
     }
     event.currentTarget.setPointerCapture(event.pointerId);
     dragStartRef.current = point;
+    if (selectedTool === 'mask-faces') setCropBox(null);
     setBox(null);
     drawSelectionFrame(null);
   }
@@ -857,6 +914,7 @@ export default function Home() {
       return;
     }
     setBox(next);
+    if (selectedTool === 'mask-faces') setCropBox(null);
     selectionRef.current = {
       time: videoRef.current?.currentTime ?? 0,
       box: [...next] as Box,
@@ -893,9 +951,10 @@ export default function Home() {
     video: HTMLVideoElement,
     subjectBox: Box,
     time: number,
+    sourceCrop?: Box,
   ): Promise<HeadDetectionFrame> {
     const detector = await ensureFaceHeadDetector();
-    const heads = (await detector.detect(video)).map((detection) => detection.box);
+    const heads = (await detector.detect(video, sourceCrop)).map((detection) => detection.box);
     return {
       time,
       heads: plausibleDetectedHeadBoxes(heads, subjectBox, video.videoWidth, video.videoHeight),
@@ -906,9 +965,10 @@ export default function Home() {
     video: HTMLVideoElement,
     mainHeadBox: Box,
     time: number,
+    sourceCrop?: Box,
   ) {
     const detector = await ensureFaceHeadDetector();
-    const scene = await detector.detectScene(video);
+    const scene = await detector.detectScene(video, sourceCrop);
     const heads = scene.heads.map((detection) => detection.box);
     return {
       context: createMainHeadTrackingContext(
@@ -1041,7 +1101,12 @@ export default function Home() {
       }
       if (selectedTool === 'mask-faces') {
         setNotice('正在載入本機 360° 人頭辨識…');
-        const prepared = await prepareMainHeadTracking(video, box, startTime);
+        const prepared = await prepareMainHeadTracking(
+          video,
+          box,
+          startTime,
+          cropBox ?? undefined,
+        );
         mainHeadTrackingContext = prepared.context;
         headFrames.push(prepared.headFrame);
       }
@@ -1070,7 +1135,12 @@ export default function Home() {
         });
         frameIndex += 1;
         if (selectedTool === 'mask-faces' && frameIndex % 2 === 0) {
-          headFrames.push(await detectHeadFrame(video, resultBox, frameTime));
+          headFrames.push(await detectHeadFrame(
+            video,
+            resultBox,
+            frameTime,
+            cropBox ?? undefined,
+          ));
         }
         setBox(resultBox);
         setCurrentScore(result.score);
@@ -1120,6 +1190,7 @@ export default function Home() {
           endTime,
           path: previewPoints,
           headFrames: stabilizedHeadFrames,
+          cropBox: cropBox ? [...cropBox] as Box : undefined,
         };
         setNotice('3 秒追蹤完成；正在準備旁人人臉遮罩預覽…');
         try {
@@ -1353,7 +1424,10 @@ export default function Home() {
       }
       try {
         const previewBox = previewBoxAt(preview.path, mediaTime);
-        const [previewWidth, previewHeight] = sourcePreviewSize(video.videoWidth, video.videoHeight);
+        const [previewWidth, previewHeight] = sourcePreviewSize(
+          preview.cropBox?.[2] ?? video.videoWidth,
+          preview.cropBox?.[3] ?? video.videoHeight,
+        );
         if (canvas.width !== previewWidth || canvas.height !== previewHeight) {
           canvas.width = previewWidth;
           canvas.height = previewHeight;
@@ -1364,6 +1438,7 @@ export default function Home() {
           previewBox,
           getFaceMaskEffects(),
           headBoxesAt(preview.headFrames, mediaTime),
+          preview.cropBox,
         );
         setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
         if (mediaTime >= preview.endTime - 0.01) finish();
@@ -1418,6 +1493,7 @@ export default function Home() {
       endTime,
       path: trackPath,
       headFrames: faceHeadFramesRef.current,
+      cropBox: cropBox ? [...cropBox] as Box : undefined,
     };
     setFacePreviewReady(false);
     setNotice('正在準備完整路徑的 3 秒旁人遮臉 Preview…');
@@ -1494,6 +1570,7 @@ export default function Home() {
           video,
           selection.box,
           selection.time,
+          cropBox ?? undefined,
         );
         mainHeadTrackingContext = prepared.context;
         headFrames.push(prepared.headFrame);
@@ -1526,7 +1603,12 @@ export default function Home() {
           });
           processed += 1;
           if (selectedTool === 'mask-faces' && processed % 2 === 0) {
-            headFrames.push(await detectHeadFrame(video, resultBox, frameTime));
+            headFrames.push(await detectHeadFrame(
+              video,
+              resultBox,
+              frameTime,
+              cropBox ?? undefined,
+            ));
           }
           setBox(resultBox);
           setCurrentScore(result.score);
@@ -1564,7 +1646,7 @@ export default function Home() {
       setNotice(selectedTool === 'remove-background'
         ? '完整舞者路徑已建立；可調整比例、主角大小與柔順度後輸出'
         : selectedTool === 'mask-faces'
-          ? '完整主角頭／臉路徑已建立；可調整旁人人臉遮罩後輸出原片構圖'
+          ? `完整主角頭／臉路徑已建立；可調整旁人人臉遮罩後輸出${cropBox ? '裁切構圖' : '完整畫面'}`
         : '完整 ViT 路徑已建立；可調整構圖並輸出影片');
     } catch (error) {
       if (selectedTool === 'mask-faces') {
@@ -1616,6 +1698,7 @@ export default function Home() {
         smoothness,
         effects: getFaceMaskEffects(),
         headFrames: faceHeadFramesRef.current,
+        cropBox: cropBox ?? undefined,
       };
     }
     if (!video || !renderCanvas || !operation) {
@@ -1736,9 +1819,13 @@ export default function Home() {
       : phase === 'tool-ready'
         ? '先播放確認效果；滿意後選擇畫質並輸出。'
         : phase === 'crop-select'
-          ? cropBox
-            ? '裁切框已畫好，點「使用此裁切框」。'
-            : '在影片上拖曳，框出成品要保留的範圍。'
+          ? selectedTool === 'mask-faces'
+            ? cropBox
+              ? '裁切是可選的；框已畫好，可使用此裁切框或改用完整畫面。'
+              : '拖曳框出要保留的成品範圍，或改用完整畫面。'
+            : cropBox
+              ? '裁切框已畫好，點「使用此裁切框」。'
+              : '在影片上拖曳，框出成品要保留的範圍。'
           : phase === 'select'
             ? selectionPlaying
               ? '看到主角清楚的畫面時，點「暫停並框選」。'
@@ -1746,9 +1833,13 @@ export default function Home() {
                 ? selectedTool === 'mask-faces'
                   ? '先點 AI 候選人臉，或用手指框住主角的頭／臉。'
                   : '先點 AI 候選人物，或用手指粗略框住主角。'
-                : selectionZoom === 1
-                  ? '主角已框好；可按「＋」放大後重新畫精準框。'
-                  : '在放大的畫面重新畫精準框，再開始 3 秒測試或完整追蹤。'
+                : selectedTool === 'mask-faces'
+                  ? cropBox
+                    ? '主角已框好，且已啟用裁切；開始追蹤只會辨識並輸出裁切區。'
+                    : '主角已框好；可直接追蹤完整畫面，或選擇「裁切後重新辨識」。'
+                  : selectionZoom === 1
+                    ? '主角已框好；可按「＋」放大後重新畫精準框。'
+                    : '在放大的畫面重新畫精準框，再開始 3 秒測試或完整追蹤。'
             : phase === 'tracking'
               ? '正在追蹤，請保持此頁開啟並等待完成。'
               : phase === 'previewing'
@@ -2098,7 +2189,7 @@ export default function Home() {
           </button>
         </div>
       </div>
-      <p className="effect-note">YOLOX‑Nano 直接尋找整顆人頭，包含側面與背面；ViT 只追蹤主角頭部並將它排除，貼紙與模糊區再向外擴一圈。輸出保留原始畫面比例，全程留在這台 iPhone，不做身分辨識，也不上傳影片。</p>
+      <p className="effect-note">YOLOX‑Nano 辨識人頭與所屬人物，ViT 持續追蹤指定主角並將主角頭部排除，貼紙與模糊區再向外擴一圈。預設保留完整畫面；也可真實裁切後只在框內重新辨識並輸出。全程留在這台 iPhone，不做身分辨識，也不上傳影片。</p>
     </section>
   ) : null;
 
@@ -2149,6 +2240,7 @@ export default function Home() {
                     setBox(null);
                     setCandidates([]);
                     selectionRef.current = null;
+                    if (selectedTool === 'mask-faces') setCropBox(null);
                     setNotice('影片播放中；請暫停在主角清楚的畫面再框選');
                   }}
                   onPause={() => {
@@ -2162,7 +2254,15 @@ export default function Home() {
                     requestAnimationFrame(() => drawSelectionFrame(null));
                   }}
                   onSeeked={() => {
-                    if (phase === 'select' && videoRef.current?.paused) requestAnimationFrame(() => drawSelectionFrame(null));
+                    if (phase === 'select' && videoRef.current?.paused) {
+                      if (selectedTool === 'mask-faces') {
+                        setBox(null);
+                        setCandidates([]);
+                        selectionRef.current = null;
+                        setCropBox(null);
+                      }
+                      requestAnimationFrame(() => drawSelectionFrame(null));
+                    }
                   }}
                   onError={() => setNotice('Safari 無法解碼這支影片，請保留檔案供實機記錄')}
                 />
@@ -2180,7 +2280,7 @@ export default function Home() {
                     : phase === 'tool-ready'
                       ? selectedChoice?.name
                       : phase === 'crop-select'
-                        ? '手指框選保留範圍'
+                        ? selectedTool === 'mask-faces' ? '可選裁切保留範圍' : '手指框選保留範圍'
                         : phase === 'select'
                           ? selectionPlaying
                             ? '播放中 · 暫停後框選'
@@ -2247,7 +2347,9 @@ export default function Home() {
                 {phase === 'tool-ready' && selectedTool === 'crop-free' && <button type="button" onClick={enterCropSelection}>重新框選裁切</button>}
                 {phase === 'crop-select' && (
                   <>
-                    <button type="button" onClick={returnToTools}>返回功能選單</button>
+                    <button type="button" onClick={selectedTool === 'mask-faces' ? useFullFrameFaceMask : returnToTools}>
+                      {selectedTool === 'mask-faces' ? '使用完整畫面' : '返回功能選單'}
+                    </button>
                     <button className="primary" type="button" disabled={!cropBox} onClick={confirmCropSelection}>使用此裁切框</button>
                   </>
                 )}
@@ -2266,6 +2368,14 @@ export default function Home() {
                             ? 'AI 尋找人物'
                             : 'AI 尋找人物／寵物'}
                     </button>
+                    {selectedTool === 'mask-faces' && box && !selectionPlaying && (
+                      <button type="button" onClick={enterCropSelection}>
+                        {cropBox ? '重新設定裁切' : '裁切後重新辨識'}
+                      </button>
+                    )}
+                    {selectedTool === 'mask-faces' && cropBox && !selectionPlaying && (
+                      <button type="button" onClick={useFullFrameFaceMask}>改用完整畫面</button>
+                    )}
                     <button type="button" disabled={!box || selectionPlaying} onClick={runTracking}>
                       {selectedTool === 'remove-background'
                         ? '準備 3 秒去背預覽'
@@ -2427,7 +2537,7 @@ export default function Home() {
                           ? '確認旁人人臉遮罩'
                           : '選擇輸出構圖'}</strong>
                     </div>
-                    <b>{selectedTool === 'remove-background' ? aspect : selectedTool === 'mask-faces' ? '原片構圖' : trackPath.length + ' 點'}</b>
+                    <b>{selectedTool === 'remove-background' ? aspect : selectedTool === 'mask-faces' ? cropBox ? '裁切構圖' : '完整畫面' : trackPath.length + ' 點'}</b>
                   </div>
 
                   {selectedTool === 'remove-background' && (
@@ -2465,6 +2575,9 @@ export default function Home() {
                       <div className="crop-summary">
                         <span>輸出方式</span>
                         <strong>
+                          {cropBox
+                            ? `真實裁切 ${Math.round(cropBox[2])} × ${Math.round(cropBox[3])} · `
+                            : '完整畫面 · '}
                           保留主角臉 · {faceMaskStyle === 'soft-blur'
                             ? '柔和模糊'
                             : faceMaskStyle === 'strong-blur'
@@ -2579,7 +2692,7 @@ export default function Home() {
 
                   {selectedTool === 'mask-faces' && (
                     <p className="export-note">
-                      YOLOX‑Nano 建立所有人頭路徑，ViT 持續排除主角頭部，再將貼紙或模糊區放大覆蓋其他人頭。保留原片構圖、原聲，全程只在這台 iPhone 執行。
+                      YOLOX‑Nano 建立框內所有人頭路徑，ViT 持續排除主角頭部，再將貼紙或模糊區放大覆蓋其他人頭。{cropBox ? '成品只保留裁切範圍' : '成品保留完整畫面'}與原聲，全程只在這台 iPhone 執行。
                     </p>
                   )}
 

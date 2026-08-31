@@ -4,11 +4,14 @@ import {
   bystanderFaceBoxes,
   bystanderHeadBoxes,
   createMainHeadTrackingContext,
+  defaultFaceMaskCrop,
   expandFaceBox,
+  faceMaskDestinationBox,
   headBoxFromTrackingContext,
   headBoxesAt,
   isProtectedMainHead,
   mergeHeadBoxes,
+  normalizedFaceMaskCrop,
   personBoxToHeadBox,
   privacyEffectRasterSize,
   selectMainFaceIndex,
@@ -32,6 +35,24 @@ assert.equal(
 
 const selectedMainHead = [134, 108, 34, 38];
 const detectedMainBody = [104, 96, 94, 310];
+const suggestedCrop = defaultFaceMaskCrop(selectedMainHead, 500, 500);
+assert.ok(
+  selectedMainHead[0] + selectedMainHead[2] / 2 >= suggestedCrop[0]
+    && selectedMainHead[0] + selectedMainHead[2] / 2 <= suggestedCrop[0] + suggestedCrop[2]
+    && selectedMainHead[1] + selectedMainHead[3] / 2 >= suggestedCrop[1]
+    && selectedMainHead[1] + selectedMainHead[3] / 2 <= suggestedCrop[1] + suggestedCrop[3],
+  'the optional crop suggestion must always contain the selected main head',
+);
+assert.deepEqual(
+  normalizedFaceMaskCrop([-20, -10, 600, 700], 500, 500),
+  [0, 0, 500, 500],
+  'the real crop must stay inside the source video',
+);
+assert.deepEqual(
+  faceMaskDestinationBox([150, 100, 50, 40], [100, 50, 250, 200], 1000, 800),
+  [200, 200, 200, 160],
+  'detected source heads must map into the cropped output coordinate system',
+);
 assert.equal(
   selectMainBodyForHead(
     [[290, 90, 90, 310], detectedMainBody],

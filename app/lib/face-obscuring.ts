@@ -106,6 +106,58 @@ function boxIou(left: Box, right: Box) {
   return union > 0 ? overlap / union : 0;
 }
 
+export function normalizedFaceMaskCrop(
+  crop: Box | undefined,
+  sourceWidth: number,
+  sourceHeight: number,
+): Box {
+  if (!crop) return [0, 0, sourceWidth, sourceHeight];
+  const width = clamp(crop[2], 2, sourceWidth);
+  const height = clamp(crop[3], 2, sourceHeight);
+  const x = clamp(crop[0], 0, Math.max(0, sourceWidth - width));
+  const y = clamp(crop[1], 0, Math.max(0, sourceHeight - height));
+  return [x, y, width, height];
+}
+
+export function defaultFaceMaskCrop(
+  mainHead: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+): Box {
+  const width = Math.min(
+    sourceWidth,
+    Math.max(sourceWidth * 0.5, mainHead[2] * 14),
+  );
+  const height = Math.min(
+    sourceHeight,
+    Math.max(sourceHeight * 0.72, mainHead[3] * 12),
+  );
+  const centerX = mainHead[0] + mainHead[2] / 2;
+  const centerY = mainHead[1] + mainHead[3] * 3.1;
+  return normalizedFaceMaskCrop([
+    centerX - width / 2,
+    centerY - height / 2,
+    width,
+    height,
+  ], sourceWidth, sourceHeight);
+}
+
+export function faceMaskDestinationBox(
+  sourceBox: Box,
+  crop: Box,
+  outputWidth: number,
+  outputHeight: number,
+): Box {
+  const scaleX = outputWidth / Math.max(2, crop[2]);
+  const scaleY = outputHeight / Math.max(2, crop[3]);
+  return [
+    (sourceBox[0] - crop[0]) * scaleX,
+    (sourceBox[1] - crop[1]) * scaleY,
+    sourceBox[2] * scaleX,
+    sourceBox[3] * scaleY,
+  ];
+}
+
 function isHeadLikeSelection(subject: Box) {
   const aspect = subject[2] / Math.max(1, subject[3]);
   return aspect >= 0.5 && aspect <= 1.65;
@@ -732,9 +784,23 @@ export class FaceHeadDetector {
     return new FaceHeadDetector(session);
   }
 
-  async detectScene(video: HTMLVideoElement): Promise<FaceHeadDetectionScene> {
+  async detectScene(
+    video: HTMLVideoElement,
+    sourceCrop?: Box,
+  ): Promise<FaceHeadDetectionScene> {
     if (!video.videoWidth || !video.videoHeight) return { heads: [], bodies: [] };
-    this.inputContext.drawImage(video, 0, 0, HEAD_MODEL_WIDTH, HEAD_MODEL_HEIGHT);
+    const crop = normalizedFaceMaskCrop(sourceCrop, video.videoWidth, video.videoHeight);
+    this.inputContext.drawImage(
+      video,
+      crop[0],
+      crop[1],
+      crop[2],
+      crop[3],
+      0,
+      0,
+      HEAD_MODEL_WIDTH,
+      HEAD_MODEL_HEIGHT,
+    );
     const rgba = this.inputContext.getImageData(0, 0, HEAD_MODEL_WIDTH, HEAD_MODEL_HEIGHT).data;
     const plane = HEAD_MODEL_WIDTH * HEAD_MODEL_HEIGHT;
     const bgr = new Float32Array(plane * 3);
@@ -754,8 +820,8 @@ export class FaceHeadDetector {
     });
     const output = result[this.session.outputNames[0]]?.data as Float32Array | undefined;
     if (!output) return { heads: [], bodies: [] };
-    const scaleX = video.videoWidth / HEAD_MODEL_WIDTH;
-    const scaleY = video.videoHeight / HEAD_MODEL_HEIGHT;
+    const scaleX = crop[2] / HEAD_MODEL_WIDTH;
+    const scaleY = crop[3] / HEAD_MODEL_HEIGHT;
     const heads: FaceHeadDetection[] = [];
     const bodies: FaceHeadDetection[] = [];
     for (let offset = 0; offset + 6 < output.length; offset += 7) {
@@ -766,10 +832,10 @@ export class FaceHeadDetector {
         || (classId === HEAD_CLASS_ID && score < HEAD_MIN_SCORE)
         || (classId === BODY_CLASS_ID && score < BODY_MIN_SCORE)
       ) continue;
-      const x1 = clamp(output[offset + 3], 0, HEAD_MODEL_WIDTH) * scaleX;
-      const y1 = clamp(output[offset + 4], 0, HEAD_MODEL_HEIGHT) * scaleY;
-      const x2 = clamp(output[offset + 5], 0, HEAD_MODEL_WIDTH) * scaleX;
-      const y2 = clamp(output[offset + 6], 0, HEAD_MODEL_HEIGHT) * scaleY;
+      const x1 = crop[0] + clamp(output[offset + 3], 0, HEAD_MODEL_WIDTH) * scaleX;
+      const y1 = crop[1] + clamp(output[offset + 4], 0, HEAD_MODEL_HEIGHT) * scaleY;
+      const x2 = crop[0] + clamp(output[offset + 5], 0, HEAD_MODEL_WIDTH) * scaleX;
+      const y2 = crop[1] + clamp(output[offset + 6], 0, HEAD_MODEL_HEIGHT) * scaleY;
       if (x2 - x1 < 4 || y2 - y1 < 4) continue;
       const detection = { box: [x1, y1, x2 - x1, y2 - y1] as Box, score };
       if (classId === HEAD_CLASS_ID) heads.push(detection);
@@ -778,8 +844,8 @@ export class FaceHeadDetector {
     return { heads, bodies };
   }
 
-  async detect(video: HTMLVideoElement): Promise<FaceHeadDetection[]> {
-    return (await this.detectScene(video)).heads;
+  async detect(video: HTMLVideoElement, sourceCrop?: Box): Promise<FaceHeadDetection[]> {
+    return (await this.detectScene(video, sourceCrop)).heads;
   }
 
   close() {
@@ -971,6 +1037,7 @@ export class FaceObscuringRenderer {
     subjectBox: Box,
     effects: FaceMaskEffects = DEFAULT_FACE_MASK_EFFECTS,
     detectedBystanderHeads: Box[] = [],
+    sourceCrop?: Box,
   ) {
     if (!video.videoWidth || !video.videoHeight) return;
     const context = outputCanvas.getContext('2d', { alpha: false });
@@ -980,7 +1047,18 @@ export class FaceObscuringRenderer {
     context.filter = 'none';
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = 'high';
-    context.drawImage(video, 0, 0, outputCanvas.width, outputCanvas.height);
+    const crop = normalizedFaceMaskCrop(sourceCrop, video.videoWidth, video.videoHeight);
+    context.drawImage(
+      video,
+      crop[0],
+      crop[1],
+      crop[2],
+      crop[3],
+      0,
+      0,
+      outputCanvas.width,
+      outputCanvas.height,
+    );
 
     const referenceHead = referenceHeadForSubject(
       subjectBox,
@@ -1014,8 +1092,6 @@ export class FaceObscuringRenderer {
       video.videoHeight,
     ));
 
-    const outputScaleX = outputCanvas.width / video.videoWidth;
-    const outputScaleY = outputCanvas.height / video.videoHeight;
     for (const track of this.maskTracks) {
       const sourceBox = expandFaceBox(
         track.box,
@@ -1023,12 +1099,12 @@ export class FaceObscuringRenderer {
         video.videoWidth,
         video.videoHeight,
       );
-      const destinationBox: Box = [
-        sourceBox[0] * outputScaleX,
-        sourceBox[1] * outputScaleY,
-        sourceBox[2] * outputScaleX,
-        sourceBox[3] * outputScaleY,
-      ];
+      const destinationBox = faceMaskDestinationBox(
+        sourceBox,
+        crop,
+        outputCanvas.width,
+        outputCanvas.height,
+      );
       const opacity = effects.privacyFirst
         ? 1
         : clamp(1 - track.missedFrames / (MASK_TRACK_MISSED_FRAMES + 1), 0, 1);

@@ -1,6 +1,7 @@
-const VERSION = 'nivitrack-13-tools-v30-body-identity-privacy-effects';
+const VERSION = 'nivitrack-13-tools-v31-optional-face-crop';
 const APP_CACHE = VERSION + '-app';
-const MODEL_CACHE = VERSION + '-models';
+// 第 13 功能只改裁切與座標流程；沿用 V30 模型快取，避免 iPhone 重新下載模型。
+const MODEL_CACHE = 'nivitrack-13-tools-v30-body-identity-privacy-effects-models';
 
 const appAsset = (path) => new URL(path, self.registration.scope).href;
 const APP_ENTRY = appAsset('./?app=' + VERSION);
