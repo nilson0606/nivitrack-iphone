@@ -99,12 +99,21 @@ export function personBoxToHeadBox(
   sourceHeight: number,
 ): Box {
   const [x, y, width, height] = person;
-  const headWidth = clamp(width * 0.5, height * 0.14, height * 0.24);
-  const headHeight = clamp(Math.max(headWidth * 1.08, height * 0.18), headWidth, height * 0.28);
+  const bodyAspect = width / Math.max(1, height);
+  const armExpansion = clamp((bodyAspect - 0.34) / 0.5, 0, 1);
+  const headWidth = clamp(
+    width * (0.44 - armExpansion * 0.12),
+    height * 0.115,
+    height * 0.19,
+  );
+  const headHeight = clamp(Math.max(headWidth * 1.08, height * 0.15), headWidth, height * 0.21);
   const centerX = x + width / 2;
+  // COCO person boxes include raised hands. A wider-than-standing box therefore
+  // needs a lower head anchor; otherwise the highest hand becomes a floating face.
+  const headInset = height * (0.035 + armExpansion * 0.22);
   return [
     clamp(centerX - headWidth / 2, 0, Math.max(0, sourceWidth - headWidth)),
-    clamp(y + height * 0.04, 0, Math.max(0, sourceHeight - headHeight)),
+    clamp(y + headInset, 0, Math.max(0, sourceHeight - headHeight)),
     Math.min(headWidth, sourceWidth),
     Math.min(headHeight, sourceHeight),
   ];
@@ -115,13 +124,13 @@ export function subjectHeadProtectionBox(
   sourceWidth: number,
   sourceHeight: number,
 ): Box {
-  const [x, y, width, height] = subject;
-  const protectionWidth = Math.min(sourceWidth, Math.max(width * 1.16, height * 0.2));
-  const protectionHeight = Math.min(sourceHeight, Math.max(height * 0.52, protectionWidth * 0.78));
-  const centerX = x + width / 2;
+  const inferredHead = personBoxToHeadBox(subject, sourceWidth, sourceHeight);
+  const protectionWidth = Math.min(sourceWidth, Math.max(inferredHead[2] * 1.5, subject[2] * 0.62));
+  const protectionHeight = Math.min(sourceHeight, Math.max(inferredHead[3] * 1.72, subject[3] * 0.25));
+  const centerX = inferredHead[0] + inferredHead[2] / 2;
   return [
     clamp(centerX - protectionWidth / 2, 0, Math.max(0, sourceWidth - protectionWidth)),
-    clamp(y - height * 0.1, 0, Math.max(0, sourceHeight - protectionHeight)),
+    clamp(inferredHead[1] - inferredHead[3] * 0.22, 0, Math.max(0, sourceHeight - protectionHeight)),
     protectionWidth,
     protectionHeight,
   ];
@@ -379,6 +388,24 @@ export function mergeHeadBoxes(boxes: Box[]) {
   return merged;
 }
 
+export function suppressFaceSupportedFallbacks(faceBoxes: Box[], inferredHeads: Box[]) {
+  return inferredHeads.filter((inferred) => {
+    const [inferredX, inferredY] = boxCenter(inferred);
+    return !faceBoxes.some((face) => {
+      if (boxAreaRatio(face, inferred) > 4.5) return false;
+      const [faceX, faceY] = boxCenter(face);
+      const scale = Math.max(4, face[2], face[3], inferred[2], inferred[3]);
+      const horizontalDistance = Math.abs(inferredX - faceX) / scale;
+      const verticalOffset = (inferredY - faceY) / scale;
+      // A person-box fallback just above an already detected face is normally
+      // the same dancer's raised hand. Keep the real face and discard the ghost.
+      return horizontalDistance <= 0.78
+        && verticalOffset >= -2.45
+        && verticalOffset <= 0.62;
+    });
+  });
+}
+
 export function expandFaceBox(
   box: Box,
   scale: number,
@@ -481,7 +508,7 @@ export class FaceObscuringRenderer {
     const common = {
       baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' as const },
       runningMode: 'VIDEO' as const,
-      minDetectionConfidence: 0.28,
+      minDetectionConfidence: 0.24,
       minSuppressionThreshold: 0.3,
       canvas: document.createElement('canvas'),
     };
@@ -710,9 +737,10 @@ export class FaceObscuringRenderer {
           video.videoHeight,
         ))
       .map((track) => track.box);
+    const inferredFallbacks = suppressFaceSupportedFallbacks(faceMasks, detectedBystanderHeads);
     const maskCandidates = mergeHeadBoxes([
       ...faceMasks,
-      ...detectedBystanderHeads,
+      ...inferredFallbacks,
     ]).filter((head) =>
       isPlausibleHeadBox(head, video.videoWidth, video.videoHeight, referenceHead, 2.6)
       && !isProtectedMainHead(

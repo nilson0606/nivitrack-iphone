@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-13-tools-v25-full-range-temporal-heads';
+const VERSION = 'nivitrack-13-tools-v26-face-first-fallbacks';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

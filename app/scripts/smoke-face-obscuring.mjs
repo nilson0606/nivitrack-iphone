@@ -11,6 +11,7 @@ import {
   selectMainPersonIndex,
   smoothFaceBox,
   stabilizeHeadDetectionFrames,
+  suppressFaceSupportedFallbacks,
   subjectHeadProtectionBox,
 } from '../lib/face-obscuring.ts';
 
@@ -78,13 +79,15 @@ assert.equal(
 );
 assert.deepEqual(
   personBoxToHeadBox(people[0], 500, 500),
-  [125, 112, 50, 54],
+  [128, 110.5, 44, 47.52],
   'a full person box must produce a stable upper-body head region even without a visible face',
 );
 const protectedMainHead = subjectHeadProtectionBox(subject, 500, 500);
 assert.ok(
-  protectedMainHead.every((value, index) => Math.abs(value - [92, 70, 116, 156][index]) < 1e-6),
-  'the protected main-head zone must cover the tracked subject upper body',
+  protectedMainHead.every(
+    (value, index) => Math.abs(value - [117, 100.0456, 66, 81.7344][index]) < 1e-6,
+  ),
+  'the protected main-head zone must cover the selected head without sheltering nearby bystanders',
 );
 assert.equal(
   isProtectedMainHead([130, 110, 35, 35], subject, 500, 500),
@@ -95,6 +98,11 @@ assert.equal(
   isProtectedMainHead([300, 100, 35, 35], subject, 500, 500),
   false,
   'a bystander head away from the subject must remain maskable',
+);
+assert.equal(
+  isProtectedMainHead([188, 110, 35, 35], subject, 500, 500),
+  false,
+  'a head beside the main subject must no longer be excluded by an oversized protection zone',
 );
 const bystanderHeads = bystanderHeadBoxes(people, [105, 105, 95, 295], 500, 500);
 assert.equal(bystanderHeads.length, 1, 'only non-main people should produce inferred head masks');
@@ -134,6 +142,14 @@ assert.equal(
   ]).length,
   2,
   'deduplication must not chain adjacent dancers into one giant mask',
+);
+assert.deepEqual(
+  suppressFaceSupportedFallbacks(
+    [[100, 100, 30, 30]],
+    [[93, 49, 44, 50], [250, 100, 30, 30]],
+  ),
+  [[250, 100, 30, 30]],
+  'a raised-hand fallback above a detected face must be removed without affecting another person',
 );
 
 const stabilizedMissingFrame = stabilizeHeadDetectionFrames([
