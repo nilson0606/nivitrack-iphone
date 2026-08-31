@@ -24,6 +24,11 @@ export type HeadDetectionFrame = {
   heads: Box[];
 };
 
+export type FaceHeadDetection = {
+  box: Box;
+  score: number;
+};
+
 export const DEFAULT_FACE_MASK_EFFECTS: FaceMaskEffects = {
   style: 'strong-blur',
   strength: 0.72,
@@ -86,6 +91,27 @@ function boxIou(left: Box, right: Box) {
   return union > 0 ? overlap / union : 0;
 }
 
+function isHeadLikeSelection(subject: Box) {
+  const aspect = subject[2] / Math.max(1, subject[3]);
+  return aspect >= 0.5 && aspect <= 1.65;
+}
+
+function referenceHeadForSubject(
+  subject: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  if (isHeadLikeSelection(subject)) {
+    return [
+      clamp(subject[0], 0, Math.max(0, sourceWidth - subject[2])),
+      clamp(subject[1], 0, Math.max(0, sourceHeight - subject[3])),
+      Math.min(subject[2], sourceWidth),
+      Math.min(subject[3], sourceHeight),
+    ] as Box;
+  }
+  return personBoxToHeadBox(subject, sourceWidth, sourceHeight);
+}
+
 function faceTrackDistance(left: Box, right: Box) {
   const [leftX, leftY] = boxCenter(left);
   const [rightX, rightY] = boxCenter(right);
@@ -124,7 +150,7 @@ export function subjectHeadProtectionBox(
   sourceWidth: number,
   sourceHeight: number,
 ): Box {
-  const inferredHead = personBoxToHeadBox(subject, sourceWidth, sourceHeight);
+  const inferredHead = referenceHeadForSubject(subject, sourceWidth, sourceHeight);
   const protectionWidth = Math.min(sourceWidth, Math.max(inferredHead[2] * 1.5, subject[2] * 0.62));
   const protectionHeight = Math.min(sourceHeight, Math.max(inferredHead[3] * 1.72, subject[3] * 0.25));
   const centerX = inferredHead[0] + inferredHead[2] / 2;
@@ -134,6 +160,20 @@ export function subjectHeadProtectionBox(
     protectionWidth,
     protectionHeight,
   ];
+}
+
+export function bystanderFaceBoxes(
+  faces: Box[],
+  subjectHead: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  const mainIndex = selectMainFaceIndex(faces, subjectHead, null, false);
+  const referenceHead = referenceHeadForSubject(subjectHead, sourceWidth, sourceHeight);
+  return faces
+    .filter((_, index) => index !== mainIndex)
+    .filter((head) => isPlausibleHeadBox(head, sourceWidth, sourceHeight, referenceHead, 3.2))
+    .filter((head) => !isProtectedMainHead(head, subjectHead, sourceWidth, sourceHeight));
 }
 
 export function isProtectedMainHead(
@@ -424,6 +464,20 @@ export function expandFaceBox(
 
 function mainFaceScore(face: Box, subject: Box, previousMainFace: Box | null) {
   const [faceX, faceY] = boxCenter(face);
+  if (isHeadLikeSelection(subject)) {
+    const [subjectX, subjectY] = boxCenter(subject);
+    const distance = Math.hypot(
+      (faceX - subjectX) / Math.max(8, subject[2] * 0.82),
+      (faceY - subjectY) / Math.max(8, subject[3] * 0.82),
+    );
+    if (distance > 1.55) return Number.POSITIVE_INFINITY;
+    const previousDistance = previousMainFace ? faceTrackDistance(face, previousMainFace) : 0;
+    const overlap = boxIou(face, subject);
+    const previousOverlap = previousMainFace ? boxIou(face, previousMainFace) : 0;
+    return distance - overlap * 0.62
+      + previousDistance * (previousMainFace ? 0.68 : 0)
+      - previousOverlap * 0.35;
+  }
   const headLeft = subject[0] + subject[2] * 0.04;
   const headRight = subject[0] + subject[2] * 0.96;
   const headTop = subject[1] - subject[3] * 0.08;
@@ -486,42 +540,75 @@ function loadStickerImage(url?: string) {
   });
 }
 
-export class FaceObscuringRenderer {
+async function createMediaPipeFaceDetector() {
+  const wasmRoot = new URL('mediapipe/', document.baseURI).href;
+  const modelUrl = new URL('models/blaze_face_full_range.tflite', document.baseURI).href;
+  const fileset = await FilesetResolver.forVisionTasks(wasmRoot);
+  const common = {
+    baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' as const },
+    runningMode: 'VIDEO' as const,
+    minDetectionConfidence: 0.24,
+    minSuppressionThreshold: 0.3,
+    canvas: document.createElement('canvas'),
+  };
+  try {
+    return await FaceDetector.createFromOptions(fileset, common);
+  } catch {
+    return FaceDetector.createFromOptions(fileset, {
+      ...common,
+      baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
+    });
+  }
+}
+
+export class FaceHeadDetector {
   private readonly detector: FaceDetector;
+  private timestamp = 0;
+
+  private constructor(detector: FaceDetector) {
+    this.detector = detector;
+  }
+
+  static async create() {
+    return new FaceHeadDetector(await createMediaPipeFaceDetector());
+  }
+
+  detect(video: HTMLVideoElement): FaceHeadDetection[] {
+    this.timestamp += 1;
+    return this.detector.detectForVideo(video, this.timestamp).detections.flatMap((detection) => {
+      const bounds = detection.boundingBox;
+      if (!bounds || bounds.width < 4 || bounds.height < 4) return [];
+      return [{
+        box: [bounds.originX, bounds.originY, bounds.width, bounds.height] as Box,
+        score: detection.categories[0]?.score ?? 0,
+      }];
+    });
+  }
+
+  close() {
+    this.detector.close();
+  }
+}
+
+export class FaceObscuringRenderer {
+  private readonly detector: FaceHeadDetector;
   private readonly pixelCanvas = document.createElement('canvas');
   private readonly stickerImage: HTMLImageElement | null;
   private faceTracks: FaceTrack[] = [];
   private maskTracks: FaceTrack[] = [];
   private previousMainFace: Box | null = null;
   private nextTrackId = 1;
-  private timestamp = 0;
 
-  private constructor(detector: FaceDetector, stickerImage: HTMLImageElement | null) {
+  private constructor(detector: FaceHeadDetector, stickerImage: HTMLImageElement | null) {
     this.detector = detector;
     this.stickerImage = stickerImage;
   }
 
   static async create(stickerUrl?: string) {
-    const wasmRoot = new URL('mediapipe/', document.baseURI).href;
-    const modelUrl = new URL('models/blaze_face_full_range.tflite', document.baseURI).href;
-    const fileset = await FilesetResolver.forVisionTasks(wasmRoot);
-    const common = {
-      baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' as const },
-      runningMode: 'VIDEO' as const,
-      minDetectionConfidence: 0.24,
-      minSuppressionThreshold: 0.3,
-      canvas: document.createElement('canvas'),
-    };
-    let detector: FaceDetector;
-    try {
-      detector = await FaceDetector.createFromOptions(fileset, common);
-    } catch {
-      detector = await FaceDetector.createFromOptions(fileset, {
-        ...common,
-        baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
-      });
-    }
-    return new FaceObscuringRenderer(detector, await loadStickerImage(stickerUrl));
+    return new FaceObscuringRenderer(
+      await FaceHeadDetector.create(),
+      await loadStickerImage(stickerUrl),
+    );
   }
 
   private updateTracks(existingTracks: FaceTrack[], detections: Box[], options: TrackOptions) {
@@ -696,14 +783,8 @@ export class FaceObscuringRenderer {
     context.imageSmoothingQuality = 'high';
     context.drawImage(video, 0, 0, outputCanvas.width, outputCanvas.height);
 
-    this.timestamp += 1;
-    const result = this.detector.detectForVideo(video, this.timestamp);
-    const detections: Box[] = result.detections.flatMap((detection) => {
-      const bounds = detection.boundingBox;
-      if (!bounds || bounds.width < 4 || bounds.height < 4) return [];
-      return [[bounds.originX, bounds.originY, bounds.width, bounds.height] as Box];
-    });
-    const referenceHead = personBoxToHeadBox(
+    const detections = this.detector.detect(video).map((detection) => detection.box);
+    const referenceHead = referenceHeadForSubject(
       subjectBox,
       video.videoWidth,
       video.videoHeight,

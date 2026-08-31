@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-13-tools-v26-face-first-fallbacks';
+const VERSION = 'nivitrack-13-tools-v27-head-face-selection';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

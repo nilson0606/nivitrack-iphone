@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import {
+  bystanderFaceBoxes,
   bystanderHeadBoxes,
   expandFaceBox,
   headBoxesAt,
@@ -23,6 +24,28 @@ assert.equal(
   selectMainFaceIndex([mainFace, bystanderFace], subject, null, true),
   0,
   'the face in the tracked subject head zone must be preserved',
+);
+
+const selectedMainHead = [134, 108, 34, 38];
+assert.equal(
+  selectMainFaceIndex([[136, 110, 30, 34], bystanderFace], selectedMainHead, null, false),
+  0,
+  'feature 13 must identify the main face from a head-sized ViT selection',
+);
+assert.deepEqual(
+  bystanderFaceBoxes(
+    [[136, 110, 30, 34], bystanderFace],
+    selectedMainHead,
+    500,
+    500,
+  ),
+  [bystanderFace],
+  'feature 13 must keep direct bystander face boxes and exclude only the selected main face',
+);
+assert.equal(
+  isProtectedMainHead([188, 110, 30, 34], selectedMainHead, 500, 500),
+  false,
+  'a head-sized main selection must not protect the adjacent bystander',
 );
 
 assert.equal(
