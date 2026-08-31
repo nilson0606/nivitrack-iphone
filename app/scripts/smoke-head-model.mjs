@@ -46,13 +46,16 @@ for (let frame = 0; frame < raw.length / frameBytes; frame += 1) {
   assert.equal(tensor.dims.at(-1), 7);
   const rows = tensor.data;
   let heads = 0;
+  let bodies = 0;
   let bestScore = 0;
   for (let offset = 0; offset + 6 < rows.length; offset += 7) {
-    if (Math.round(rows[offset + 1]) !== 1 || rows[offset + 2] < 0.2) continue;
-    heads += 1;
+    const classId = Math.round(rows[offset + 1]);
+    if ((classId !== 0 && classId !== 1) || rows[offset + 2] < 0.2) continue;
+    if (classId === 1) heads += 1;
+    else bodies += 1;
     bestScore = Math.max(bestScore, rows[offset + 2]);
   }
-  summaries.push({ frame, heads, bestScore: Number(bestScore.toFixed(3)) });
+  summaries.push({ frame, heads, bodies, bestScore: Number(bestScore.toFixed(3)) });
 }
 
 await session.release();
@@ -60,5 +63,6 @@ console.log(JSON.stringify({
   frames: summaries.length,
   detectedFrames: summaries.filter((item) => item.heads > 0).length,
   maximumHeads: Math.max(...summaries.map((item) => item.heads)),
+  maximumBodies: Math.max(...summaries.map((item) => item.bodies)),
   summaries,
 }, null, 2));

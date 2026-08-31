@@ -902,6 +902,33 @@ export default function Home() {
     };
   }
 
+  async function prepareMainHeadTracking(
+    video: HTMLVideoElement,
+    mainHeadBox: Box,
+    time: number,
+  ) {
+    const detector = await ensureFaceHeadDetector();
+    const scene = await detector.detectScene(video);
+    const heads = scene.heads.map((detection) => detection.box);
+    return {
+      context: createMainHeadTrackingContext(
+        mainHeadBox,
+        video.videoWidth,
+        video.videoHeight,
+        scene.bodies.map((detection) => detection.box),
+      ),
+      headFrame: {
+        time,
+        heads: plausibleDetectedHeadBoxes(
+          heads,
+          mainHeadBox,
+          video.videoWidth,
+          video.videoHeight,
+        ),
+      } satisfies HeadDetectionFrame,
+    };
+  }
+
   async function detectSubjects() {
     const video = videoRef.current;
     if (!video) return;
@@ -1004,9 +1031,7 @@ export default function Home() {
     }];
     const headFrames: HeadDetectionFrame[] = [];
     const started = eventClock();
-    const mainHeadTrackingContext = selectedTool === 'mask-faces'
-      ? createMainHeadTrackingContext(box, video.videoWidth, video.videoHeight)
-      : null;
+    let mainHeadTrackingContext: ReturnType<typeof createMainHeadTrackingContext> | null = null;
 
     try {
       setNotice('正在載入本機 ViT 模型…');
@@ -1014,12 +1039,13 @@ export default function Home() {
         const modelUrl = new URL('models/vittrack.onnx', document.baseURI).href;
         trackerRef.current = await VitTracker.create(modelUrl);
       }
-      trackerRef.current.initialize(video, mainHeadTrackingContext?.trackerBox ?? box);
       if (selectedTool === 'mask-faces') {
         setNotice('正在載入本機 360° 人頭辨識…');
-        await ensureFaceHeadDetector();
-        headFrames.push(await detectHeadFrame(video, box, startTime));
+        const prepared = await prepareMainHeadTracking(video, box, startTime);
+        mainHeadTrackingContext = prepared.context;
+        headFrames.push(prepared.headFrame);
       }
+      trackerRef.current.initialize(video, mainHeadTrackingContext?.trackerBox ?? box);
 
       let frameIndex = 0;
       for (let at = startTime + interval; at <= endTime + 0.001; at += interval) {
@@ -1453,13 +1479,7 @@ export default function Home() {
     const measurements: TrackResult[] = [];
     const started = eventClock();
     let processed = 0;
-    const mainHeadTrackingContext = selectedTool === 'mask-faces'
-      ? createMainHeadTrackingContext(
-        selection.box,
-        video.videoWidth,
-        video.videoHeight,
-      )
-      : null;
+    let mainHeadTrackingContext: ReturnType<typeof createMainHeadTrackingContext> | null = null;
 
     try {
       setNotice('正在載入本機 ViT 模型…');
@@ -1469,9 +1489,14 @@ export default function Home() {
       }
       if (selectedTool === 'mask-faces') {
         setNotice('正在載入本機 360° 人頭辨識…');
-        await ensureFaceHeadDetector();
         await seekTo(selection.time);
-        headFrames.push(await detectHeadFrame(video, selection.box, selection.time));
+        const prepared = await prepareMainHeadTracking(
+          video,
+          selection.box,
+          selection.time,
+        );
+        mainHeadTrackingContext = prepared.context;
+        headFrames.push(prepared.headFrame);
       }
 
       const trackDirection = async (times: number[], label: string) => {

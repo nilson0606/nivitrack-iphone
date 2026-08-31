@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-13-tools-v29-main-head-identity-lock';
+const VERSION = 'nivitrack-13-tools-v30-body-identity-privacy-effects';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

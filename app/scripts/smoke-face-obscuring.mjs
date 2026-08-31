@@ -10,7 +10,9 @@ import {
   isProtectedMainHead,
   mergeHeadBoxes,
   personBoxToHeadBox,
+  privacyEffectRasterSize,
   selectMainFaceIndex,
+  selectMainBodyForHead,
   selectMainPersonIndex,
   smoothFaceBox,
   stabilizeHeadDetectionFrames,
@@ -29,6 +31,25 @@ assert.equal(
 );
 
 const selectedMainHead = [134, 108, 34, 38];
+const detectedMainBody = [104, 96, 94, 310];
+assert.equal(
+  selectMainBodyForHead(
+    [[290, 90, 90, 310], detectedMainBody],
+    selectedMainHead,
+  ),
+  1,
+  'feature 13 must associate the user-selected head with its own detected full body',
+);
+const detectedBodyTrackingContext = createMainHeadTrackingContext(
+  selectedMainHead,
+  500,
+  500,
+  [[290, 90, 90, 310], detectedMainBody],
+);
+assert.ok(
+  detectedBodyTrackingContext.trackerBox[3] > selectedMainHead[3] * 7,
+  'feature 13 must track the detected full person instead of a look-alike head or shirt',
+);
 const mainHeadTrackingContext = createMainHeadTrackingContext(selectedMainHead, 500, 500);
 assert.ok(
   mainHeadTrackingContext.trackerBox[2] > selectedMainHead[2] * 2,
@@ -74,6 +95,18 @@ assert.equal(
   selectMainFaceIndex([[136, 110, 30, 34], bystanderFace], selectedMainHead, null, false),
   0,
   'feature 13 must identify the main face from a head-sized ViT selection',
+);
+
+const softBlurRaster = privacyEffectRasterSize('soft-blur', 100, 110, 0.72);
+const strongBlurRaster = privacyEffectRasterSize('strong-blur', 100, 110, 0.72);
+const pixelRaster = privacyEffectRasterSize('pixelate', 100, 110, 0.72);
+assert.ok(
+  strongBlurRaster[0] < softBlurRaster[0],
+  'strong blur must discard more facial detail than soft blur without relying on Safari canvas filters',
+);
+assert.ok(
+  pixelRaster[0] <= 5,
+  'privacy mosaic must use visibly large blocks on a face-sized region',
 );
 assert.deepEqual(
   bystanderFaceBoxes(

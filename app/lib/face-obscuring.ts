@@ -34,6 +34,11 @@ export type FaceHeadDetection = {
   score: number;
 };
 
+export type FaceHeadDetectionScene = {
+  heads: FaceHeadDetection[];
+  bodies: FaceHeadDetection[];
+};
+
 export const DEFAULT_FACE_MASK_EFFECTS: FaceMaskEffects = {
   style: 'strong-blur',
   strength: 0.72,
@@ -69,8 +74,10 @@ type TrackOptions = {
 const MASK_TRACK_MISSED_FRAMES = 5;
 const HEAD_MODEL_WIDTH = 320;
 const HEAD_MODEL_HEIGHT = 256;
+const BODY_CLASS_ID = 0;
 const HEAD_CLASS_ID = 1;
 const HEAD_MIN_SCORE = 0.2;
+const BODY_MIN_SCORE = 0.2;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -120,24 +127,78 @@ function referenceHeadForSubject(
   return personBoxToHeadBox(subject, sourceWidth, sourceHeight);
 }
 
+export function selectMainBodyForHead(bodies: Box[], head: Box) {
+  const [headCenterX, headCenterY] = boxCenter(head);
+  const ranked = bodies
+    .map((body, index) => {
+      const widthRatio = body[2] / Math.max(1, head[2]);
+      const heightRatio = body[3] / Math.max(1, head[3]);
+      const horizontalInset = body[2] * 0.14;
+      const containsHead = headCenterX >= body[0] - horizontalInset
+        && headCenterX <= body[0] + body[2] + horizontalInset
+        && headCenterY >= body[1] - head[3] * 0.55
+        && headCenterY <= body[1] + body[3] * 0.46;
+      if (
+        !containsHead
+        || widthRatio < 1.15
+        || widthRatio > 8
+        || heightRatio < 2.5
+        || heightRatio > 13
+      ) {
+        return { index, score: Number.POSITIVE_INFINITY };
+      }
+      const bodyCenterX = body[0] + body[2] / 2;
+      const expectedHeadY = body[1] + body[3] * 0.1;
+      return {
+        index,
+        score: Math.abs(headCenterX - bodyCenterX) / Math.max(8, body[2])
+          + Math.abs(headCenterY - expectedHeadY) / Math.max(8, body[3]) * 0.72,
+      };
+    })
+    .filter((item) => Number.isFinite(item.score))
+    .sort((left, right) => left.score - right.score);
+  return ranked[0]?.index ?? null;
+}
+
 export function createMainHeadTrackingContext(
   head: Box,
   sourceWidth: number,
   sourceHeight: number,
+  bodies: Box[] = [],
 ): MainHeadTrackingContext {
   const headCenterX = head[0] + head[2] / 2;
-  const desiredWidth = Math.min(sourceWidth, Math.max(head[2], head[2] * 2.35));
-  const desiredHeight = Math.min(sourceHeight, Math.max(head[3], head[3] * 4.35));
-  const trackerX = clamp(
-    headCenterX - desiredWidth / 2,
-    0,
-    Math.max(0, sourceWidth - desiredWidth),
+  const bodyIndex = selectMainBodyForHead(bodies, head);
+  const body = bodyIndex === null ? null : bodies[bodyIndex];
+  const desiredWidth = Math.min(
+    sourceWidth,
+    body ? Math.max(head[2], body[2] * 1.06) : Math.max(head[2], head[2] * 3.05),
   );
-  const trackerY = clamp(
-    head[1] - head[3] * 0.32,
-    0,
-    Math.max(0, sourceHeight - desiredHeight),
+  const desiredHeight = Math.min(
+    sourceHeight,
+    body ? Math.max(head[3], body[3] * 1.04) : Math.max(head[3], head[3] * 7.1),
   );
+  const trackerX = body
+    ? clamp(
+      body[0] + body[2] / 2 - desiredWidth / 2,
+      0,
+      Math.max(0, sourceWidth - desiredWidth),
+    )
+    : clamp(
+      headCenterX - desiredWidth / 2,
+      0,
+      Math.max(0, sourceWidth - desiredWidth),
+    );
+  const trackerY = body
+    ? clamp(
+      body[1] - body[3] * 0.02,
+      0,
+      Math.max(0, sourceHeight - desiredHeight),
+    )
+    : clamp(
+      head[1] - head[3] * 0.34,
+      0,
+      Math.max(0, sourceHeight - desiredHeight),
+    );
   const trackerBox: Box = [trackerX, trackerY, desiredWidth, desiredHeight];
   return {
     trackerBox,
@@ -606,6 +667,28 @@ export function smoothFaceBox(previous: Box, current: Box, missedFrames = 0): Bo
   ) as Box;
 }
 
+export function privacyEffectRasterSize(
+  style: 'soft-blur' | 'strong-blur' | 'pixelate',
+  width: number,
+  height: number,
+  strength: number,
+): [number, number] {
+  const safeStrength = clamp(strength, 0, 1);
+  const samplesAcross = style === 'soft-blur'
+    ? Math.round(14 - safeStrength * 6)
+    : style === 'strong-blur'
+      ? Math.round(8 - safeStrength * 5)
+      : Math.round(9 - safeStrength * 6);
+  const minimum = style === 'soft-blur' ? 6 : 3;
+  const maximum = style === 'soft-blur' ? 14 : style === 'strong-blur' ? 8 : 9;
+  const rasterWidth = Math.round(clamp(samplesAcross, minimum, maximum));
+  const rasterHeight = Math.max(
+    minimum,
+    Math.round(rasterWidth * Math.max(1, height) / Math.max(1, width)),
+  );
+  return [rasterWidth, rasterHeight];
+}
+
 function loadStickerImage(url?: string) {
   if (!url) return Promise.resolve<HTMLImageElement | null>(null);
   return new Promise<HTMLImageElement | null>((resolve) => {
@@ -649,8 +732,8 @@ export class FaceHeadDetector {
     return new FaceHeadDetector(session);
   }
 
-  async detect(video: HTMLVideoElement): Promise<FaceHeadDetection[]> {
-    if (!video.videoWidth || !video.videoHeight) return [];
+  async detectScene(video: HTMLVideoElement): Promise<FaceHeadDetectionScene> {
+    if (!video.videoWidth || !video.videoHeight) return { heads: [], bodies: [] };
     this.inputContext.drawImage(video, 0, 0, HEAD_MODEL_WIDTH, HEAD_MODEL_HEIGHT);
     const rgba = this.inputContext.getImageData(0, 0, HEAD_MODEL_WIDTH, HEAD_MODEL_HEIGHT).data;
     const plane = HEAD_MODEL_WIDTH * HEAD_MODEL_HEIGHT;
@@ -670,22 +753,33 @@ export class FaceHeadDetector {
       ),
     });
     const output = result[this.session.outputNames[0]]?.data as Float32Array | undefined;
-    if (!output) return [];
+    if (!output) return { heads: [], bodies: [] };
     const scaleX = video.videoWidth / HEAD_MODEL_WIDTH;
     const scaleY = video.videoHeight / HEAD_MODEL_HEIGHT;
-    const detections: FaceHeadDetection[] = [];
+    const heads: FaceHeadDetection[] = [];
+    const bodies: FaceHeadDetection[] = [];
     for (let offset = 0; offset + 6 < output.length; offset += 7) {
       const classId = Math.round(output[offset + 1]);
       const score = output[offset + 2];
-      if (classId !== HEAD_CLASS_ID || score < HEAD_MIN_SCORE) continue;
+      if (
+        (classId !== HEAD_CLASS_ID && classId !== BODY_CLASS_ID)
+        || (classId === HEAD_CLASS_ID && score < HEAD_MIN_SCORE)
+        || (classId === BODY_CLASS_ID && score < BODY_MIN_SCORE)
+      ) continue;
       const x1 = clamp(output[offset + 3], 0, HEAD_MODEL_WIDTH) * scaleX;
       const y1 = clamp(output[offset + 4], 0, HEAD_MODEL_HEIGHT) * scaleY;
       const x2 = clamp(output[offset + 5], 0, HEAD_MODEL_WIDTH) * scaleX;
       const y2 = clamp(output[offset + 6], 0, HEAD_MODEL_HEIGHT) * scaleY;
       if (x2 - x1 < 4 || y2 - y1 < 4) continue;
-      detections.push({ box: [x1, y1, x2 - x1, y2 - y1], score });
+      const detection = { box: [x1, y1, x2 - x1, y2 - y1] as Box, score };
+      if (classId === HEAD_CLASS_ID) heads.push(detection);
+      else bodies.push(detection);
     }
-    return detections;
+    return { heads, bodies };
+  }
+
+  async detect(video: HTMLVideoElement): Promise<FaceHeadDetection[]> {
+    return (await this.detectScene(video)).heads;
   }
 
   close() {
@@ -696,6 +790,7 @@ export class FaceHeadDetector {
 }
 
 export class FaceObscuringRenderer {
+  private readonly blurCanvas = document.createElement('canvas');
   private readonly pixelCanvas = document.createElement('canvas');
   private readonly stickerImage: HTMLImageElement | null;
   private maskTracks: FaceTrack[] = [];
@@ -761,19 +856,27 @@ export class FaceObscuringRenderer {
     context: CanvasRenderingContext2D,
     sourceBox: Box,
     destinationBox: Box,
-    radius: number,
+    style: 'soft-blur' | 'strong-blur',
+    strength: number,
     opacity: number,
   ) {
-    const [sourceX, sourceY, sourceWidth, sourceHeight] = sourceBox;
+    const [rasterWidth, rasterHeight] = privacyEffectRasterSize(
+      style,
+      destinationBox[2],
+      destinationBox[3],
+      strength,
+    );
+    if (this.blurCanvas.width !== rasterWidth || this.blurCanvas.height !== rasterHeight) {
+      this.blurCanvas.width = rasterWidth;
+      this.blurCanvas.height = rasterHeight;
+    }
+    const blurContext = this.blurCanvas.getContext('2d', { alpha: false });
+    if (!blurContext) throw new Error('Safari 無法建立人臉模糊畫布');
+    blurContext.imageSmoothingEnabled = true;
+    blurContext.imageSmoothingQuality = 'high';
+    blurContext.drawImage(video, ...sourceBox, 0, 0, rasterWidth, rasterHeight);
+
     const [destinationX, destinationY, destinationWidth, destinationHeight] = destinationBox;
-    const sourcePaddingX = sourceWidth * 0.36;
-    const sourcePaddingY = sourceHeight * 0.36;
-    const paddedSourceX = clamp(sourceX - sourcePaddingX, 0, video.videoWidth);
-    const paddedSourceY = clamp(sourceY - sourcePaddingY, 0, video.videoHeight);
-    const paddedSourceRight = clamp(sourceX + sourceWidth + sourcePaddingX, 0, video.videoWidth);
-    const paddedSourceBottom = clamp(sourceY + sourceHeight + sourcePaddingY, 0, video.videoHeight);
-    const scaleX = destinationWidth / Math.max(2, sourceWidth);
-    const scaleY = destinationHeight / Math.max(2, sourceHeight);
     context.save();
     context.globalAlpha = opacity;
     context.beginPath();
@@ -787,18 +890,13 @@ export class FaceObscuringRenderer {
       Math.PI * 2,
     );
     context.clip();
-    context.filter = `blur(${radius}px)`;
-    context.drawImage(
-      video,
-      paddedSourceX,
-      paddedSourceY,
-      paddedSourceRight - paddedSourceX,
-      paddedSourceBottom - paddedSourceY,
-      destinationX - (sourceX - paddedSourceX) * scaleX,
-      destinationY - (sourceY - paddedSourceY) * scaleY,
-      (paddedSourceRight - paddedSourceX) * scaleX,
-      (paddedSourceBottom - paddedSourceY) * scaleY,
-    );
+    // Safari's CanvasRenderingContext2D.filter can silently behave like
+    // "none" during video recording. A tiny raster reconstructed with high
+    // quality smoothing produces a deterministic, smooth privacy blur.
+    context.filter = 'none';
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(this.blurCanvas, destinationX, destinationY, destinationWidth, destinationHeight);
     context.restore();
   }
 
@@ -810,9 +908,12 @@ export class FaceObscuringRenderer {
     strength: number,
     opacity: number,
   ) {
-    const blocks = Math.round(7 + clamp(strength, 0, 1) * 17);
-    const tinyWidth = Math.max(3, Math.round(destinationBox[2] / blocks));
-    const tinyHeight = Math.max(3, Math.round(destinationBox[3] / blocks));
+    const [tinyWidth, tinyHeight] = privacyEffectRasterSize(
+      'pixelate',
+      destinationBox[2],
+      destinationBox[3],
+      strength,
+    );
     if (this.pixelCanvas.width !== tinyWidth || this.pixelCanvas.height !== tinyHeight) {
       this.pixelCanvas.width = tinyWidth;
       this.pixelCanvas.height = tinyHeight;
@@ -928,11 +1029,19 @@ export class FaceObscuringRenderer {
         sourceBox[2] * outputScaleX,
         sourceBox[3] * outputScaleY,
       ];
-      const opacity = clamp(1 - track.missedFrames / (MASK_TRACK_MISSED_FRAMES + 1), 0, 1);
+      const opacity = effects.privacyFirst
+        ? 1
+        : clamp(1 - track.missedFrames / (MASK_TRACK_MISSED_FRAMES + 1), 0, 1);
       if (effects.style === 'soft-blur' || effects.style === 'strong-blur') {
-        const base = effects.style === 'strong-blur' ? 22 : 9;
-        const range = effects.style === 'strong-blur' ? 42 : 22;
-        this.drawBlur(video, context, sourceBox, destinationBox, base + range * effects.strength, opacity);
+        this.drawBlur(
+          video,
+          context,
+          sourceBox,
+          destinationBox,
+          effects.style,
+          effects.strength,
+          opacity,
+        );
       } else if (effects.style === 'pixelate') {
         this.drawPixelated(video, context, sourceBox, destinationBox, effects.strength, opacity);
       } else {
@@ -946,6 +1055,8 @@ export class FaceObscuringRenderer {
   }
 
   close() {
+    this.blurCanvas.width = 1;
+    this.blurCanvas.height = 1;
     this.pixelCanvas.width = 1;
     this.pixelCanvas.height = 1;
     this.maskTracks = [];
