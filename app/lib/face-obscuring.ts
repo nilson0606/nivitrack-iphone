@@ -1,4 +1,4 @@
-import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
+import * as ort from 'onnxruntime-web/wasm';
 
 import type { Box } from './vit-tracker';
 
@@ -61,8 +61,11 @@ type TrackOptions = {
   replacementDistance: number;
 };
 
-const FACE_TRACK_MISSED_FRAMES = 4;
 const MASK_TRACK_MISSED_FRAMES = 5;
+const HEAD_MODEL_WIDTH = 320;
+const HEAD_MODEL_HEIGHT = 256;
+const HEAD_CLASS_ID = 1;
+const HEAD_MIN_SCORE = 0.2;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -162,18 +165,33 @@ export function subjectHeadProtectionBox(
   ];
 }
 
-export function bystanderFaceBoxes(
-  faces: Box[],
+export function bystanderDetectedHeadBoxes(
+  heads: Box[],
   subjectHead: Box,
   sourceWidth: number,
   sourceHeight: number,
 ) {
-  const mainIndex = selectMainFaceIndex(faces, subjectHead, null, false);
+  const mainIndex = selectMainFaceIndex(heads, subjectHead, null, false);
   const referenceHead = referenceHeadForSubject(subjectHead, sourceWidth, sourceHeight);
-  return faces
+  return heads
     .filter((_, index) => index !== mainIndex)
     .filter((head) => isPlausibleHeadBox(head, sourceWidth, sourceHeight, referenceHead, 3.2))
     .filter((head) => !isProtectedMainHead(head, subjectHead, sourceWidth, sourceHeight));
+}
+
+// Kept for older smoke tests and restore points. New code uses the precise name.
+export const bystanderFaceBoxes = bystanderDetectedHeadBoxes;
+
+export function plausibleDetectedHeadBoxes(
+  heads: Box[],
+  subjectHead: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  const referenceHead = referenceHeadForSubject(subjectHead, sourceWidth, sourceHeight);
+  return heads.filter((head) =>
+    isPlausibleHeadBox(head, sourceWidth, sourceHeight, referenceHead, 3.2),
+  );
 }
 
 export function isProtectedMainHead(
@@ -540,75 +558,97 @@ function loadStickerImage(url?: string) {
   });
 }
 
-async function createMediaPipeFaceDetector() {
-  const wasmRoot = new URL('mediapipe/', document.baseURI).href;
-  const modelUrl = new URL('models/blaze_face_full_range.tflite', document.baseURI).href;
-  const fileset = await FilesetResolver.forVisionTasks(wasmRoot);
-  const common = {
-    baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' as const },
-    runningMode: 'VIDEO' as const,
-    minDetectionConfidence: 0.24,
-    minSuppressionThreshold: 0.3,
-    canvas: document.createElement('canvas'),
-  };
-  try {
-    return await FaceDetector.createFromOptions(fileset, common);
-  } catch {
-    return FaceDetector.createFromOptions(fileset, {
-      ...common,
-      baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
-    });
-  }
-}
-
 export class FaceHeadDetector {
-  private readonly detector: FaceDetector;
-  private timestamp = 0;
+  private readonly session: ort.InferenceSession;
+  private readonly inputCanvas = document.createElement('canvas');
+  private readonly inputContext: CanvasRenderingContext2D;
 
-  private constructor(detector: FaceDetector) {
-    this.detector = detector;
+  private constructor(session: ort.InferenceSession) {
+    this.session = session;
+    this.inputCanvas.width = HEAD_MODEL_WIDTH;
+    this.inputCanvas.height = HEAD_MODEL_HEIGHT;
+    const context = this.inputCanvas.getContext('2d', {
+      alpha: false,
+      willReadFrequently: true,
+    });
+    if (!context) throw new Error('Safari 無法建立人頭辨識畫布');
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'medium';
+    this.inputContext = context;
   }
 
   static async create() {
-    return new FaceHeadDetector(await createMediaPipeFaceDetector());
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.simd = true;
+    ort.env.wasm.wasmPaths = new URL('ort/', document.baseURI).href;
+    const modelUrl = new URL('models/yolox_n_body_head_hand_256x320.onnx', document.baseURI).href;
+    const session = await ort.InferenceSession.create(modelUrl, {
+      executionProviders: ['wasm'],
+      graphOptimizationLevel: 'all',
+      executionMode: 'sequential',
+    });
+    return new FaceHeadDetector(session);
   }
 
-  detect(video: HTMLVideoElement): FaceHeadDetection[] {
-    this.timestamp += 1;
-    return this.detector.detectForVideo(video, this.timestamp).detections.flatMap((detection) => {
-      const bounds = detection.boundingBox;
-      if (!bounds || bounds.width < 4 || bounds.height < 4) return [];
-      return [{
-        box: [bounds.originX, bounds.originY, bounds.width, bounds.height] as Box,
-        score: detection.categories[0]?.score ?? 0,
-      }];
+  async detect(video: HTMLVideoElement): Promise<FaceHeadDetection[]> {
+    if (!video.videoWidth || !video.videoHeight) return [];
+    this.inputContext.drawImage(video, 0, 0, HEAD_MODEL_WIDTH, HEAD_MODEL_HEIGHT);
+    const rgba = this.inputContext.getImageData(0, 0, HEAD_MODEL_WIDTH, HEAD_MODEL_HEIGHT).data;
+    const plane = HEAD_MODEL_WIDTH * HEAD_MODEL_HEIGHT;
+    const bgr = new Float32Array(plane * 3);
+    for (let index = 0; index < plane; index += 1) {
+      const pixel = index * 4;
+      bgr[index] = rgba[pixel + 2];
+      bgr[plane + index] = rgba[pixel + 1];
+      bgr[plane * 2 + index] = rgba[pixel];
+    }
+
+    const result = await this.session.run({
+      [this.session.inputNames[0]]: new ort.Tensor(
+        'float32',
+        bgr,
+        [1, 3, HEAD_MODEL_HEIGHT, HEAD_MODEL_WIDTH],
+      ),
     });
+    const output = result[this.session.outputNames[0]]?.data as Float32Array | undefined;
+    if (!output) return [];
+    const scaleX = video.videoWidth / HEAD_MODEL_WIDTH;
+    const scaleY = video.videoHeight / HEAD_MODEL_HEIGHT;
+    const detections: FaceHeadDetection[] = [];
+    for (let offset = 0; offset + 6 < output.length; offset += 7) {
+      const classId = Math.round(output[offset + 1]);
+      const score = output[offset + 2];
+      if (classId !== HEAD_CLASS_ID || score < HEAD_MIN_SCORE) continue;
+      const x1 = clamp(output[offset + 3], 0, HEAD_MODEL_WIDTH) * scaleX;
+      const y1 = clamp(output[offset + 4], 0, HEAD_MODEL_HEIGHT) * scaleY;
+      const x2 = clamp(output[offset + 5], 0, HEAD_MODEL_WIDTH) * scaleX;
+      const y2 = clamp(output[offset + 6], 0, HEAD_MODEL_HEIGHT) * scaleY;
+      if (x2 - x1 < 4 || y2 - y1 < 4) continue;
+      detections.push({ box: [x1, y1, x2 - x1, y2 - y1], score });
+    }
+    return detections;
   }
 
   close() {
-    this.detector.close();
+    this.inputCanvas.width = 1;
+    this.inputCanvas.height = 1;
+    void this.session.release();
   }
 }
 
 export class FaceObscuringRenderer {
-  private readonly detector: FaceHeadDetector;
   private readonly pixelCanvas = document.createElement('canvas');
   private readonly stickerImage: HTMLImageElement | null;
-  private faceTracks: FaceTrack[] = [];
   private maskTracks: FaceTrack[] = [];
-  private previousMainFace: Box | null = null;
+  private previousMainHead: Box | null = null;
   private nextTrackId = 1;
 
-  private constructor(detector: FaceHeadDetector, stickerImage: HTMLImageElement | null) {
-    this.detector = detector;
+  private constructor(stickerImage: HTMLImageElement | null) {
     this.stickerImage = stickerImage;
   }
 
   static async create(stickerUrl?: string) {
-    return new FaceObscuringRenderer(
-      await FaceHeadDetector.create(),
-      await loadStickerImage(stickerUrl),
-    );
+    return new FaceObscuringRenderer(await loadStickerImage(stickerUrl));
   }
 
   private updateTracks(existingTracks: FaceTrack[], detections: Box[], options: TrackOptions) {
@@ -783,48 +823,23 @@ export class FaceObscuringRenderer {
     context.imageSmoothingQuality = 'high';
     context.drawImage(video, 0, 0, outputCanvas.width, outputCanvas.height);
 
-    const detections = this.detector.detect(video).map((detection) => detection.box);
     const referenceHead = referenceHeadForSubject(
       subjectBox,
       video.videoWidth,
       video.videoHeight,
     );
-    const plausibleFaces = detections.filter((face) =>
-      isPlausibleHeadBox(face, video.videoWidth, video.videoHeight, referenceHead, 2.6),
+    const plausibleHeads = mergeHeadBoxes(detectedBystanderHeads).filter((head) =>
+      isPlausibleHeadBox(head, video.videoWidth, video.videoHeight, referenceHead, 2.6),
     );
-    this.faceTracks = this.updateTracks(this.faceTracks, plausibleFaces, {
-      maximumMissedFrames: FACE_TRACK_MISSED_FRAMES,
-      maximumDistance: 0.78,
-      minimumOverlap: 0.06,
-      maximumAreaRatio: 3,
-      replacementDistance: 1.35,
-    });
-    const visibleBoxes = this.faceTracks.map((track) => track.box);
     const mainIndex = selectMainFaceIndex(
-      visibleBoxes,
+      plausibleHeads,
       subjectBox,
-      this.previousMainFace,
+      this.previousMainHead,
       effects.privacyFirst,
     );
-    if (mainIndex !== null) this.previousMainFace = [...visibleBoxes[mainIndex]] as Box;
-
-    const faceMasks = this.faceTracks
-      .filter((track, index) => track.missedFrames === 0
-        && index !== mainIndex
-        && !isProtectedMainHead(
-          track.box,
-          subjectBox,
-          video.videoWidth,
-          video.videoHeight,
-        ))
-      .map((track) => track.box);
-    const inferredFallbacks = suppressFaceSupportedFallbacks(faceMasks, detectedBystanderHeads);
-    const maskCandidates = mergeHeadBoxes([
-      ...faceMasks,
-      ...inferredFallbacks,
-    ]).filter((head) =>
-      isPlausibleHeadBox(head, video.videoWidth, video.videoHeight, referenceHead, 2.6)
-      && !isProtectedMainHead(
+    if (mainIndex !== null) this.previousMainHead = [...plausibleHeads[mainIndex]] as Box;
+    const maskCandidates = plausibleHeads.filter((head, index) =>
+      index !== mainIndex && !isProtectedMainHead(
         head,
         subjectBox,
         video.videoWidth,
@@ -873,17 +888,14 @@ export class FaceObscuringRenderer {
   }
 
   reset() {
-    this.faceTracks = [];
     this.maskTracks = [];
-    this.previousMainFace = null;
+    this.previousMainHead = null;
   }
 
   close() {
-    this.detector.close();
     this.pixelCanvas.width = 1;
     this.pixelCanvas.height = 1;
-    this.faceTracks = [];
     this.maskTracks = [];
-    this.previousMainFace = null;
+    this.previousMainHead = null;
   }
 }

@@ -30,8 +30,8 @@ import type {
   PersonBackgroundRenderer,
 } from '../lib/person-background-removal';
 import {
-  bystanderFaceBoxes,
   headBoxesAt,
+  plausibleDetectedHeadBoxes,
   stabilizeHeadDetectionFrames,
   type FaceHeadDetector,
   type FaceMaskEffects,
@@ -887,16 +887,16 @@ export default function Home() {
     return faceHeadDetectorRef.current;
   }
 
-  async function detectBystanderHeadFrame(
+  async function detectHeadFrame(
     video: HTMLVideoElement,
     subjectBox: Box,
     time: number,
   ): Promise<HeadDetectionFrame> {
     const detector = await ensureFaceHeadDetector();
-    const faces = detector.detect(video).map((detection) => detection.box);
+    const heads = (await detector.detect(video)).map((detection) => detection.box);
     return {
       time,
-      heads: bystanderFaceBoxes(faces, subjectBox, video.videoWidth, video.videoHeight),
+      heads: plausibleDetectedHeadBoxes(heads, subjectBox, video.videoWidth, video.videoHeight),
     };
   }
 
@@ -905,22 +905,22 @@ export default function Home() {
     if (!video) return;
     setDetecting(true);
     setNotice(selectedTool === 'mask-faces'
-      ? '正在本機載入全距人臉模型並掃描目前影格…'
+      ? '正在本機載入 360° 人頭模型並掃描目前影格…'
       : '正在本機載入 SSDLite 並掃描目前影格…');
     try {
       if (selectedTool === 'mask-faces') {
         const detector = await ensureFaceHeadDetector();
-        const detections = detector.detect(video);
+        const detections = await detector.detect(video);
         const nextCandidates: Candidate[] = detections.map((detection) => ({
           box: detection.box,
-          label: '人臉',
+          label: '人頭',
           score: detection.score,
         }));
         setCandidates(nextCandidates);
         drawSelectionFrame(box, undefined, nextCandidates);
         setNotice(nextCandidates.length
-          ? '找到 ' + nextCandidates.length + ' 張人臉；請點選不需要遮住的主角臉，或手動框住主角頭／臉'
-          : '沒有找到清楚的人臉；請用手指框住不需要遮住的主角頭／臉');
+          ? '找到 ' + nextCandidates.length + ' 顆人頭；請點選不需要遮住的主角頭，或手動框住主角頭部'
+          : '沒有找到明確人頭；請用手指框住不需要遮住的主角頭部');
         return;
       }
       const detector = await ensurePersonDetector();
@@ -1011,9 +1011,9 @@ export default function Home() {
       }
       trackerRef.current.initialize(video, box);
       if (selectedTool === 'mask-faces') {
-        setNotice('正在載入本機全距人臉辨識…');
+        setNotice('正在載入本機 360° 人頭辨識…');
         await ensureFaceHeadDetector();
-        headFrames.push(await detectBystanderHeadFrame(video, box, startTime));
+        headFrames.push(await detectHeadFrame(video, box, startTime));
       }
 
       let frameIndex = 0;
@@ -1031,7 +1031,7 @@ export default function Home() {
         });
         frameIndex += 1;
         if (selectedTool === 'mask-faces' && frameIndex % 2 === 0) {
-          headFrames.push(await detectBystanderHeadFrame(video, result.box, frameTime));
+          headFrames.push(await detectHeadFrame(video, result.box, frameTime));
         }
         setBox(result.box);
         setCurrentScore(result.score);
@@ -1448,10 +1448,10 @@ export default function Home() {
         trackerRef.current = await VitTracker.create(modelUrl);
       }
       if (selectedTool === 'mask-faces') {
-        setNotice('正在載入本機全距人臉辨識…');
+        setNotice('正在載入本機 360° 人頭辨識…');
         await ensureFaceHeadDetector();
         await seekTo(selection.time);
-        headFrames.push(await detectBystanderHeadFrame(video, selection.box, selection.time));
+        headFrames.push(await detectHeadFrame(video, selection.box, selection.time));
       }
 
       const trackDirection = async (times: number[], label: string) => {
@@ -1470,7 +1470,7 @@ export default function Home() {
           });
           processed += 1;
           if (selectedTool === 'mask-faces' && processed % 2 === 0) {
-            headFrames.push(await detectBystanderHeadFrame(video, result.box, frameTime));
+            headFrames.push(await detectHeadFrame(video, result.box, frameTime));
           }
           setBox(result.box);
           setCurrentScore(result.score);
@@ -2042,7 +2042,7 @@ export default function Home() {
           </button>
         </div>
       </div>
-      <p className="effect-note">全距 BlazeFace 直接框出人頭／人臉，ViT 只追蹤主角頭／臉並將它排除；貼紙與模糊區再向臉部外擴一圈。輸出保留原始畫面比例，全程留在這台 iPhone，不做身分辨識，也不上傳影片。</p>
+      <p className="effect-note">YOLOX‑Nano 直接尋找整顆人頭，包含側面與背面；ViT 只追蹤主角頭部並將它排除，貼紙與模糊區再向外擴一圈。輸出保留原始畫面比例，全程留在這台 iPhone，不做身分辨識，也不上傳影片。</p>
     </section>
   ) : null;
 
@@ -2523,7 +2523,7 @@ export default function Home() {
 
                   {selectedTool === 'mask-faces' && (
                     <p className="export-note">
-                      全距 BlazeFace 建立所有人臉路徑，ViT 持續排除主角臉，再將貼紙或模糊區放大覆蓋其他人臉。保留原片構圖、原聲，全程只在這台 iPhone 執行。
+                      YOLOX‑Nano 建立所有人頭路徑，ViT 持續排除主角頭部，再將貼紙或模糊區放大覆蓋其他人頭。保留原片構圖、原聲，全程只在這台 iPhone 執行。
                     </p>
                   )}
 
