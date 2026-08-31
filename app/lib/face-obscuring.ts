@@ -38,12 +38,32 @@ type FaceTrack = {
   missedFrames: number;
 };
 
+type TrackOptions = {
+  maximumMissedFrames: number;
+  maximumDistance: number;
+  minimumOverlap: number;
+  maximumAreaRatio: number;
+  replacementDistance: number;
+};
+
+const FACE_TRACK_MISSED_FRAMES = 4;
+const MASK_TRACK_MISSED_FRAMES = 5;
+
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
 function boxCenter(box: Box): [number, number] {
   return [box[0] + box[2] / 2, box[1] + box[3] / 2];
+}
+
+function boxArea(box: Box) {
+  return Math.max(0, box[2]) * Math.max(0, box[3]);
+}
+
+function boxAreaRatio(left: Box, right: Box) {
+  const smaller = Math.max(1, Math.min(boxArea(left), boxArea(right)));
+  return Math.max(boxArea(left), boxArea(right)) / smaller;
 }
 
 function boxIou(left: Box, right: Box) {
@@ -63,14 +83,6 @@ function faceTrackDistance(left: Box, right: Box) {
   return Math.hypot(rightX - leftX, rightY - leftY) / scale;
 }
 
-function unionBox(left: Box, right: Box): Box {
-  const x = Math.min(left[0], right[0]);
-  const y = Math.min(left[1], right[1]);
-  const rightEdge = Math.max(left[0] + left[2], right[0] + right[2]);
-  const bottomEdge = Math.max(left[1] + left[3], right[1] + right[3]);
-  return [x, y, rightEdge - x, bottomEdge - y];
-}
-
 export function personBoxToHeadBox(
   person: Box,
   sourceWidth: number,
@@ -82,10 +94,60 @@ export function personBoxToHeadBox(
   const centerX = x + width / 2;
   return [
     clamp(centerX - headWidth / 2, 0, Math.max(0, sourceWidth - headWidth)),
-    clamp(y + height * 0.01, 0, Math.max(0, sourceHeight - headHeight)),
+    clamp(y + height * 0.04, 0, Math.max(0, sourceHeight - headHeight)),
     Math.min(headWidth, sourceWidth),
     Math.min(headHeight, sourceHeight),
   ];
+}
+
+export function subjectHeadProtectionBox(
+  subject: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+): Box {
+  const [x, y, width, height] = subject;
+  const protectionWidth = Math.min(sourceWidth, Math.max(width * 1.16, height * 0.2));
+  const protectionHeight = Math.min(sourceHeight, Math.max(height * 0.52, protectionWidth * 0.78));
+  const centerX = x + width / 2;
+  return [
+    clamp(centerX - protectionWidth / 2, 0, Math.max(0, sourceWidth - protectionWidth)),
+    clamp(y - height * 0.1, 0, Math.max(0, sourceHeight - protectionHeight)),
+    protectionWidth,
+    protectionHeight,
+  ];
+}
+
+export function isProtectedMainHead(
+  head: Box,
+  subject: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  const protection = subjectHeadProtectionBox(subject, sourceWidth, sourceHeight);
+  const [centerX, centerY] = boxCenter(head);
+  const centerInside = centerX >= protection[0]
+    && centerX <= protection[0] + protection[2]
+    && centerY >= protection[1]
+    && centerY <= protection[1] + protection[3];
+  return centerInside || boxIou(head, protection) >= 0.12;
+}
+
+function isPlausibleHeadBox(
+  head: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+  referenceHead?: Box,
+  maximumReferenceScale = 2.35,
+) {
+  const [x, y, width, height] = head;
+  if (![x, y, width, height].every(Number.isFinite) || width < 4 || height < 4) return false;
+  if (x < -1 || y < -1 || x + width > sourceWidth + 1 || y + height > sourceHeight + 1) return false;
+  const aspect = width / Math.max(1, height);
+  if (aspect < 0.42 || aspect > 1.75) return false;
+  if (width > sourceWidth * 0.3 || height > sourceHeight * 0.42) return false;
+  if (!referenceHead) return true;
+  return width <= Math.max(18, referenceHead[2] * maximumReferenceScale)
+    && height <= Math.max(20, referenceHead[3] * maximumReferenceScale);
 }
 
 export function selectMainPersonIndex(people: Box[], subject: Box) {
@@ -94,6 +156,7 @@ export function selectMainPersonIndex(people: Box[], subject: Box) {
   const subjectScale = Math.max(8, Math.hypot(subject[2], subject[3]));
   let bestIndex: number | null = null;
   let bestScore = Number.NEGATIVE_INFINITY;
+  let bestIsMainLike = false;
   people.forEach((person, index) => {
     const [personX, personY] = boxCenter(person);
     const distance = Math.hypot(personX - subjectX, personY - subjectY) / subjectScale;
@@ -106,9 +169,10 @@ export function selectMainPersonIndex(people: Box[], subject: Box) {
     if (score > bestScore) {
       bestScore = score;
       bestIndex = index;
+      bestIsMainLike = containsSubjectCenter || overlap >= 0.12 || distance <= 0.38;
     }
   });
-  return bestScore >= -0.15 ? bestIndex : null;
+  return bestIsMainLike && bestScore >= -0.15 ? bestIndex : null;
 }
 
 export function bystanderHeadBoxes(
@@ -118,9 +182,13 @@ export function bystanderHeadBoxes(
   sourceHeight: number,
 ) {
   const mainIndex = selectMainPersonIndex(people, subject);
+  const referenceHead = personBoxToHeadBox(subject, sourceWidth, sourceHeight);
   return people
     .filter((_, index) => index !== mainIndex)
-    .map((person) => personBoxToHeadBox(person, sourceWidth, sourceHeight));
+    .filter((person) => person[2] < sourceWidth * 0.72 && person[3] < sourceHeight * 0.96)
+    .map((person) => personBoxToHeadBox(person, sourceWidth, sourceHeight))
+    .filter((head) => isPlausibleHeadBox(head, sourceWidth, sourceHeight, referenceHead, 1.9))
+    .filter((head) => !isProtectedMainHead(head, subject, sourceWidth, sourceHeight));
 }
 
 export function headBoxesAt(frames: HeadDetectionFrame[], time: number) {
@@ -142,10 +210,12 @@ export function mergeHeadBoxes(boxes: Box[]) {
   const merged: Box[] = [];
   for (const box of boxes) {
     const duplicateIndex = merged.findIndex((existing) =>
-      boxIou(existing, box) >= 0.08 || faceTrackDistance(existing, box) <= 0.42,
+      boxAreaRatio(existing, box) <= 3
+      && (boxIou(existing, box) >= 0.12 || faceTrackDistance(existing, box) <= 0.42),
     );
-    if (duplicateIndex >= 0) merged[duplicateIndex] = unionBox(merged[duplicateIndex], box);
-    else merged.push([...box] as Box);
+    // The first box is the higher-priority source. Never union nearby heads:
+    // a union can chain across a dance group and grow into one giant mask.
+    if (duplicateIndex < 0) merged.push([...box] as Box);
   }
   return merged;
 }
@@ -268,7 +338,7 @@ export class FaceObscuringRenderer {
     return new FaceObscuringRenderer(detector, await loadStickerImage(stickerUrl));
   }
 
-  private updateTracks(existingTracks: FaceTrack[], detections: Box[], maximumMissedFrames: number) {
+  private updateTracks(existingTracks: FaceTrack[], detections: Box[], options: TrackOptions) {
     const unused = new Set(detections.map((_, index) => index));
     const nextTracks: FaceTrack[] = [];
     for (const track of existingTracks) {
@@ -278,8 +348,13 @@ export class FaceObscuringRenderer {
         const candidate = detections[index];
         const distance = faceTrackDistance(track.box, candidate);
         const overlap = boxIou(track.box, candidate);
+        const areaRatio = boxAreaRatio(track.box, candidate);
         const cost = distance - overlap * 0.7;
-        if ((distance <= 1.15 || overlap >= 0.04) && cost < bestCost) {
+        if (
+          areaRatio <= options.maximumAreaRatio
+          && (distance <= options.maximumDistance || overlap >= options.minimumOverlap)
+          && cost < bestCost
+        ) {
           bestCost = cost;
           bestIndex = index;
         }
@@ -291,8 +366,17 @@ export class FaceObscuringRenderer {
           box: smoothFaceBox(track.box, detections[bestIndex]),
           missedFrames: 0,
         });
-      } else if (track.missedFrames < maximumMissedFrames) {
-        nextTracks.push({ ...track, missedFrames: track.missedFrames + 1 });
+      } else if (track.missedFrames < options.maximumMissedFrames) {
+        const nearbyReplacement = [...unused].some((index) => {
+          const candidate = detections[index];
+          return boxAreaRatio(track.box, candidate) <= options.maximumAreaRatio * 1.25
+            && faceTrackDistance(track.box, candidate) <= options.replacementDistance;
+        });
+        // A farther jump starts a fresh track instead of keeping both old and
+        // new masks on screen, which created the visible double-star trail.
+        if (!nearbyReplacement) {
+          nextTracks.push({ ...track, missedFrames: track.missedFrames + 1 });
+        }
       }
     }
     for (const index of unused) {
@@ -433,7 +517,21 @@ export class FaceObscuringRenderer {
       if (!bounds || bounds.width < 4 || bounds.height < 4) return [];
       return [[bounds.originX, bounds.originY, bounds.width, bounds.height] as Box];
     });
-    this.faceTracks = this.updateTracks(this.faceTracks, detections, 8);
+    const referenceHead = personBoxToHeadBox(
+      subjectBox,
+      video.videoWidth,
+      video.videoHeight,
+    );
+    const plausibleFaces = detections.filter((face) =>
+      isPlausibleHeadBox(face, video.videoWidth, video.videoHeight, referenceHead, 2.6),
+    );
+    this.faceTracks = this.updateTracks(this.faceTracks, plausibleFaces, {
+      maximumMissedFrames: FACE_TRACK_MISSED_FRAMES,
+      maximumDistance: 0.78,
+      minimumOverlap: 0.06,
+      maximumAreaRatio: 3,
+      replacementDistance: 1.35,
+    });
     const visibleBoxes = this.faceTracks.map((track) => track.box);
     const mainIndex = selectMainFaceIndex(
       visibleBoxes,
@@ -444,13 +542,39 @@ export class FaceObscuringRenderer {
     if (mainIndex !== null) this.previousMainFace = [...visibleBoxes[mainIndex]] as Box;
 
     const faceMasks = this.faceTracks
-      .filter((_, index) => index !== mainIndex)
+      .filter((track, index) => track.missedFrames === 0
+        && index !== mainIndex
+        && !isProtectedMainHead(
+          track.box,
+          subjectBox,
+          video.videoWidth,
+          video.videoHeight,
+        ))
       .map((track) => track.box);
     const maskCandidates = mergeHeadBoxes([
-      ...detectedBystanderHeads,
       ...faceMasks,
-    ]);
-    this.maskTracks = this.updateTracks(this.maskTracks, maskCandidates, 10);
+      ...detectedBystanderHeads,
+    ]).filter((head) =>
+      isPlausibleHeadBox(head, video.videoWidth, video.videoHeight, referenceHead, 2.6)
+      && !isProtectedMainHead(
+        head,
+        subjectBox,
+        video.videoWidth,
+        video.videoHeight,
+      ),
+    );
+    this.maskTracks = this.updateTracks(this.maskTracks, maskCandidates, {
+      maximumMissedFrames: MASK_TRACK_MISSED_FRAMES,
+      maximumDistance: 0.64,
+      minimumOverlap: 0.08,
+      maximumAreaRatio: 2.5,
+      replacementDistance: 1.3,
+    }).filter((track) => !isProtectedMainHead(
+      track.box,
+      subjectBox,
+      video.videoWidth,
+      video.videoHeight,
+    ));
 
     const outputScaleX = outputCanvas.width / video.videoWidth;
     const outputScaleY = outputCanvas.height / video.videoHeight;
@@ -467,7 +591,7 @@ export class FaceObscuringRenderer {
         sourceBox[2] * outputScaleX,
         sourceBox[3] * outputScaleY,
       ];
-      const opacity = clamp(1 - track.missedFrames / 12, 0.42, 1);
+      const opacity = clamp(1 - track.missedFrames / (MASK_TRACK_MISSED_FRAMES + 1), 0, 1);
       if (effects.style === 'soft-blur' || effects.style === 'strong-blur') {
         const base = effects.style === 'strong-blur' ? 22 : 9;
         const range = effects.style === 'strong-blur' ? 42 : 22;

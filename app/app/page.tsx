@@ -866,7 +866,7 @@ export default function Home() {
     time: number,
   ): Promise<HeadDetectionFrame> {
     const detector = await ensurePersonDetector();
-    const predictions = await detector.detect(video, 50, 0.2);
+    const predictions = await detector.detect(video, 50, 0.15);
     const people = predictions
       .filter((item) => item.class === 'person')
       .map((item) => item.bbox as Box);
