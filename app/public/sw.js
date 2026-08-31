@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-13-tools-v31-optional-face-crop';
+const VERSION = 'nivitrack-13-tools-v32-crop-redetect-guidance';
 const APP_CACHE = VERSION + '-app';
 // 第 13 功能只改裁切與座標流程；沿用 V30 模型快取，避免 iPhone 重新下載模型。
 const MODEL_CACHE = 'nivitrack-13-tools-v30-body-identity-privacy-effects-models';

@@ -218,6 +218,23 @@ button { color: inherit; }
   letter-spacing: .08em;
 }
 .next-step-card strong { color: var(--ink); font-size: 13px; line-height: 1.45; }
+.main-head-hint {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  border: 2px solid #c86c24;
+  border-radius: 14px;
+  background: #fff2df;
+  padding: 12px 13px;
+  color: #542b0f;
+}
+.main-head-hint strong { font-size: 14px; }
+.main-head-hint span { font-size: 12px; line-height: 1.5; }
+.main-head-hint.confirmed {
+  border-color: #1b9b62;
+  background: #e9f9f0;
+  color: #0c5233;
+}
 .selection-zoom-bar {
   display: flex;
   align-items: center;

@@ -35,6 +35,7 @@ import {
   headBoxFromTrackingContext,
   headBoxesAt,
   plausibleDetectedHeadBoxes,
+  selectMainFaceIndex,
   stabilizeHeadDetectionFrames,
   type FaceHeadDetector,
   type FaceMaskEffects,
@@ -693,6 +694,36 @@ export default function Home() {
     context.fillText(label, x + lineWidth * 2, Math.max(lineWidth * 6.5, y - lineWidth * 2));
   }
 
+  function drawFaceCropDetectionFrame(
+    targetCrop: Box,
+    mainHead: Box,
+    detectedHeads: Candidate[],
+  ) {
+    drawCropFrame(targetCrop);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const lineWidth = Math.max(4, canvas.width / 320);
+    context.lineWidth = lineWidth;
+    context.font = '700 ' + Math.max(18, canvas.width / 55) + 'px -apple-system';
+    for (const candidate of detectedHeads) {
+      context.strokeStyle = '#35d292';
+      context.strokeRect(...candidate.box);
+    }
+    context.strokeStyle = '#d9f06f';
+    context.strokeRect(...mainHead);
+    context.fillStyle = '#102018';
+    const labelWidth = context.measureText('主角保留').width + lineWidth * 5;
+    context.fillRect(mainHead[0], Math.max(0, mainHead[1] - lineWidth * 9), labelWidth, lineWidth * 9);
+    context.fillStyle = '#d9f06f';
+    context.fillText(
+      '主角保留',
+      mainHead[0] + lineWidth * 2,
+      Math.max(lineWidth * 6.5, mainHead[1] - lineWidth * 2),
+    );
+  }
+
   function enterCropSelection() {
     const video = videoRef.current;
     if (!video) return;
@@ -722,7 +753,7 @@ export default function Home() {
     requestAnimationFrame(() => drawCropFrame(null));
   }
 
-  function confirmCropSelection() {
+  async function confirmCropSelection() {
     if (!cropBox) {
       setNotice('請先用手指框出要保留的範圍');
       return;
@@ -734,21 +765,52 @@ export default function Home() {
         setNotice('主角頭部選擇已遺失，請返回重新選定');
         return;
       }
-      const mainCenterX = mainHead[0] + mainHead[2] / 2;
-      const mainCenterY = mainHead[1] + mainHead[3] / 2;
-      const containsMain = mainCenterX >= cropBox[0]
-        && mainCenterX <= cropBox[0] + cropBox[2]
-        && mainCenterY >= cropBox[1]
-        && mainCenterY <= cropBox[1] + cropBox[3];
-      if (!containsMain) {
-        setNotice('裁切框必須包含主角頭部，請重新拖曳');
-        return;
-      }
+      const appliedCrop = [...cropBox] as Box;
       resetFacePreview();
       setTrackPath([]);
-      setPhase('select');
-      setNotice('已啟用真實裁切；接下來只辨識並輸出框內畫面');
-      requestAnimationFrame(() => drawSelectionFrame(mainHead));
+      selectionZoomRef.current = 1;
+      selectionFocusRef.current = null;
+      setSelectionZoom(1);
+      setDetecting(true);
+      setNotice('裁切已套用；正在裁切區內重新辨識人頭…');
+      try {
+        const detector = await ensureFaceHeadDetector();
+        const detections = await detector.detect(video, appliedCrop);
+        const nextCandidates: Candidate[] = detections.map((detection) => ({
+          box: detection.box,
+          label: '人頭',
+          score: detection.score,
+        }));
+        const detectedHeadBoxes = nextCandidates.map((candidate) => candidate.box);
+        const refinedMainIndex = selectMainFaceIndex(
+          detectedHeadBoxes,
+          mainHead,
+          mainHead,
+          false,
+        );
+        const refinedMainHead = refinedMainIndex === null
+          ? mainHead
+          : [...detectedHeadBoxes[refinedMainIndex]] as Box;
+        setBox(refinedMainHead);
+        selectionRef.current = {
+          time: selectionRef.current?.time ?? video.currentTime,
+          box: [...refinedMainHead] as Box,
+        };
+        setCandidates(nextCandidates);
+        setPhase('select');
+        setNotice(nextCandidates.length
+          ? `裁切已啟用 ✓；框內重新辨識完成，共找到 ${nextCandidates.length} 顆人頭`
+          : '裁切已啟用 ✓；框內暫時沒有找到人頭，追蹤時仍會逐幀重新辨識');
+        requestAnimationFrame(() => drawFaceCropDetectionFrame(appliedCrop, refinedMainHead, nextCandidates));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCandidates([]);
+        setPhase('select');
+        setNotice('裁切已啟用，但框內重新辨識失敗：' + message);
+        requestAnimationFrame(() => drawFaceCropDetectionFrame(appliedCrop, mainHead, []));
+      } finally {
+        setDetecting(false);
+      }
       return;
     }
     if (video?.videoWidth && video.videoHeight) {
@@ -766,6 +828,7 @@ export default function Home() {
   function useFullFrameFaceMask() {
     const mainHead = selectionRef.current?.box ?? box;
     setCropBox(null);
+    setCandidates([]);
     resetFacePreview();
     setTrackPath([]);
     setPhase('select');
@@ -796,7 +859,7 @@ export default function Home() {
     setNotice(selectedTool === 'remove-background'
       ? '用手指緊貼框住要保留的單一舞者，或使用 AI 找人物'
       : selectedTool === 'mask-faces'
-        ? '用手指框住主角的頭／臉，或使用 AI 尋找人臉'
+        ? '必要步驟：請先手動框住主角頭部；AI 候選框可選用'
         : '用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawSelectionFrame(null));
   }
@@ -999,7 +1062,7 @@ export default function Home() {
     try {
       if (selectedTool === 'mask-faces') {
         const detector = await ensureFaceHeadDetector();
-        const detections = await detector.detect(video);
+        const detections = await detector.detect(video, cropBox ?? undefined);
         const nextCandidates: Candidate[] = detections.map((detection) => ({
           box: detection.box,
           label: '人頭',
@@ -1831,7 +1894,7 @@ export default function Home() {
               ? '看到主角清楚的畫面時，點「暫停並框選」。'
               : !box
                 ? selectedTool === 'mask-faces'
-                  ? '先點 AI 候選人臉，或用手指框住主角的頭／臉。'
+                  ? '必要步驟：先用手指框住主角頭部；這個人不會被遮。AI 只作輔助。'
                   : '先點 AI 候選人物，或用手指粗略框住主角。'
                 : selectedTool === 'mask-faces'
                   ? cropBox
@@ -2249,7 +2312,7 @@ export default function Home() {
                     setNotice(selectedTool === 'remove-background'
                       ? '已暫停；請框住要保留的單一舞者，或使用 AI 找人物'
                       : selectedTool === 'mask-faces'
-                        ? '已暫停；請框住主角的頭／臉，或使用 AI 尋找人臉'
+                        ? '已暫停；必要步驟是手動框住主角頭部，AI 只作輔助'
                       : '已暫停；請用手指框住要追蹤的人物或寵物');
                     requestAnimationFrame(() => drawSelectionFrame(null));
                   }}
@@ -2287,7 +2350,7 @@ export default function Home() {
                             : selectedTool === 'remove-background'
                               ? '框選單一舞者'
                               : selectedTool === 'mask-faces'
-                                ? '框選主角頭／臉'
+                                ? cropBox ? `裁切辨識 ${candidates.length} 顆人頭 ✓` : '手動框選主角頭部'
                                 : '手指框選主角'
                           : phase === 'previewing'
                             ? selectedTool === 'mask-faces' ? '3 秒旁人人臉遮罩預覽' : '3 秒去背特效預覽'
@@ -2317,10 +2380,20 @@ export default function Home() {
                 )}
               </div>
               <div className="next-step-card" role="status" aria-live="polite">
-                <span>下一步</span>
+                <span>{selectedTool === 'mask-faces' && cropBox && phase === 'select' ? '裁切已啟用 ✓' : '下一步'}</span>
                 <strong>{nextStepText}</strong>
               </div>
-              {phase === 'select' && !selectionPlaying && (
+              {phase === 'select' && selectedTool === 'mask-faces' && !selectionPlaying && (
+                <div className={'main-head-hint ' + (box ? 'confirmed' : 'required')} role="status" aria-live="polite">
+                  <strong>{box ? '主角已指定 ✓' : '必要步驟：先手動指定主角'}</strong>
+                  <span>{box
+                    ? cropBox
+                      ? `裁切區已重新辨識 ${candidates.length} 顆人頭；主角不會被遮。`
+                      : '這個主角不會被遮；可直接追蹤或選擇裁切後重新辨識。'
+                    : '請用手指框住主角頭部；AI 尋找只提供候選框，不會代替你決定主角。'}</span>
+                </div>
+              )}
+              {phase === 'select' && !selectionPlaying && !(selectedTool === 'mask-faces' && cropBox) && (
                 <div className="selection-zoom-bar" aria-label="取框畫面縮放">
                   <span>取框放大</span>
                   <button
@@ -2347,10 +2420,12 @@ export default function Home() {
                 {phase === 'tool-ready' && selectedTool === 'crop-free' && <button type="button" onClick={enterCropSelection}>重新框選裁切</button>}
                 {phase === 'crop-select' && (
                   <>
-                    <button type="button" onClick={selectedTool === 'mask-faces' ? useFullFrameFaceMask : returnToTools}>
+                    <button type="button" disabled={detecting} onClick={selectedTool === 'mask-faces' ? useFullFrameFaceMask : returnToTools}>
                       {selectedTool === 'mask-faces' ? '使用完整畫面' : '返回功能選單'}
                     </button>
-                    <button className="primary" type="button" disabled={!cropBox} onClick={confirmCropSelection}>使用此裁切框</button>
+                    <button className="primary" type="button" disabled={!cropBox || detecting} onClick={() => void confirmCropSelection()}>
+                      {detecting ? '裁切區辨識中…' : '使用此裁切框'}
+                    </button>
                   </>
                 )}
                 {phase === 'select' && (
@@ -2363,7 +2438,7 @@ export default function Home() {
                       {detecting
                         ? 'AI 掃描中…'
                         : selectedTool === 'mask-faces'
-                          ? 'AI 尋找人臉'
+                          ? cropBox ? '重新辨識裁切區' : 'AI 輔助找人頭（可選）'
                           : selectedTool === 'remove-background'
                             ? 'AI 尋找人物'
                             : 'AI 尋找人物／寵物'}
