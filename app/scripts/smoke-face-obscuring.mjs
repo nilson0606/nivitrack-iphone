@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 
 import {
+  bystanderHeadBoxes,
   expandFaceBox,
+  headBoxesAt,
+  mergeHeadBoxes,
+  personBoxToHeadBox,
   selectMainFaceIndex,
+  selectMainPersonIndex,
   smoothFaceBox,
 } from '../lib/face-obscuring.ts';
 
@@ -57,6 +62,38 @@ assert.deepEqual(
   smoothFaceBox([1, 2, 3, 4], [40, 50, 60, 70], 1),
   [1, 2, 3, 4],
   'a short missed detection must retain the previous mask instead of flickering',
+);
+
+const people = [
+  [100, 100, 100, 300],
+  [300, 90, 90, 310],
+];
+assert.equal(
+  selectMainPersonIndex(people, [105, 105, 95, 295]),
+  0,
+  'the person matching the ViT subject must be excluded from bystander masks',
+);
+assert.deepEqual(
+  personBoxToHeadBox(people[0], 500, 500),
+  [125, 103, 50, 54],
+  'a full person box must produce a stable upper-body head region even without a visible face',
+);
+const bystanderHeads = bystanderHeadBoxes(people, [105, 105, 95, 295], 500, 500);
+assert.equal(bystanderHeads.length, 1, 'only non-main people should produce inferred head masks');
+assert.ok(bystanderHeads[0][0] > 300, 'the remaining inferred head must belong to the bystander');
+
+assert.deepEqual(
+  headBoxesAt([
+    { time: 0, heads: [[10, 10, 20, 20]] },
+    { time: 0.2, heads: [[20, 10, 20, 20]] },
+  ], 0.11),
+  [[20, 10, 20, 20]],
+  'preview and export must use the nearest precomputed head sample',
+);
+assert.equal(
+  mergeHeadBoxes([[10, 10, 30, 30], [14, 12, 26, 28]]).length,
+  1,
+  'face and person-derived head detections must merge instead of drawing duplicate masks',
 );
 
 console.log('Face-obscuring helper smoke tests passed.');

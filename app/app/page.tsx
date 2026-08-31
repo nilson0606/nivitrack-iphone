@@ -29,10 +29,13 @@ import type {
   PersonBackgroundEffects,
   PersonBackgroundRenderer,
 } from '../lib/person-background-removal';
-import type {
-  FaceMaskEffects,
-  FaceMaskStyle,
-  FaceObscuringRenderer,
+import {
+  bystanderHeadBoxes,
+  headBoxesAt,
+  type FaceMaskEffects,
+  type FaceMaskStyle,
+  type FaceObscuringRenderer,
+  type HeadDetectionFrame,
 } from '../lib/face-obscuring';
 import {
   selectionCanvasPointToSource,
@@ -147,6 +150,10 @@ type BackgroundPreview = {
   path: TrackPoint[];
 };
 
+type FacePreview = BackgroundPreview & {
+  headFrames: HeadDetectionFrame[];
+};
+
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
@@ -213,8 +220,9 @@ export default function Home() {
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
   const backgroundPreviewRef = useRef<BackgroundPreview | null>(null);
   const backgroundPreviewRendererRef = useRef<PersonBackgroundRenderer | null>(null);
-  const facePreviewRef = useRef<BackgroundPreview | null>(null);
+  const facePreviewRef = useRef<FacePreview | null>(null);
   const facePreviewRendererRef = useRef<FaceObscuringRenderer | null>(null);
+  const faceHeadFramesRef = useRef<HeadDetectionFrame[]>([]);
   const previewFrameCallbackRef = useRef(0);
   const previewAnimationFrameRef = useRef(0);
   const backgroundPreviewReturnPhaseRef = useRef<'complete' | 'path-ready'>('complete');
@@ -254,7 +262,7 @@ export default function Home() {
   const [cloneCount, setCloneCount] = useState(0);
   const [cloneLayout, setCloneLayout] = useState<CloneLayout>('trail');
   const [cloneStyle, setCloneStyle] = useState<CloneStyle>('subject');
-  const [faceMaskStyle, setFaceMaskStyle] = useState<FaceMaskStyle>('soft-blur');
+  const [faceMaskStyle, setFaceMaskStyle] = useState<FaceMaskStyle>('strong-blur');
   const [faceMaskStrength, setFaceMaskStrength] = useState(0.72);
   const [faceMaskScale, setFaceMaskScale] = useState(1.38);
   const [faceMaskEmoji, setFaceMaskEmoji] = useState('😎');
@@ -363,6 +371,7 @@ export default function Home() {
     facePreviewRef.current = null;
     facePreviewRendererRef.current?.close();
     facePreviewRendererRef.current = null;
+    faceHeadFramesRef.current = [];
     setFacePreviewReady(false);
   }
 
@@ -427,7 +436,7 @@ export default function Home() {
     setCloneCount(0);
     setCloneLayout('trail');
     setCloneStyle('subject');
-    setFaceMaskStyle('soft-blur');
+    setFaceMaskStyle('strong-blur');
     setFaceMaskStrength(0.72);
     setFaceMaskScale(1.38);
     setFaceMaskEmoji('😎');
@@ -490,7 +499,7 @@ export default function Home() {
     setCloneCount(0);
     setCloneLayout('trail');
     setCloneStyle('subject');
-    setFaceMaskStyle('soft-blur');
+    setFaceMaskStyle('strong-blur');
     setFaceMaskStrength(0.72);
     setFaceMaskScale(1.38);
     setFaceMaskEmoji('😎');
@@ -839,21 +848,42 @@ export default function Home() {
         : '主角已指定；可開始 3 秒 ViT 追蹤測試');
   }
 
+  async function ensurePersonDetector() {
+    if (!detectorRef.current) {
+      await import('@tensorflow/tfjs');
+      const cocoSsd = await import('@tensorflow-models/coco-ssd');
+      detectorRef.current = await cocoSsd.load({
+        base: 'lite_mobilenet_v2',
+        modelUrl: new URL('models/ssdlite_mobilenet_v2/model.json', document.baseURI).href,
+      });
+    }
+    return detectorRef.current;
+  }
+
+  async function detectBystanderHeadFrame(
+    video: HTMLVideoElement,
+    subjectBox: Box,
+    time: number,
+  ): Promise<HeadDetectionFrame> {
+    const detector = await ensurePersonDetector();
+    const predictions = await detector.detect(video, 50, 0.2);
+    const people = predictions
+      .filter((item) => item.class === 'person')
+      .map((item) => item.bbox as Box);
+    return {
+      time,
+      heads: bystanderHeadBoxes(people, subjectBox, video.videoWidth, video.videoHeight),
+    };
+  }
+
   async function detectSubjects() {
     const video = videoRef.current;
     if (!video) return;
     setDetecting(true);
     setNotice('正在本機載入 SSDLite 並掃描目前影格…');
     try {
-      if (!detectorRef.current) {
-        await import('@tensorflow/tfjs');
-        const cocoSsd = await import('@tensorflow-models/coco-ssd');
-        detectorRef.current = await cocoSsd.load({
-          base: 'lite_mobilenet_v2',
-          modelUrl: new URL('models/ssdlite_mobilenet_v2/model.json', document.baseURI).href,
-        });
-      }
-      const predictions = await detectorRef.current.detect(video, 30, 0.25);
+      const detector = await ensurePersonDetector();
+      const predictions = await detector.detect(video, 30, 0.25);
       const peopleOnly = selectedTool === 'remove-background' || selectedTool === 'mask-faces';
       const nextCandidates: Candidate[] = predictions
         .filter((item) => item.class === 'person' || (!peopleOnly && (item.class === 'dog' || item.class === 'cat')))
@@ -931,6 +961,7 @@ export default function Home() {
       score: 1,
       accepted: true,
     }];
+    const headFrames: HeadDetectionFrame[] = [];
     const started = eventClock();
 
     try {
@@ -940,6 +971,11 @@ export default function Home() {
         trackerRef.current = await VitTracker.create(modelUrl);
       }
       trackerRef.current.initialize(video, box);
+      if (selectedTool === 'mask-faces') {
+        setNotice('正在載入本機人物與人頭辨識…');
+        await ensurePersonDetector();
+        headFrames.push(await detectBystanderHeadFrame(video, box, startTime));
+      }
 
       let frameIndex = 0;
       for (let at = startTime + interval; at <= endTime + 0.001; at += interval) {
@@ -955,10 +991,13 @@ export default function Home() {
           accepted: result.accepted,
         });
         frameIndex += 1;
+        if (selectedTool === 'mask-faces' && frameIndex % 2 === 0) {
+          headFrames.push(await detectBystanderHeadFrame(video, result.box, frameTime));
+        }
         setBox(result.box);
         setCurrentScore(result.score);
         setProgress((frameTime - startTime) / Math.max(0.001, endTime - startTime));
-        setNotice('ViT 追蹤中 · 第 ' + frameIndex + ' 幀');
+        setNotice((selectedTool === 'mask-faces' ? 'ViT＋人頭追蹤中 · 第 ' : 'ViT 追蹤中 · 第 ') + frameIndex + ' 幀');
         drawFrame(result.box, result.score);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         if (frameTime >= endTime) break;
@@ -996,9 +1035,12 @@ export default function Home() {
           setNotice('3 秒追蹤完成，但去背預覽模型準備失敗：' + message);
         }
       } else if (selectedTool === 'mask-faces') {
-        facePreviewRef.current = { startTime, endTime, path: previewPoints };
+        faceHeadFramesRef.current = headFrames;
+        facePreviewRef.current = { startTime, endTime, path: previewPoints, headFrames };
         setNotice('3 秒追蹤完成；正在準備旁人人臉遮罩預覽…');
         try {
+          detectorRef.current?.dispose();
+          detectorRef.current = null;
           if (!facePreviewRendererRef.current) {
             const { FaceObscuringRenderer } = await import('../lib/face-obscuring');
             facePreviewRendererRef.current = await FaceObscuringRenderer.create(faceStickerUrl || undefined);
@@ -1024,6 +1066,10 @@ export default function Home() {
       setBackgroundPreviewReady(false);
       facePreviewRef.current = null;
       setFacePreviewReady(false);
+      if (selectedTool === 'mask-faces') {
+        detectorRef.current?.dispose();
+        detectorRef.current = null;
+      }
       setPhase('select');
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
@@ -1230,7 +1276,13 @@ export default function Home() {
           canvas.width = previewWidth;
           canvas.height = previewHeight;
         }
-        renderer.render(video, canvas, previewBox, getFaceMaskEffects());
+        renderer.render(
+          video,
+          canvas,
+          previewBox,
+          getFaceMaskEffects(),
+          headBoxesAt(preview.headFrames, mediaTime),
+        );
         setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
         if (mediaTime >= preview.endTime - 0.01) finish();
       } catch (error) {
@@ -1279,7 +1331,12 @@ export default function Home() {
     const preferredStart = selectionRef.current?.time ?? video.currentTime;
     const startTime = Math.min(Math.max(0, preferredStart), Math.max(0, video.duration - 3));
     const endTime = Math.min(video.duration, startTime + 3);
-    facePreviewRef.current = { startTime, endTime, path: trackPath };
+    facePreviewRef.current = {
+      startTime,
+      endTime,
+      path: trackPath,
+      headFrames: faceHeadFramesRef.current,
+    };
     setFacePreviewReady(false);
     setNotice('正在準備完整路徑的 3 秒旁人遮臉 Preview…');
     try {
@@ -1308,6 +1365,8 @@ export default function Home() {
       return;
     }
 
+    if (selectedTool === 'mask-faces') resetFacePreview();
+
     cancelRef.current = false;
     setPhase('tracking');
     setStats(null);
@@ -1334,6 +1393,7 @@ export default function Home() {
       score: 1,
       accepted: true,
     }];
+    const headFrames: HeadDetectionFrame[] = [];
     const measurements: TrackResult[] = [];
     const started = eventClock();
     let processed = 0;
@@ -1343,6 +1403,12 @@ export default function Home() {
       if (!trackerRef.current) {
         const modelUrl = new URL('models/vittrack.onnx', document.baseURI).href;
         trackerRef.current = await VitTracker.create(modelUrl);
+      }
+      if (selectedTool === 'mask-faces') {
+        setNotice('正在載入本機人物與人頭辨識…');
+        await ensurePersonDetector();
+        await seekTo(selection.time);
+        headFrames.push(await detectBystanderHeadFrame(video, selection.box, selection.time));
       }
 
       const trackDirection = async (times: number[], label: string) => {
@@ -1360,10 +1426,13 @@ export default function Home() {
             accepted: result.accepted,
           });
           processed += 1;
+          if (selectedTool === 'mask-faces' && processed % 2 === 0) {
+            headFrames.push(await detectBystanderHeadFrame(video, result.box, frameTime));
+          }
           setBox(result.box);
           setCurrentScore(result.score);
           setProgress(processed / Math.max(1, totalFrames));
-          setNotice(label + ' · ' + processed + ' / ' + totalFrames + ' 幀');
+          setNotice((selectedTool === 'mask-faces' ? label + '＋人頭辨識' : label) + ' · ' + processed + ' / ' + totalFrames + ' 幀');
           drawFrame(result.box, result.score);
           await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         }
@@ -1373,6 +1442,12 @@ export default function Home() {
       await trackDirection(backwardTimes, '補齊選角前片段');
 
       points.sort((left, right) => left.time - right.time);
+      if (selectedTool === 'mask-faces') {
+        headFrames.sort((left, right) => left.time - right.time);
+        faceHeadFramesRef.current = headFrames;
+        detectorRef.current?.dispose();
+        detectorRef.current = null;
+      }
       const elapsedMs = eventClock() - started;
       const inferenceTotal = measurements.reduce((sum, item) => sum + item.inferenceMs, 0);
       const scoreTotal = measurements.reduce((sum, item) => sum + item.score, 0);
@@ -1395,6 +1470,10 @@ export default function Home() {
           ? '完整主角路徑已建立；可調整旁人人臉遮罩後輸出原片構圖'
         : '完整 ViT 路徑已建立；可調整構圖並輸出影片');
     } catch (error) {
+      if (selectedTool === 'mask-faces') {
+        detectorRef.current?.dispose();
+        detectorRef.current = null;
+      }
       setPhase('select');
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
@@ -1440,6 +1519,7 @@ export default function Home() {
         kind: 'mask-faces',
         smoothness,
         effects: getFaceMaskEffects(),
+        headFrames: faceHeadFramesRef.current,
       };
     }
     if (!video || !renderCanvas || !operation) {
@@ -1920,7 +2000,7 @@ export default function Home() {
           </button>
         </div>
       </div>
-      <p className="effect-note">ViT 只用來持續辨認主角；輸出保留原始畫面比例。人臉辨識與遮罩全程留在這台 iPhone，不做身分辨識，也不上傳影片。</p>
+      <p className="effect-note">ViT 持續辨認主角並排除主角頭部；SSDLite 找出其餘人物並推定頭部，BlazeFace 再補強看得見的臉。輸出保留原始畫面比例，全程留在這台 iPhone，不做身分辨識，也不上傳影片。</p>
     </section>
   ) : null;
 
@@ -2395,7 +2475,7 @@ export default function Home() {
 
                   {selectedTool === 'mask-faces' && (
                     <p className="export-note">
-                      ViT 追蹤框只負責辨認主角臉；BlazeFace 逐幀找出其他人臉並套用遮罩。保留原片構圖、原聲，全程只在這台 iPhone 執行。
+                      ViT 排除主角，SSDLite 建立其餘人物的人頭路徑，BlazeFace 補強可見臉部，再套用連續遮罩。保留原片構圖、原聲，全程只在這台 iPhone 執行。
                     </p>
                   )}
 

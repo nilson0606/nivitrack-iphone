@@ -19,8 +19,13 @@ export type FaceMaskEffects = {
   privacyFirst: boolean;
 };
 
+export type HeadDetectionFrame = {
+  time: number;
+  heads: Box[];
+};
+
 export const DEFAULT_FACE_MASK_EFFECTS: FaceMaskEffects = {
-  style: 'soft-blur',
+  style: 'strong-blur',
   strength: 0.72,
   scale: 1.38,
   emoji: '😎',
@@ -56,6 +61,93 @@ function faceTrackDistance(left: Box, right: Box) {
   const [rightX, rightY] = boxCenter(right);
   const scale = Math.max(4, Math.max(left[2], left[3], right[2], right[3]));
   return Math.hypot(rightX - leftX, rightY - leftY) / scale;
+}
+
+function unionBox(left: Box, right: Box): Box {
+  const x = Math.min(left[0], right[0]);
+  const y = Math.min(left[1], right[1]);
+  const rightEdge = Math.max(left[0] + left[2], right[0] + right[2]);
+  const bottomEdge = Math.max(left[1] + left[3], right[1] + right[3]);
+  return [x, y, rightEdge - x, bottomEdge - y];
+}
+
+export function personBoxToHeadBox(
+  person: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+): Box {
+  const [x, y, width, height] = person;
+  const headWidth = clamp(width * 0.5, height * 0.14, height * 0.24);
+  const headHeight = clamp(Math.max(headWidth * 1.08, height * 0.18), headWidth, height * 0.28);
+  const centerX = x + width / 2;
+  return [
+    clamp(centerX - headWidth / 2, 0, Math.max(0, sourceWidth - headWidth)),
+    clamp(y + height * 0.01, 0, Math.max(0, sourceHeight - headHeight)),
+    Math.min(headWidth, sourceWidth),
+    Math.min(headHeight, sourceHeight),
+  ];
+}
+
+export function selectMainPersonIndex(people: Box[], subject: Box) {
+  if (people.length === 0) return null;
+  const [subjectX, subjectY] = boxCenter(subject);
+  const subjectScale = Math.max(8, Math.hypot(subject[2], subject[3]));
+  let bestIndex: number | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  people.forEach((person, index) => {
+    const [personX, personY] = boxCenter(person);
+    const distance = Math.hypot(personX - subjectX, personY - subjectY) / subjectScale;
+    const overlap = boxIou(person, subject);
+    const containsSubjectCenter = subjectX >= person[0]
+      && subjectX <= person[0] + person[2]
+      && subjectY >= person[1]
+      && subjectY <= person[1] + person[3];
+    const score = overlap * 2.4 - distance + (containsSubjectCenter ? 0.55 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+  return bestScore >= -0.15 ? bestIndex : null;
+}
+
+export function bystanderHeadBoxes(
+  people: Box[],
+  subject: Box,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  const mainIndex = selectMainPersonIndex(people, subject);
+  return people
+    .filter((_, index) => index !== mainIndex)
+    .map((person) => personBoxToHeadBox(person, sourceWidth, sourceHeight));
+}
+
+export function headBoxesAt(frames: HeadDetectionFrame[], time: number) {
+  if (frames.length === 0) return [];
+  let low = 0;
+  let high = frames.length - 1;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (frames[middle].time <= time) low = middle;
+    else high = middle;
+  }
+  const candidate = Math.abs(frames[high].time - time) < Math.abs(frames[low].time - time)
+    ? frames[high]
+    : frames[low];
+  return candidate.heads.map((head) => [...head] as Box);
+}
+
+export function mergeHeadBoxes(boxes: Box[]) {
+  const merged: Box[] = [];
+  for (const box of boxes) {
+    const duplicateIndex = merged.findIndex((existing) =>
+      boxIou(existing, box) >= 0.08 || faceTrackDistance(existing, box) <= 0.42,
+    );
+    if (duplicateIndex >= 0) merged[duplicateIndex] = unionBox(merged[duplicateIndex], box);
+    else merged.push([...box] as Box);
+  }
+  return merged;
 }
 
 export function expandFaceBox(
@@ -143,6 +235,7 @@ export class FaceObscuringRenderer {
   private readonly pixelCanvas = document.createElement('canvas');
   private readonly stickerImage: HTMLImageElement | null;
   private faceTracks: FaceTrack[] = [];
+  private maskTracks: FaceTrack[] = [];
   private previousMainFace: Box | null = null;
   private nextTrackId = 1;
   private timestamp = 0;
@@ -175,10 +268,10 @@ export class FaceObscuringRenderer {
     return new FaceObscuringRenderer(detector, await loadStickerImage(stickerUrl));
   }
 
-  private updateTracks(detections: Box[]) {
+  private updateTracks(existingTracks: FaceTrack[], detections: Box[], maximumMissedFrames: number) {
     const unused = new Set(detections.map((_, index) => index));
     const nextTracks: FaceTrack[] = [];
-    for (const track of this.faceTracks) {
+    for (const track of existingTracks) {
       let bestIndex = -1;
       let bestCost = Number.POSITIVE_INFINITY;
       for (const index of unused) {
@@ -198,14 +291,14 @@ export class FaceObscuringRenderer {
           box: smoothFaceBox(track.box, detections[bestIndex]),
           missedFrames: 0,
         });
-      } else if (track.missedFrames < 5) {
+      } else if (track.missedFrames < maximumMissedFrames) {
         nextTracks.push({ ...track, missedFrames: track.missedFrames + 1 });
       }
     }
     for (const index of unused) {
       nextTracks.push({ id: this.nextTrackId++, box: [...detections[index]] as Box, missedFrames: 0 });
     }
-    this.faceTracks = nextTracks;
+    return nextTracks;
   }
 
   private drawBlur(
@@ -321,6 +414,7 @@ export class FaceObscuringRenderer {
     outputCanvas: HTMLCanvasElement,
     subjectBox: Box,
     effects: FaceMaskEffects = DEFAULT_FACE_MASK_EFFECTS,
+    detectedBystanderHeads: Box[] = [],
   ) {
     if (!video.videoWidth || !video.videoHeight) return;
     const context = outputCanvas.getContext('2d', { alpha: false });
@@ -339,7 +433,7 @@ export class FaceObscuringRenderer {
       if (!bounds || bounds.width < 4 || bounds.height < 4) return [];
       return [[bounds.originX, bounds.originY, bounds.width, bounds.height] as Box];
     });
-    this.updateTracks(detections);
+    this.faceTracks = this.updateTracks(this.faceTracks, detections, 8);
     const visibleBoxes = this.faceTracks.map((track) => track.box);
     const mainIndex = selectMainFaceIndex(
       visibleBoxes,
@@ -349,11 +443,18 @@ export class FaceObscuringRenderer {
     );
     if (mainIndex !== null) this.previousMainFace = [...visibleBoxes[mainIndex]] as Box;
 
+    const faceMasks = this.faceTracks
+      .filter((_, index) => index !== mainIndex)
+      .map((track) => track.box);
+    const maskCandidates = mergeHeadBoxes([
+      ...detectedBystanderHeads,
+      ...faceMasks,
+    ]);
+    this.maskTracks = this.updateTracks(this.maskTracks, maskCandidates, 10);
+
     const outputScaleX = outputCanvas.width / video.videoWidth;
     const outputScaleY = outputCanvas.height / video.videoHeight;
-    for (let index = 0; index < this.faceTracks.length; index += 1) {
-      if (index === mainIndex) continue;
-      const track = this.faceTracks[index];
+    for (const track of this.maskTracks) {
       const sourceBox = expandFaceBox(
         track.box,
         effects.scale,
@@ -366,7 +467,7 @@ export class FaceObscuringRenderer {
         sourceBox[2] * outputScaleX,
         sourceBox[3] * outputScaleY,
       ];
-      const opacity = clamp(1 - track.missedFrames / 6, 0.18, 1);
+      const opacity = clamp(1 - track.missedFrames / 12, 0.42, 1);
       if (effects.style === 'soft-blur' || effects.style === 'strong-blur') {
         const base = effects.style === 'strong-blur' ? 22 : 9;
         const range = effects.style === 'strong-blur' ? 42 : 22;
@@ -381,6 +482,7 @@ export class FaceObscuringRenderer {
 
   reset() {
     this.faceTracks = [];
+    this.maskTracks = [];
     this.previousMainFace = null;
   }
 
@@ -389,6 +491,7 @@ export class FaceObscuringRenderer {
     this.pixelCanvas.width = 1;
     this.pixelCanvas.height = 1;
     this.faceTracks = [];
+    this.maskTracks = [];
     this.previousMainFace = null;
   }
 }

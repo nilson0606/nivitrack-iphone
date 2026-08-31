@@ -15,6 +15,7 @@ MediaPipe 專案與授權：<https://github.com/google-ai-edge/mediapipe>
 
 NiviTrack 的第 13 項「旁人人臉遮罩」另外使用：
 
+- `@tensorflow-models/coco-ssd` / SSDLite MobileNet V2 — TensorFlow.js 所提供的 COCO 物件偵測器；只取 `person` 位置以推定非主角人頭。
 - MediaPipe BlazeFace Short Range Face Detector (`blaze_face_short_range.tflite`) — Google MediaPipe 所提供的人臉位置偵測模型；隨本專案靜態發布，只偵測畫面中的人臉位置，不建立人臉身分資料庫。
 
 模型來源：<https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite>

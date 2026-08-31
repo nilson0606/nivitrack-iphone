@@ -1,5 +1,5 @@
 import type { Box } from './vit-tracker';
-import type { FaceMaskEffects, FaceObscuringRenderer } from './face-obscuring';
+import type { FaceMaskEffects, FaceObscuringRenderer, HeadDetectionFrame } from './face-obscuring';
 import type { PersonBackgroundEffects, PersonBackgroundRenderer } from './person-background-removal';
 
 export type AspectPreset = '9:16' | '1:1' | '16:9';
@@ -38,6 +38,7 @@ export type ExportOperation =
       kind: 'mask-faces';
       smoothness: number;
       effects: FaceMaskEffects;
+      headFrames: HeadDetectionFrame[];
     };
 
 export type TrackPoint = {
@@ -353,6 +354,21 @@ function interpolateBox(path: TrackPoint[], time: number): Box {
   return before.box.map((value, index) => value + (after.box[index] - value) * mix) as Box;
 }
 
+function detectedHeadsAt(frames: HeadDetectionFrame[], time: number) {
+  if (frames.length === 0) return [];
+  let low = 0;
+  let high = frames.length - 1;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (frames[middle].time <= time) low = middle;
+    else high = middle;
+  }
+  const candidate = Math.abs(frames[high].time - time) < Math.abs(frames[low].time - time)
+    ? frames[high]
+    : frames[low];
+  return candidate.heads;
+}
+
 export function smoothTrackPath(path: TrackPoint[], smoothness: number) {
   if (path.length < 2) return path.map((point) => ({ ...point, box: [...point.box] as Box }));
   const alpha = 1 - clamp(smoothness, 0, 1) * 0.88;
@@ -521,7 +537,13 @@ function drawOutputFrame(
   }
   if (operation.kind === 'mask-faces') {
     if (!faceRenderer) throw new Error('旁人人臉遮罩模型尚未就緒');
-    faceRenderer.render(video, canvas, interpolateBox(path, time), operation.effects);
+    faceRenderer.render(
+      video,
+      canvas,
+      interpolateBox(path, time),
+      operation.effects,
+      detectedHeadsAt(operation.headFrames, time),
+    );
     return;
   }
   if (!filterRenderer) throw new Error('濾鏡輸出器尚未就緒');

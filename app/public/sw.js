@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-13-tools-v22-face-mask-candidate';
+const VERSION = 'nivitrack-13-tools-v23-head-tracking-candidate';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 
