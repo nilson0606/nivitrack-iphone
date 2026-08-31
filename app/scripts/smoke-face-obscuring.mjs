@@ -10,6 +10,7 @@ import {
   selectMainFaceIndex,
   selectMainPersonIndex,
   smoothFaceBox,
+  stabilizeHeadDetectionFrames,
   subjectHeadProtectionBox,
 } from '../lib/face-obscuring.ts';
 
@@ -134,5 +135,47 @@ assert.equal(
   2,
   'deduplication must not chain adjacent dancers into one giant mask',
 );
+
+const stabilizedMissingFrame = stabilizeHeadDetectionFrames([
+  { time: 0, heads: [[10, 10, 20, 20]] },
+  { time: 0.2, heads: [[13, 10, 20, 20]] },
+  { time: 0.4, heads: [] },
+  { time: 0.6, heads: [[19, 10, 20, 20]] },
+]);
+assert.equal(
+  stabilizedMissingFrame[2].heads.length,
+  1,
+  'a confirmed small head must survive one missed 5 fps sample without flickering',
+);
+assert.ok(
+  stabilizedMissingFrame[3].heads[0][0] > stabilizedMissingFrame[1].heads[0][0],
+  'a recovered moving head must continue along its temporal track',
+);
+
+const raisedArmSpike = stabilizeHeadDetectionFrames([
+  { time: 0, heads: [[100, 100, 30, 34]] },
+  { time: 0.2, heads: [[102, 102, 30, 34]] },
+  { time: 0.4, heads: [[103, 48, 48, 54]] },
+]);
+assert.equal(raisedArmSpike[2].heads.length, 1, 'a raised-arm spike must not create a second floating mask');
+assert.ok(
+  raisedArmSpike[2].heads[0][1] > 80,
+  'person-box fallback must limit sudden upward jumps caused by raised arms',
+);
+
+const expiredTrack = stabilizeHeadDetectionFrames([
+  { time: 0, heads: [[10, 10, 20, 20]] },
+  { time: 0.2, heads: [[10, 10, 20, 20]] },
+  { time: 0.4, heads: [] },
+  { time: 0.8, heads: [] },
+]);
+assert.equal(expiredTrack[3].heads.length, 0, 'a missing person must expire instead of leaving a floating mask');
+
+const adjacentTracks = stabilizeHeadDetectionFrames([
+  { time: 0, heads: [[10, 10, 20, 20], [42, 10, 20, 20]] },
+  { time: 0.2, heads: [[13, 10, 20, 20], [39, 10, 20, 20]] },
+  { time: 0.4, heads: [[16, 10, 20, 20], [36, 10, 20, 20]] },
+]);
+assert.equal(adjacentTracks[2].heads.length, 2, 'nearby dancers must keep separate head tracks');
 
 console.log('Face-obscuring helper smoke tests passed.');

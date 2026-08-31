@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-13-tools-v24-safe-head-masks-candidate';
+const VERSION = 'nivitrack-13-tools-v25-full-range-temporal-heads';
 const APP_CACHE = VERSION + '-app';
 const MODEL_CACHE = VERSION + '-models';
 

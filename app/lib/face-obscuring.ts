@@ -38,6 +38,16 @@ type FaceTrack = {
   missedFrames: number;
 };
 
+type HeadFrameTrack = {
+  id: number;
+  box: Box;
+  velocity: Box;
+  lastFrameTime: number;
+  lastSeenTime: number;
+  missedFrames: number;
+  age: number;
+};
+
 type TrackOptions = {
   maximumMissedFrames: number;
   maximumDistance: number;
@@ -191,6 +201,155 @@ export function bystanderHeadBoxes(
     .filter((head) => !isProtectedMainHead(head, subject, sourceWidth, sourceHeight));
 }
 
+function constrainHeadFrameBox(previous: Box, detection: Box, elapsed: number): Box {
+  const timeScale = clamp(elapsed / 0.2, 0.5, 2.25);
+  const [previousX, previousY] = boxCenter(previous);
+  const [detectionX, detectionY] = boxCenter(detection);
+  const referenceWidth = Math.max(4, previous[2], detection[2]);
+  const referenceHeight = Math.max(4, previous[3], detection[3]);
+  const maximumHorizontalMove = referenceWidth * 1.15 * timeScale;
+  const maximumUpwardMove = referenceHeight * 0.42 * timeScale;
+  const maximumDownwardMove = referenceHeight * 1.05 * timeScale;
+  const centerX = previousX + clamp(
+    detectionX - previousX,
+    -maximumHorizontalMove,
+    maximumHorizontalMove,
+  );
+  const centerY = previousY + clamp(
+    detectionY - previousY,
+    -maximumUpwardMove,
+    maximumDownwardMove,
+  );
+  const maximumScale = Math.pow(1.32, timeScale);
+  const constrainedWidth = clamp(detection[2], previous[2] / maximumScale, previous[2] * maximumScale);
+  const constrainedHeight = clamp(detection[3], previous[3] / maximumScale, previous[3] * maximumScale);
+  const currentWeight = 0.64;
+  const width = previous[2] * (1 - currentWeight) + constrainedWidth * currentWeight;
+  const height = previous[3] * (1 - currentWeight) + constrainedHeight * currentWeight;
+  const smoothedX = previousX * (1 - currentWeight) + centerX * currentWeight;
+  const smoothedY = previousY * (1 - currentWeight) + centerY * currentWeight;
+  return [
+    Math.max(0, smoothedX - width / 2),
+    Math.max(0, smoothedY - height / 2),
+    width,
+    height,
+  ];
+}
+
+function predictHeadFrameBox(track: HeadFrameTrack, time: number): Box {
+  const elapsed = clamp(time - track.lastFrameTime, 0, 0.3);
+  const damping = Math.pow(0.42, track.missedFrames + 1);
+  return track.box.map((value, index) =>
+    index < 2 ? Math.max(0, value + track.velocity[index] * elapsed * damping) : value,
+  ) as Box;
+}
+
+/**
+ * Turns the 5 fps person-derived head samples into short, continuous tracks.
+ * This is intentionally separate from the live face detector: inferred heads
+ * only bridge brief missed faces and cannot grow by unioning nearby dancers.
+ */
+export function stabilizeHeadDetectionFrames(frames: HeadDetectionFrame[]) {
+  if (frames.length === 0) return [];
+  const ordered: HeadDetectionFrame[] = [];
+  for (const frame of [...frames].sort((left, right) => left.time - right.time)) {
+    const previous = ordered.at(-1);
+    if (previous && Math.abs(previous.time - frame.time) < 0.001) {
+      previous.heads = mergeHeadBoxes([...previous.heads, ...frame.heads]);
+    } else {
+      ordered.push({
+        time: frame.time,
+        heads: mergeHeadBoxes(frame.heads).map((head) => [...head] as Box),
+      });
+    }
+  }
+
+  let nextTrackId = 1;
+  let tracks: HeadFrameTrack[] = [];
+  return ordered.map((frame) => {
+    const predicted = tracks.map((track) => predictHeadFrameBox(track, frame.time));
+    const pairs: Array<{ trackIndex: number; detectionIndex: number; cost: number }> = [];
+    tracks.forEach((track, trackIndex) => {
+      frame.heads.forEach((detection, detectionIndex) => {
+        const distance = faceTrackDistance(predicted[trackIndex], detection);
+        const overlap = boxIou(predicted[trackIndex], detection);
+        const areaRatio = boxAreaRatio(predicted[trackIndex], detection);
+        if (areaRatio <= 3.2 && (distance <= 1.55 || overlap >= 0.025)) {
+          pairs.push({
+            trackIndex,
+            detectionIndex,
+            cost: distance + Math.abs(Math.log(areaRatio)) * 0.32 - overlap * 0.72,
+          });
+        }
+      });
+    });
+    pairs.sort((left, right) => left.cost - right.cost);
+
+    const usedTracks = new Set<number>();
+    const usedDetections = new Set<number>();
+    const nextTracks: HeadFrameTrack[] = [];
+    for (const pair of pairs) {
+      if (usedTracks.has(pair.trackIndex) || usedDetections.has(pair.detectionIndex)) continue;
+      const track = tracks[pair.trackIndex];
+      const elapsed = clamp(frame.time - track.lastFrameTime, 0.04, 0.6);
+      const box = constrainHeadFrameBox(track.box, frame.heads[pair.detectionIndex], elapsed);
+      const measuredVelocity = box.map((value, index) =>
+        index < 2 ? (value - track.box[index]) / elapsed : 0,
+      ) as Box;
+      nextTracks.push({
+        ...track,
+        box,
+        velocity: track.velocity.map((value, index) =>
+          index < 2 ? value * 0.35 + measuredVelocity[index] * 0.65 : 0,
+        ) as Box,
+        lastFrameTime: frame.time,
+        lastSeenTime: frame.time,
+        missedFrames: 0,
+        age: track.age + 1,
+      });
+      usedTracks.add(pair.trackIndex);
+      usedDetections.add(pair.detectionIndex);
+    }
+
+    tracks.forEach((track, trackIndex) => {
+      if (usedTracks.has(trackIndex)) return;
+      const missingFor = frame.time - track.lastSeenTime;
+      if (track.age < 2 || missingFor > 0.46) return;
+      nextTracks.push({
+        ...track,
+        box: predicted[trackIndex],
+        velocity: track.velocity.map((value, index) => index < 2 ? value * 0.58 : 0) as Box,
+        lastFrameTime: frame.time,
+        missedFrames: track.missedFrames + 1,
+      });
+    });
+
+    frame.heads.forEach((detection, detectionIndex) => {
+      if (usedDetections.has(detectionIndex)) return;
+      const duplicate = nextTracks.some((track) =>
+        boxAreaRatio(track.box, detection) <= 3.5
+        && (boxIou(track.box, detection) >= 0.08 || faceTrackDistance(track.box, detection) <= 0.72),
+      );
+      if (duplicate) return;
+      nextTracks.push({
+        id: nextTrackId++,
+        box: [...detection] as Box,
+        velocity: [0, 0, 0, 0],
+        lastFrameTime: frame.time,
+        lastSeenTime: frame.time,
+        missedFrames: 0,
+        age: 1,
+      });
+    });
+
+    tracks = nextTracks;
+    return {
+      time: frame.time,
+      heads: mergeHeadBoxes(tracks.map((track) => track.box)),
+    };
+  });
+}
+
 export function headBoxesAt(frames: HeadDetectionFrame[], time: number) {
   if (frames.length === 0) return [];
   let low = 0;
@@ -317,12 +476,12 @@ export class FaceObscuringRenderer {
 
   static async create(stickerUrl?: string) {
     const wasmRoot = new URL('mediapipe/', document.baseURI).href;
-    const modelUrl = new URL('models/blaze_face_short_range.tflite', document.baseURI).href;
+    const modelUrl = new URL('models/blaze_face_full_range.tflite', document.baseURI).href;
     const fileset = await FilesetResolver.forVisionTasks(wasmRoot);
     const common = {
       baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' as const },
       runningMode: 'VIDEO' as const,
-      minDetectionConfidence: 0.32,
+      minDetectionConfidence: 0.28,
       minSuppressionThreshold: 0.3,
       canvas: document.createElement('canvas'),
     };

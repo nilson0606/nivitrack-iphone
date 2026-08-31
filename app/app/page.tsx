@@ -32,6 +32,7 @@ import type {
 import {
   bystanderHeadBoxes,
   headBoxesAt,
+  stabilizeHeadDetectionFrames,
   type FaceMaskEffects,
   type FaceMaskStyle,
   type FaceObscuringRenderer,
@@ -1035,8 +1036,14 @@ export default function Home() {
           setNotice('3 秒追蹤完成，但去背預覽模型準備失敗：' + message);
         }
       } else if (selectedTool === 'mask-faces') {
-        faceHeadFramesRef.current = headFrames;
-        facePreviewRef.current = { startTime, endTime, path: previewPoints, headFrames };
+        const stabilizedHeadFrames = stabilizeHeadDetectionFrames(headFrames);
+        faceHeadFramesRef.current = stabilizedHeadFrames;
+        facePreviewRef.current = {
+          startTime,
+          endTime,
+          path: previewPoints,
+          headFrames: stabilizedHeadFrames,
+        };
         setNotice('3 秒追蹤完成；正在準備旁人人臉遮罩預覽…');
         try {
           detectorRef.current?.dispose();
@@ -1443,8 +1450,7 @@ export default function Home() {
 
       points.sort((left, right) => left.time - right.time);
       if (selectedTool === 'mask-faces') {
-        headFrames.sort((left, right) => left.time - right.time);
-        faceHeadFramesRef.current = headFrames;
+        faceHeadFramesRef.current = stabilizeHeadDetectionFrames(headFrames);
         detectorRef.current?.dispose();
         detectorRef.current = null;
       }
