@@ -29,6 +29,11 @@ import type {
   PersonBackgroundEffects,
   PersonBackgroundRenderer,
 } from '../lib/person-background-removal';
+import type {
+  FaceMaskEffects,
+  FaceMaskStyle,
+  FaceObscuringRenderer,
+} from '../lib/face-obscuring';
 import {
   selectionCanvasPointToSource,
   selectionViewport,
@@ -61,11 +66,12 @@ type ToolId =
   | 'crop-16-9'
   | 'crop-free'
   | 'track'
-  | 'remove-background';
+  | 'remove-background'
+  | 'mask-faces';
 
 type ToolChoice = {
   id: ToolId;
-  group: '濾鏡' | '裁切' | '鎖定' | '去背';
+  group: '濾鏡' | '裁切' | '鎖定' | '去背' | '隱私';
   name: string;
   detail: string;
   fileTag: string;
@@ -84,6 +90,7 @@ const TOOL_CHOICES: ToolChoice[] = [
   { id: 'crop-free', group: '裁切', name: '自由裁切', detail: '手指框出任意範圍', fileTag: 'FreeCrop' },
   { id: 'track', group: '鎖定', name: '主角鎖定置中', detail: 'ViT 追蹤人物或寵物', fileTag: 'SubjectLock' },
   { id: 'remove-background', group: '去背', name: '單一舞者去背', detail: '去背後加入背景、外框與分身', fileTag: 'SoloFX' },
+  { id: 'mask-faces', group: '隱私', name: '旁人人臉遮罩', detail: '保留主角，遮住其他人臉', fileTag: 'FaceMask' },
 ];
 
 const BACKGROUND_COLORS = [
@@ -178,8 +185,20 @@ function previewBoxAt(path: TrackPoint[], time: number): Box {
   return before.box.map((value, index) => value + (after.box[index] - value) * amount) as Box;
 }
 
+function sourcePreviewSize(width: number, height: number): [number, number] {
+  const maxWidth = width > height ? 1280 : 720;
+  const maxHeight = height > width ? 1280 : 720;
+  const scale = Math.min(1, maxWidth / Math.max(2, width), maxHeight / Math.max(2, height));
+  const even = (value: number) => {
+    const rounded = Math.max(2, Math.round(value));
+    return rounded % 2 === 0 ? rounded : rounded - 1;
+  };
+  return [even(width * scale), even(height * scale)];
+}
+
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const stickerInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragStartRef = useRef<[number, number] | null>(null);
@@ -194,6 +213,8 @@ export default function Home() {
   const exporterRef = useRef<RealtimeVideoExporter | null>(null);
   const backgroundPreviewRef = useRef<BackgroundPreview | null>(null);
   const backgroundPreviewRendererRef = useRef<PersonBackgroundRenderer | null>(null);
+  const facePreviewRef = useRef<BackgroundPreview | null>(null);
+  const facePreviewRendererRef = useRef<FaceObscuringRenderer | null>(null);
   const previewFrameCallbackRef = useRef(0);
   const previewAnimationFrameRef = useRef(0);
   const backgroundPreviewReturnPhaseRef = useRef<'complete' | 'path-ready'>('complete');
@@ -213,6 +234,7 @@ export default function Home() {
   const [selectionPlaying, setSelectionPlaying] = useState(false);
   const [selectionZoom, setSelectionZoom] = useState(1);
   const [backgroundPreviewReady, setBackgroundPreviewReady] = useState(false);
+  const [facePreviewReady, setFacePreviewReady] = useState(false);
   const [trackPath, setTrackPath] = useState<TrackPoint[]>([]);
   const [cropBox, setCropBox] = useState<Box | null>(null);
   const [selectedTool, setSelectedTool] = useState<ToolId | null>(null);
@@ -232,6 +254,13 @@ export default function Home() {
   const [cloneCount, setCloneCount] = useState(0);
   const [cloneLayout, setCloneLayout] = useState<CloneLayout>('trail');
   const [cloneStyle, setCloneStyle] = useState<CloneStyle>('subject');
+  const [faceMaskStyle, setFaceMaskStyle] = useState<FaceMaskStyle>('soft-blur');
+  const [faceMaskStrength, setFaceMaskStrength] = useState(0.72);
+  const [faceMaskScale, setFaceMaskScale] = useState(1.38);
+  const [faceMaskEmoji, setFaceMaskEmoji] = useState('😎');
+  const [faceMaskPrivacyFirst, setFaceMaskPrivacyFirst] = useState(true);
+  const [faceStickerUrl, setFaceStickerUrl] = useState('');
+  const [faceStickerName, setFaceStickerName] = useState('');
   const [recorderSupport, setRecorderSupport] = useState<RecorderSupport>({
     h264: null,
     hevc: null,
@@ -280,6 +309,12 @@ export default function Home() {
   }, [exportUrl]);
 
   useEffect(() => {
+    return () => {
+      if (faceStickerUrl) URL.revokeObjectURL(faceStickerUrl);
+    };
+  }, [faceStickerUrl]);
+
+  useEffect(() => {
     const activeVideoRef = videoRef;
     return () => {
       void exporterRef.current?.dispose();
@@ -289,6 +324,7 @@ export default function Home() {
       }
       if (previewAnimationFrameRef.current) cancelAnimationFrame(previewAnimationFrameRef.current);
       backgroundPreviewRendererRef.current?.close();
+      facePreviewRendererRef.current?.close();
     };
   }, []);
 
@@ -322,6 +358,14 @@ export default function Home() {
     setBackgroundPreviewReady(false);
   }
 
+  function resetFacePreview() {
+    stopBackgroundPreviewCallbacks();
+    facePreviewRef.current = null;
+    facePreviewRendererRef.current?.close();
+    facePreviewRendererRef.current = null;
+    setFacePreviewReady(false);
+  }
+
   function getBackgroundEffects(): PersonBackgroundEffects {
     return {
       backgroundMode,
@@ -335,6 +379,17 @@ export default function Home() {
     };
   }
 
+  function getFaceMaskEffects(): FaceMaskEffects {
+    return {
+      style: faceMaskStyle,
+      strength: faceMaskStrength,
+      scale: faceMaskScale,
+      emoji: faceMaskEmoji,
+      stickerUrl: faceStickerUrl || undefined,
+      privacyFirst: faceMaskPrivacyFirst,
+    };
+  }
+
   function chooseVideo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -344,6 +399,7 @@ export default function Home() {
     selectionFocusRef.current = null;
     setSelectionZoom(1);
     resetBackgroundPreview();
+    resetFacePreview();
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setSourceFile(file);
     setVideoUrl(URL.createObjectURL(file));
@@ -371,6 +427,13 @@ export default function Home() {
     setCloneCount(0);
     setCloneLayout('trail');
     setCloneStyle('subject');
+    setFaceMaskStyle('soft-blur');
+    setFaceMaskStrength(0.72);
+    setFaceMaskScale(1.38);
+    setFaceMaskEmoji('😎');
+    setFaceMaskPrivacyFirst(true);
+    setFaceStickerUrl('');
+    setFaceStickerName('');
     setExportUrl('');
     setExportBlob(null);
     setExportInfo(null);
@@ -391,7 +454,7 @@ export default function Home() {
       width: video.videoWidth,
       height: video.videoHeight,
     });
-    setNotice('影片已在本機載入；請從 12 種功能中選擇一項');
+    setNotice('影片已在本機載入；請從 13 種功能中選擇一項');
   }
 
   function resetExportResult() {
@@ -427,9 +490,16 @@ export default function Home() {
     setCloneCount(0);
     setCloneLayout('trail');
     setCloneStyle('subject');
+    setFaceMaskStyle('soft-blur');
+    setFaceMaskStrength(0.72);
+    setFaceMaskScale(1.38);
+    setFaceMaskEmoji('😎');
+    setFaceMaskPrivacyFirst(true);
+    setFaceStickerUrl('');
+    setFaceStickerName('');
     setCropBox(null);
     resetExportResult();
-    if (tool === 'track' || tool === 'remove-background') {
+    if (tool === 'track' || tool === 'remove-background' || tool === 'mask-faces') {
       requestAnimationFrame(() => enterSelection());
       return;
     }
@@ -445,6 +515,7 @@ export default function Home() {
     videoRef.current?.pause();
     setSelectionPlaying(false);
     resetBackgroundPreview();
+    resetFacePreview();
     setSelectedTool(null);
     setPhase('choose');
     setBox(null);
@@ -454,7 +525,7 @@ export default function Home() {
     setCropBox(null);
     selectionRef.current = null;
     resetExportResult();
-    setNotice('請從 12 種功能中選擇一項');
+    setNotice('請從 13 種功能中選擇一項');
   }
 
   function drawFrame(
@@ -630,6 +701,7 @@ export default function Home() {
     selectionFocusRef.current = null;
     setSelectionZoom(1);
     resetBackgroundPreview();
+    resetFacePreview();
     setPhase('select');
     setBox(null);
     setStats(null);
@@ -641,7 +713,9 @@ export default function Home() {
     setExportInfo(null);
     setNotice(selectedTool === 'remove-background'
       ? '用手指緊貼框住要保留的單一舞者，或使用 AI 找人物'
-      : '用手指框住要追蹤的人物或寵物');
+      : selectedTool === 'mask-faces'
+        ? '用手指框住不需要遮臉的主角，或使用 AI 找人物'
+        : '用手指框住要追蹤的人物或寵物');
     requestAnimationFrame(() => drawSelectionFrame(null));
   }
 
@@ -760,7 +834,9 @@ export default function Home() {
     drawSelectionFrame(next);
     setNotice(selectedTool === 'remove-background'
       ? '舞者已指定；可先測試 3 秒主角追蹤'
-      : '主角已指定；可開始 3 秒 ViT 追蹤測試');
+      : selectedTool === 'mask-faces'
+        ? '主角已指定；這位主角的臉不會被遮住'
+        : '主角已指定；可開始 3 秒 ViT 追蹤測試');
   }
 
   async function detectSubjects() {
@@ -778,7 +854,7 @@ export default function Home() {
         });
       }
       const predictions = await detectorRef.current.detect(video, 30, 0.25);
-      const peopleOnly = selectedTool === 'remove-background';
+      const peopleOnly = selectedTool === 'remove-background' || selectedTool === 'mask-faces';
       const nextCandidates: Candidate[] = predictions
         .filter((item) => item.class === 'person' || (!peopleOnly && (item.class === 'dog' || item.class === 'cat')))
         .map((item) => ({
@@ -791,7 +867,11 @@ export default function Home() {
       setNotice(
         nextCandidates.length
           ? '找到 ' + nextCandidates.length + ' 個候選框；點選其中一個或手動畫框'
-          : peopleOnly ? '沒有找到人物，請直接用手指緊貼框住單一舞者' : '沒有找到人物或寵物，請直接用手指框選',
+          : peopleOnly
+            ? selectedTool === 'mask-faces'
+              ? '沒有找到人物，請直接用手指框住不需要遮臉的主角'
+              : '沒有找到人物，請直接用手指緊貼框住單一舞者'
+            : '沒有找到人物或寵物，請直接用手指框選',
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -915,6 +995,26 @@ export default function Home() {
           setPhase('complete');
           setNotice('3 秒追蹤完成，但去背預覽模型準備失敗：' + message);
         }
+      } else if (selectedTool === 'mask-faces') {
+        facePreviewRef.current = { startTime, endTime, path: previewPoints };
+        setNotice('3 秒追蹤完成；正在準備旁人人臉遮罩預覽…');
+        try {
+          if (!facePreviewRendererRef.current) {
+            const { FaceObscuringRenderer } = await import('../lib/face-obscuring');
+            facePreviewRendererRef.current = await FaceObscuringRenderer.create(faceStickerUrl || undefined);
+          }
+          await seekTo(startTime);
+          setBox([...previewPoints[0].box] as Box);
+          drawFrame(previewPoints[0].box);
+          setFacePreviewReady(true);
+          setPhase('complete');
+          setNotice('3 秒旁人遮臉預覽已準備；請點「播放 3 秒遮臉預覽」');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setFacePreviewReady(false);
+          setPhase('complete');
+          setNotice('3 秒追蹤完成，但人臉遮罩模型準備失敗：' + message);
+        }
       } else {
         setPhase('complete');
         setNotice('3 秒 ViT 路徑測試完成；尚未進行影片輸出');
@@ -922,6 +1022,8 @@ export default function Home() {
     } catch (error) {
       backgroundPreviewRef.current = null;
       setBackgroundPreviewReady(false);
+      facePreviewRef.current = null;
+      setFacePreviewReady(false);
       setPhase('select');
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
@@ -1065,6 +1167,139 @@ export default function Home() {
     }
   }
 
+  function chooseFaceSticker(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    resetFacePreview();
+    setFaceStickerUrl(URL.createObjectURL(file));
+    setFaceStickerName(file.name);
+    setFaceMaskStyle('sticker');
+    setNotice('貼紙已載入；完成主角追蹤後可先看 3 秒遮臉預覽');
+  }
+
+  function playFacePreview() {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const preview = facePreviewRef.current;
+    const renderer = facePreviewRendererRef.current;
+    if (!video || !canvas || !preview || !renderer || !facePreviewReady) {
+      setNotice('請先完成 3 秒追蹤，讓旁人人臉遮罩預覽準備完成');
+      return;
+    }
+
+    stopBackgroundPreviewCallbacks();
+    cancelRef.current = false;
+    renderer.reset();
+    backgroundPreviewReturnPhaseRef.current = phase === 'path-ready' ? 'path-ready' : 'complete';
+    video.pause();
+    video.currentTime = preview.startTime;
+    setPhase('previewing');
+    setProgress(0);
+    setNotice('正在播放 3 秒旁人人臉遮罩預覽…');
+
+    let finished = false;
+    let cleanupListeners = () => {};
+    const duration = Math.max(0.001, preview.endTime - preview.startTime);
+    const finish = (error?: unknown, cancelled = false) => {
+      if (finished) return;
+      finished = true;
+      cleanupListeners();
+      video.pause();
+      stopBackgroundPreviewCallbacks();
+      setPhase(backgroundPreviewReturnPhaseRef.current);
+      if (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setNotice('3 秒旁人遮臉預覽失敗：' + message);
+      } else if (cancelled) {
+        setNotice('已取消 3 秒旁人遮臉預覽');
+      } else {
+        setProgress(1);
+        setNotice('3 秒旁人遮臉預覽完成；可重播或繼續追蹤完整影片');
+      }
+    };
+    const renderFrame = (mediaTime: number) => {
+      if (finished) return;
+      if (cancelRef.current) {
+        finish(undefined, true);
+        return;
+      }
+      try {
+        const previewBox = previewBoxAt(preview.path, mediaTime);
+        const [previewWidth, previewHeight] = sourcePreviewSize(video.videoWidth, video.videoHeight);
+        if (canvas.width !== previewWidth || canvas.height !== previewHeight) {
+          canvas.width = previewWidth;
+          canvas.height = previewHeight;
+        }
+        renderer.render(video, canvas, previewBox, getFaceMaskEffects());
+        setProgress(Math.max(0, Math.min(1, (mediaTime - preview.startTime) / duration)));
+        if (mediaTime >= preview.endTime - 0.01) finish();
+      } catch (error) {
+        finish(error);
+      }
+    };
+    const onEnded = () => finish();
+    const onError = () => finish(new Error('Safari 無法播放預覽片段'));
+    const stopAtPreviewEnd = () => {
+      if (video.currentTime >= preview.endTime) finish();
+    };
+    video.addEventListener('ended', onEnded, { once: true });
+    video.addEventListener('error', onError, { once: true });
+    video.addEventListener('timeupdate', stopAtPreviewEnd);
+    cleanupListeners = () => {
+      video.removeEventListener('ended', onEnded);
+      video.removeEventListener('error', onError);
+      video.removeEventListener('timeupdate', stopAtPreviewEnd);
+    };
+
+    const requestVideoFrame = (video as unknown as {
+      requestVideoFrameCallback?: (callback: VideoFrameRequestCallback) => number;
+    }).requestVideoFrameCallback;
+    if (requestVideoFrame) {
+      const nextFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+        renderFrame(metadata.mediaTime);
+        if (!finished) previewFrameCallbackRef.current = requestVideoFrame.call(video, nextFrame);
+      };
+      previewFrameCallbackRef.current = requestVideoFrame.call(video, nextFrame);
+    } else {
+      const nextFrame = () => {
+        renderFrame(video.currentTime);
+        if (!finished) previewAnimationFrameRef.current = requestAnimationFrame(nextFrame);
+      };
+      previewAnimationFrameRef.current = requestAnimationFrame(nextFrame);
+    }
+    video.play().catch((error) => finish(error));
+  }
+
+  async function prepareTrackedPathFacePreview() {
+    const video = videoRef.current;
+    if (!video || trackPath.length < 2 || !Number.isFinite(video.duration)) {
+      setNotice('請先完成整支影片的主角追蹤');
+      return;
+    }
+    const preferredStart = selectionRef.current?.time ?? video.currentTime;
+    const startTime = Math.min(Math.max(0, preferredStart), Math.max(0, video.duration - 3));
+    const endTime = Math.min(video.duration, startTime + 3);
+    facePreviewRef.current = { startTime, endTime, path: trackPath };
+    setFacePreviewReady(false);
+    setNotice('正在準備完整路徑的 3 秒旁人遮臉 Preview…');
+    try {
+      if (!facePreviewRendererRef.current) {
+        const { FaceObscuringRenderer } = await import('../lib/face-obscuring');
+        facePreviewRendererRef.current = await FaceObscuringRenderer.create(faceStickerUrl || undefined);
+      }
+      facePreviewRendererRef.current.reset();
+      await seekTo(startTime);
+      const previewBox = previewBoxAt(trackPath, startTime);
+      setBox(previewBox);
+      drawFrame(previewBox);
+      setFacePreviewReady(true);
+      setNotice('3 秒旁人遮臉 Preview 已準備；請點「播放 3 秒旁人遮臉 Preview」');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice('3 秒旁人遮臉 Preview 準備失敗：' + message);
+    }
+  }
+
   async function runFullTracking() {
     const video = videoRef.current;
     const selection = selectionRef.current;
@@ -1156,6 +1391,8 @@ export default function Home() {
       drawFrame(selection.box);
       setNotice(selectedTool === 'remove-background'
         ? '完整舞者路徑已建立；可調整比例、主角大小與柔順度後輸出'
+        : selectedTool === 'mask-faces'
+          ? '完整主角路徑已建立；可調整旁人人臉遮罩後輸出原片構圖'
         : '完整 ViT 路徑已建立；可調整構圖並輸出影片');
     } catch (error) {
       setPhase('select');
@@ -1198,12 +1435,18 @@ export default function Home() {
         smoothness,
         effects: getBackgroundEffects(),
       };
+    } else if (selectedTool === 'mask-faces') {
+      operation = {
+        kind: 'mask-faces',
+        smoothness,
+        effects: getFaceMaskEffects(),
+      };
     }
     if (!video || !renderCanvas || !operation) {
       setNotice('請先選擇一項後製功能');
       return;
     }
-    if ((operation.kind === 'track' || operation.kind === 'remove-background') && trackPath.length < 2) {
+    if ((operation.kind === 'track' || operation.kind === 'remove-background' || operation.kind === 'mask-faces') && trackPath.length < 2) {
       setNotice('請先完成整支影片的 ViT 追蹤');
       return;
     }
@@ -1212,6 +1455,8 @@ export default function Home() {
     setProgress(0);
     setNotice(operation.kind === 'remove-background'
       ? '正在載入本機人物去背模型…'
+      : operation.kind === 'mask-faces'
+        ? '正在載入本機人臉遮罩模型…'
       : codec === 'hevc' ? '正在準備 HEVC 母片輸出…' : '正在準備 H.264 相容影片輸出…');
 
     try {
@@ -1222,7 +1467,11 @@ export default function Home() {
         codec,
         onProgress: (next) => {
           setProgress(next);
-          setNotice((operation.kind === 'remove-background' ? '人物去背與本機編碼中 · ' : '本機編碼中 · ') + Math.round(next * 100) + '%');
+          setNotice((operation.kind === 'remove-background'
+            ? '人物去背與本機編碼中 · '
+            : operation.kind === 'mask-faces'
+              ? '旁人人臉遮罩與本機編碼中 · '
+              : '本機編碼中 · ') + Math.round(next * 100) + '%');
         },
         isCancelled: () => cancelRef.current,
       });
@@ -1237,7 +1486,7 @@ export default function Home() {
         mimeType: result.mimeType,
         resolution: result.width + ' × ' + result.height,
       });
-      setPhase(operation.kind === 'track' || operation.kind === 'remove-background' ? 'path-ready' : 'tool-ready');
+      setPhase(operation.kind === 'track' || operation.kind === 'remove-background' || operation.kind === 'mask-faces' ? 'path-ready' : 'tool-ready');
       setNotice('輸出完成；請點「分享／儲存到 iPhone」');
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -1248,7 +1497,7 @@ export default function Home() {
         });
       });
     } catch (error) {
-      setPhase(selectedTool === 'track' || selectedTool === 'remove-background' ? 'path-ready' : 'tool-ready');
+      setPhase(selectedTool === 'track' || selectedTool === 'remove-background' || selectedTool === 'mask-faces' ? 'path-ready' : 'tool-ready');
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
     }
@@ -1325,10 +1574,14 @@ export default function Home() {
             : phase === 'tracking'
               ? '正在追蹤，請保持此頁開啟並等待完成。'
               : phase === 'previewing'
-                ? '正在產生 3 秒去背預覽，請等待完成。'
+                ? selectedTool === 'mask-faces'
+                  ? '正在播放 3 秒旁人人臉遮罩預覽，請等待完成。'
+                  : '正在產生 3 秒去背預覽，請等待完成。'
                 : phase === 'complete'
                   ? selectedTool === 'remove-background'
                     ? '先播放 3 秒去背預覽；滿意後追蹤完整影片。'
+                    : selectedTool === 'mask-faces'
+                      ? '先播放 3 秒旁人遮臉預覽；滿意後追蹤完整影片。'
                     : '3 秒測試完成；確認後追蹤完整影片。'
                   : phase === 'path-ready'
                     ? '追蹤完成；調整構圖與效果後輸出影片。'
@@ -1542,6 +1795,135 @@ export default function Home() {
     </section>
   ) : null;
 
+  const faceMaskEffectPanel = selectedTool === 'mask-faces' && videoInfo ? (
+    <section className="effect-panel" aria-label="旁人人臉遮罩設定">
+      <div className="effect-heading">
+        <div>
+          <span>只遮住主角以外的人臉</span>
+          <strong>旁人人臉遮罩</strong>
+        </div>
+        <b>本機辨識</b>
+      </div>
+
+      <div className="effect-block">
+        <div className="effect-label"><b>遮罩樣式</b><em>共 6 種</em></div>
+        <div className="effect-options three" aria-label="旁人人臉遮罩樣式">
+          {([
+            ['soft-blur', '柔和模糊'],
+            ['strong-blur', '強力模糊'],
+            ['pixelate', '馬賽克'],
+            ['black-oval', '黑色橢圓'],
+            ['emoji', 'Emoji'],
+            ['sticker', '自選貼紙'],
+          ] as [FaceMaskStyle, string][]).map(([style, label]) => (
+            <button
+              className={faceMaskStyle === style ? 'selected' : ''}
+              type="button"
+              key={style}
+              disabled={effectsBusy}
+              aria-pressed={faceMaskStyle === style}
+              onClick={() => {
+                setFaceMaskStyle(style);
+                if (style === 'sticker' && !faceStickerUrl) stickerInputRef.current?.click();
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {(faceMaskStyle === 'soft-blur' || faceMaskStyle === 'strong-blur' || faceMaskStyle === 'pixelate') && (
+        <label className="range-control compact">
+          <span><b>遮蔽強度</b><em>{Math.round(faceMaskStrength * 100)}%</em></span>
+          <input
+            type="range"
+            min="20"
+            max="100"
+            value={Math.round(faceMaskStrength * 100)}
+            disabled={effectsBusy}
+            onChange={(event) => setFaceMaskStrength(Number(event.target.value) / 100)}
+          />
+        </label>
+      )}
+
+      <label className="range-control compact">
+        <span><b>遮罩大小</b><em>{Math.round(faceMaskScale * 100)}%</em></span>
+        <input
+          type="range"
+          min="100"
+          max="180"
+          value={Math.round(faceMaskScale * 100)}
+          disabled={effectsBusy}
+          onChange={(event) => setFaceMaskScale(Number(event.target.value) / 100)}
+        />
+      </label>
+
+      {faceMaskStyle === 'emoji' && (
+        <div className="effect-block">
+          <div className="effect-label"><b>Emoji</b><em>{faceMaskEmoji}</em></div>
+          <div className="effect-options five" aria-label="選擇人臉 Emoji">
+            {['😎', '🥸', '🤡', '🐼', '⭐'].map((emoji) => (
+              <button
+                className={faceMaskEmoji === emoji ? 'selected' : ''}
+                type="button"
+                key={emoji}
+                disabled={effectsBusy}
+                aria-pressed={faceMaskEmoji === emoji}
+                onClick={() => setFaceMaskEmoji(emoji)}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {faceMaskStyle === 'sticker' && (
+        <div className="effect-block">
+          <div className="effect-label"><b>自選貼紙</b><em>{faceStickerName || '尚未選擇'}</em></div>
+          <button
+            type="button"
+            disabled={effectsBusy}
+            onClick={() => {
+              const input = stickerInputRef.current;
+              if (!input) return;
+              input.value = '';
+              input.click();
+            }}
+          >
+            {faceStickerUrl ? '更換貼紙圖片' : '選擇貼紙圖片'}
+          </button>
+        </div>
+      )}
+
+      <div className="effect-block">
+        <div className="effect-label"><b>隱私優先</b><em>{faceMaskPrivacyFirst ? '不確定就遮住' : '優先保留主角臉'}</em></div>
+        <div className="effect-options two">
+          <button
+            className={faceMaskPrivacyFirst ? 'selected' : ''}
+            type="button"
+            disabled={effectsBusy}
+            aria-pressed={faceMaskPrivacyFirst}
+            onClick={() => setFaceMaskPrivacyFirst(true)}
+          >
+            不確定就遮住
+          </button>
+          <button
+            className={!faceMaskPrivacyFirst ? 'selected' : ''}
+            type="button"
+            disabled={effectsBusy}
+            aria-pressed={!faceMaskPrivacyFirst}
+            onClick={() => setFaceMaskPrivacyFirst(false)}
+          >
+            優先保留主角
+          </button>
+        </div>
+      </div>
+      <p className="effect-note">ViT 只用來持續辨認主角；輸出保留原始畫面比例。人臉辨識與遮罩全程留在這台 iPhone，不做身分辨識，也不上傳影片。</p>
+    </section>
+  ) : null;
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1552,9 +1934,9 @@ export default function Home() {
       </header>
 
       <section className="hero">
-        <div className="eyebrow">IPHONE WEB APP · 12 種單一後製</div>
+        <div className="eyebrow">IPHONE WEB APP · 13 種單一後製</div>
         <h1>選一個功能，<span>直接完成影片。</span></h1>
-        <p>匯入 MOV、HEVC 或 MP4，選擇濾鏡、裁切、主角鎖定或單一舞者去背。一次處理一項；要疊加時，把輸出影片再匯入即可。</p>
+        <p>匯入 MOV、HEVC 或 MP4，選擇濾鏡、裁切、主角鎖定、單一舞者去背或旁人人臉遮罩。一次處理一項；要疊加時，把輸出影片再匯入即可。</p>
         <div className="steps" aria-label="處理步驟">
           <div className={'step ' + (step >= 1 ? 'active' : '')}><b>01</b><span>選擇影片</span></div>
           <div className={'step ' + (step >= 2 ? 'active' : '')}><b>02</b><span>選擇功能</span></div>
@@ -1596,6 +1978,8 @@ export default function Home() {
                     setSelectionPlaying(false);
                     setNotice(selectedTool === 'remove-background'
                       ? '已暫停；請框住要保留的單一舞者，或使用 AI 找人物'
+                      : selectedTool === 'mask-faces'
+                        ? '已暫停；請框住不需要遮臉的主角，或使用 AI 找人物'
                       : '已暫停；請用手指框住要追蹤的人物或寵物');
                     requestAnimationFrame(() => drawSelectionFrame(null));
                   }}
@@ -1613,12 +1997,44 @@ export default function Home() {
                   onPointerCancel={finishBox}
                 />
                 <span className="source-badge">
-                  {phase === 'choose' ? '尚未選擇功能' : phase === 'tool-ready' ? selectedChoice?.name : phase === 'crop-select' ? '手指框選保留範圍' : phase === 'select' ? (selectionPlaying ? '播放中 · 暫停後框選' : selectedTool === 'remove-background' ? '框選單一舞者' : '手指框選主角') : phase === 'previewing' ? '3 秒去背特效預覽' : phase === 'exporting' ? (selectedTool === 'remove-background' ? '去背與特效合成' : 'Safari 本機編碼') : phase === 'path-ready' ? (selectedTool === 'remove-background' ? '單一舞者去背與輸出' : '構圖與輸出') : 'ViT 本機推論'}
+                  {phase === 'choose'
+                    ? '尚未選擇功能'
+                    : phase === 'tool-ready'
+                      ? selectedChoice?.name
+                      : phase === 'crop-select'
+                        ? '手指框選保留範圍'
+                        : phase === 'select'
+                          ? selectionPlaying
+                            ? '播放中 · 暫停後框選'
+                            : selectedTool === 'remove-background'
+                              ? '框選單一舞者'
+                              : selectedTool === 'mask-faces'
+                                ? '框選不遮臉的主角'
+                                : '手指框選主角'
+                          : phase === 'previewing'
+                            ? selectedTool === 'mask-faces' ? '3 秒旁人人臉遮罩預覽' : '3 秒去背特效預覽'
+                            : phase === 'exporting'
+                              ? selectedTool === 'remove-background'
+                                ? '去背與特效合成'
+                                : selectedTool === 'mask-faces'
+                                  ? '旁人人臉遮罩與編碼'
+                                  : 'Safari 本機編碼'
+                              : phase === 'path-ready'
+                                ? selectedTool === 'remove-background'
+                                  ? '單一舞者去背與輸出'
+                                  : selectedTool === 'mask-faces'
+                                    ? '旁人人臉遮罩與輸出'
+                                    : '構圖與輸出'
+                                : 'ViT 本機推論'}
                 </span>
                 {(phase === 'tracking' || phase === 'previewing' || phase === 'exporting') && (
                   <div className="progress-overlay">
                     <strong>{Math.round(progress * 100)}%</strong>
-                    <span>{phase === 'exporting' ? '保留原聲' : phase === 'previewing' ? '去背後製預覽' : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
+                    <span>{phase === 'exporting'
+                      ? '保留原聲'
+                      : phase === 'previewing'
+                        ? selectedTool === 'mask-faces' ? '旁人遮臉預覽' : '去背後製預覽'
+                        : 'score ' + (currentScore === null ? '—' : currentScore.toFixed(3))}</span>
                   </div>
                 )}
               </div>
@@ -1664,10 +2080,14 @@ export default function Home() {
                       {selectionPlaying ? '暫停並框選' : '播放找畫面'}
                     </button>
                     <button type="button" disabled={detecting || selectionPlaying} onClick={detectSubjects}>
-                      {detecting ? 'AI 掃描中…' : selectedTool === 'remove-background' ? 'AI 尋找人物' : 'AI 尋找人物／寵物'}
+                      {detecting ? 'AI 掃描中…' : selectedTool === 'remove-background' || selectedTool === 'mask-faces' ? 'AI 尋找人物' : 'AI 尋找人物／寵物'}
                     </button>
                     <button type="button" disabled={!box || selectionPlaying} onClick={runTracking}>
-                      {selectedTool === 'remove-background' ? '準備 3 秒去背預覽' : '測試 3 秒 ViT'}
+                      {selectedTool === 'remove-background'
+                        ? '準備 3 秒去背預覽'
+                        : selectedTool === 'mask-faces'
+                          ? '準備 3 秒遮臉預覽'
+                          : '測試 3 秒 ViT'}
                     </button>
                     <button className="primary" type="button" disabled={!box || selectionPlaying} onClick={runFullTracking}>
                       追蹤完整影片
@@ -1684,7 +2104,10 @@ export default function Home() {
                     {selectedTool === 'remove-background' && (
                       <button className="primary" type="button" disabled={!backgroundPreviewReady} onClick={playBackgroundPreview}>播放 3 秒去背預覽</button>
                     )}
-                    <button className={selectedTool === 'remove-background' ? '' : 'primary'} type="button" onClick={runFullTracking}>追蹤完整影片</button>
+                    {selectedTool === 'mask-faces' && (
+                      <button className="primary" type="button" disabled={!facePreviewReady} onClick={playFacePreview}>播放 3 秒遮臉預覽</button>
+                    )}
+                    <button className={selectedTool === 'remove-background' || selectedTool === 'mask-faces' ? '' : 'primary'} type="button" onClick={runFullTracking}>追蹤完整影片</button>
                   </>
                 )}
                 {phase === 'path-ready' && (
@@ -1695,12 +2118,13 @@ export default function Home() {
                 )}
               </div>
               {backgroundEffectPanel}
+              {faceMaskEffectPanel}
               {(phase === 'choose' || phase === 'tool-ready') && videoInfo && (
                 <section className="tool-panel" aria-label="選擇一項影片後製功能">
                   <div className="tool-heading">
                     <div>
                       <span>一次選一項</span>
-                      <strong>12 種影片後製</strong>
+                      <strong>13 種影片後製</strong>
                     </div>
                     <b>{selectedChoice ? selectedChoice.name : '尚未選擇'}</b>
                   </div>
@@ -1808,10 +2232,18 @@ export default function Home() {
                 <section className="export-panel">
                   <div className="export-heading">
                     <div>
-                      <span>{selectedTool === 'remove-background' ? '單一舞者路徑已就緒' : '完整路徑已就緒'}</span>
-                      <strong>{selectedTool === 'remove-background' ? '選擇去背構圖' : '選擇輸出構圖'}</strong>
+                      <span>{selectedTool === 'remove-background'
+                        ? '單一舞者路徑已就緒'
+                        : selectedTool === 'mask-faces'
+                          ? '主角排除路徑已就緒'
+                          : '完整路徑已就緒'}</span>
+                      <strong>{selectedTool === 'remove-background'
+                        ? '選擇去背構圖'
+                        : selectedTool === 'mask-faces'
+                          ? '確認旁人人臉遮罩'
+                          : '選擇輸出構圖'}</strong>
                     </div>
-                    <b>{selectedTool === 'remove-background' ? aspect : trackPath.length + ' 點'}</b>
+                    <b>{selectedTool === 'remove-background' ? aspect : selectedTool === 'mask-faces' ? '原片構圖' : trackPath.length + ' 點'}</b>
                   </div>
 
                   {selectedTool === 'remove-background' && (
@@ -1844,43 +2276,80 @@ export default function Home() {
                     </>
                   )}
 
-                  <div className="aspect-options" aria-label="輸出比例">
-                    {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
-                      <button
-                        className={aspect === preset ? 'selected' : ''}
-                        type="button"
-                        key={preset}
-                        disabled={phase === 'exporting'}
-                        onClick={() => setAspect(preset)}
-                      >
-                        {preset}
-                      </button>
-                    ))}
-                  </div>
+                  {selectedTool === 'mask-faces' && (
+                    <>
+                      <div className="crop-summary">
+                        <span>輸出方式</span>
+                        <strong>
+                          保留主角臉 · {faceMaskStyle === 'soft-blur'
+                            ? '柔和模糊'
+                            : faceMaskStyle === 'strong-blur'
+                              ? '強力模糊'
+                              : faceMaskStyle === 'pixelate'
+                                ? '馬賽克'
+                                : faceMaskStyle === 'black-oval'
+                                  ? '黑色橢圓'
+                                  : faceMaskStyle === 'emoji'
+                                    ? faceMaskEmoji + ' Emoji'
+                                    : faceStickerName || '自選貼紙'}
+                        </strong>
+                      </div>
+                      <div className="background-preview-actions">
+                        <button
+                          className="primary"
+                          type="button"
+                          disabled={phase === 'exporting'}
+                          onClick={facePreviewReady
+                            ? playFacePreview
+                            : () => void prepareTrackedPathFacePreview()}
+                        >
+                          {facePreviewReady ? '播放 3 秒旁人遮臉 Preview' : '準備 3 秒旁人遮臉 Preview'}
+                        </button>
+                      </div>
+                    </>
+                  )}
 
-                  <label className="range-control">
-                    <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
-                    <input
-                      type="range"
-                      min="25"
-                      max="80"
-                      value={Math.round(subjectScale * 100)}
-                      disabled={phase === 'exporting'}
-                      onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
-                    />
-                  </label>
+                  {selectedTool !== 'mask-faces' && (
+                    <>
+                      <div className="aspect-options" aria-label="輸出比例">
+                        {(['9:16', '1:1', '16:9'] as AspectPreset[]).map((preset) => (
+                          <button
+                            className={aspect === preset ? 'selected' : ''}
+                            type="button"
+                            key={preset}
+                            disabled={phase === 'exporting'}
+                            onClick={() => setAspect(preset)}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
 
-                  <label className="range-control">
-                    <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={Math.round(smoothness * 100)}
-                      disabled={phase === 'exporting'}
-                      onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
-                    />
-                  </label>
+                      <label className="range-control">
+                        <span><b>主角大小</b><em>{Math.round(subjectScale * 100)}%</em></span>
+                        <input
+                          type="range"
+                          min="25"
+                          max="80"
+                          value={Math.round(subjectScale * 100)}
+                          disabled={phase === 'exporting'}
+                          onChange={(event) => setSubjectScale(Number(event.target.value) / 100)}
+                        />
+                      </label>
+
+                      <label className="range-control">
+                        <span><b>置中柔順度</b><em>{Math.round(smoothness * 100)}%</em></span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={Math.round(smoothness * 100)}
+                          disabled={phase === 'exporting'}
+                          onChange={(event) => setSmoothness(Number(event.target.value) / 100)}
+                        />
+                      </label>
+                    </>
+                  )}
 
                   <div className="quality-control">
                     <span><b>輸出畫質</b><em>{outputQuality === 'clear' ? '預設 · 最高 1080p' : '較快 · 最高 720p'}</em></span>
@@ -1924,6 +2393,12 @@ export default function Home() {
                     </p>
                   )}
 
+                  {selectedTool === 'mask-faces' && (
+                    <p className="export-note">
+                      ViT 追蹤框只負責辨認主角臉；BlazeFace 逐幀找出其他人臉並套用遮罩。保留原片構圖、原聲，全程只在這台 iPhone 執行。
+                    </p>
+                  )}
+
                   {exportUrl && exportInfo && (
                     <div className="export-result result-ready" ref={exportResultRef}>
                       <video src={exportUrl} controls playsInline preload="metadata" />
@@ -1942,6 +2417,7 @@ export default function Home() {
             </>
           )}
           <input ref={inputRef} className="sr-only" type="file" accept="video/*,.mov,.mp4" onChange={chooseVideo} />
+          <input ref={stickerInputRef} className="sr-only" type="file" accept="image/png,image/webp,image/jpeg" onChange={chooseFaceSticker} />
         </div>
 
         <aside className="side-panel">

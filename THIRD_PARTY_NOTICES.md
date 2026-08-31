@@ -13,4 +13,10 @@ MediaPipe 專案與授權：<https://github.com/google-ai-edge/mediapipe>
 - MagicTouch：<https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite>
 - Selfie Segmenter：<https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite>
 
-本專案未將 MediaPipe、模型或使用者影片傳送到付費 API。首次下載靜態資產後，影片處理在瀏覽器內完成。
+NiviTrack 的第 13 項「旁人人臉遮罩」另外使用：
+
+- MediaPipe BlazeFace Short Range Face Detector (`blaze_face_short_range.tflite`) — Google MediaPipe 所提供的人臉位置偵測模型；隨本專案靜態發布，只偵測畫面中的人臉位置，不建立人臉身分資料庫。
+
+模型來源：<https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite>
+
+本專案未將 MediaPipe、模型、使用者影片或人臉資料傳送到付費 API。首次下載靜態資產後，影片處理在瀏覽器內完成。

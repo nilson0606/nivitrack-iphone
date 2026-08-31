@@ -134,7 +134,7 @@
     <div class="hero">
       <div class="eyebrow">IPHONE · SAFARI · 本機處理</div>
       <h1>從選片到輸出，照著做就好。</h1>
-      <p>NiviTrack 直接讀取 iPhone 裡的 MOV、HEVC 或 MP4，提供濾鏡、裁切、主角鎖定與單一舞者去背共 12 種單一後製。影片不會上傳。</p>
+      <p>NiviTrack 直接讀取 iPhone 裡的 MOV、HEVC 或 MP4，提供濾鏡、裁切、主角鎖定、單一舞者去背與旁人人臉遮罩共 13 種單一後製。影片不會上傳。</p>
       <div class="hero-actions"><a class="app-link" href="./">立即開啟 NiviTrack</a></div>
       <div class="notice"><strong>支援範圍：</strong>iPhone、iOS 26、Safari。</div>
     </div>
@@ -157,23 +157,24 @@
           <li>名稱保留為 <strong>NiviTrack</strong>，再點「加入」。</li>
           <li>回到主畫面，點 NiviTrack 圖示。</li>
         </ol>
-        <p class="tip">第一次使用請保持連線。「主角鎖定置中」與「單一舞者去背」才會載入 ViT；去背會在首次準備 3 秒預覽或輸出時載入開源 MediaPipe MagicTouch 物件分割模型。濾鏡與裁切不需要 AI。</p>
+        <p class="tip">第一次使用請保持連線。「主角鎖定置中」、「單一舞者去背」與「旁人人臉遮罩」才會載入 ViT；去背會載入 MediaPipe MagicTouch，旁人遮臉則會載入小型 BlazeFace 人臉位置模型。濾鏡與裁切不需要 AI。</p>
       </section>
       <section id="workflow">
         <h2>一般操作流程</h2>
         <div class="steps">
           <div class="step"><b>1</b><div><strong>選擇影片</strong><p>從「照片」或「檔案」選擇 MOV、HEVC 或 MP4。等待顯示影片已在本機載入，不需要先轉成 MP4。</p></div></div>
-          <div class="step"><b>2</b><div><strong>選擇一項功能</strong><p>預設不會追蹤。從 6 種濾鏡、4 種裁切、「主角鎖定置中」或「單一舞者去背」中選一項。</p></div></div>
+          <div class="step"><b>2</b><div><strong>選擇一項功能</strong><p>預設不會追蹤。從 6 種濾鏡、4 種裁切、「主角鎖定置中」、「單一舞者去背」或「旁人人臉遮罩」中選一項。</p></div></div>
           <div class="step"><b>3</b><div><strong>預覽與調整</strong><p>濾鏡可調效果強度；固定比例裁切可調位置與縮放；自由裁切則直接用手指框出要保留的範圍。</p></div></div>
           <div class="step"><b>4</b><div><strong>選畫質並輸出</strong><p>預設為「清晰」最高 1080p；需要較快速度時可改選「標準」最高 720p。點「輸出相容 MP4」並保持 App 在前景，原聲會保留。</p></div></div>
         </div>
         <p class="tip">一次只處理一項。若要疊加效果，先輸出，再把成品重新匯入並選下一項功能。</p>
-        <h3>12 種功能</h3>
+        <h3>13 種功能</h3>
         <ul>
           <li><strong>濾鏡：</strong>鮮明增色、柔和人像、電影冷調、暖陽色調、黑白高反差、復古底片。</li>
           <li><strong>裁切：</strong>直式 9:16、方形 1:1、橫式 16:9、自由裁切與縮放。</li>
           <li><strong>鎖定：</strong>主角鎖定置中（ViT）。</li>
           <li><strong>去背：</strong>單一舞者去背；去背後可選背景顏色或模糊原片，並加人物外框與 0～4 個人物／線框分身。</li>
+          <li><strong>隱私：</strong>旁人人臉遮罩；保留被選定主角的臉，遮住畫面中的其他人臉。</li>
         </ul>
         <h3>單一舞者去背</h3>
         <ol>
@@ -186,6 +187,15 @@
           <li>輸出相容 MP4。每幀會先在 iPhone 本機以 ViT 框內提示點執行 MediaPipe 物件分割，並沿用上一幀遮罩中心持續指定同一主角，再套用後製特效，原聲照常保留。</li>
         </ol>
         <p class="tip">多人畫面會先依 ViT 追蹤框裁出局部區域，再以框內軀幹提示點分割被選取的舞者。框選仍要包含主角完整頭部與四肢，但不要包入其他舞者。後續提示點會跟著上一幀已接受遮罩的中心移動；若新遮罩與前一幀主角幾乎不重疊，就拒絕換成別人並回退到 V19 的人物連續性處理。短暫辨識失敗會淡出上一幀遮罩，影片開頭尚未出現主角時保持純黑。</p>
+        <h3>旁人人臉遮罩</h3>
+        <ol>
+          <li>選「旁人人臉遮罩」，播放後暫停在主角臉清楚的畫面。</li>
+          <li>框住不需要遮臉的主角，或點「AI 尋找人物」後選中正確人物框。</li>
+          <li>選柔和模糊、強力模糊、馬賽克、黑色橢圓、Emoji 或自選貼紙，並調整遮罩大小。</li>
+          <li>預設「隱私優先」：無法確定哪張臉是主角時會先遮住，避免旁人漏出；也可改成優先保留主角。</li>
+          <li>點「準備 3 秒遮臉預覽」，完成後播放確認，再追蹤完整影片並輸出。</li>
+        </ol>
+        <p class="tip">這項功能保留原片構圖與原聲，不會把主角置中或裁切。ViT 路徑只負責持續辨認主角臉；BlazeFace 只偵測人臉位置，不做身分辨識。所有處理都留在這台 iPhone。</p>
         <h3>主角鎖定置中</h3>
         <ol>
           <li>先播放後暫停在主角清楚的畫面。</li>
@@ -209,7 +219,8 @@
           <li><strong>裁切：</strong>固定比例可移動畫面中心並放大；自由裁切可用手指框出任意比例。</li>
           <li><strong>主角鎖定：</strong>可選 9:16、1:1 或 16:9，並調整主角大小與柔順度。</li>
           <li><strong>去背：</strong>沿用主角鎖定的追蹤裁切與主角大小，可選 9:16、1:1 或 16:9，再輸出背景、外框與分身效果。</li>
-          <li><strong>原聲：</strong>所有 12 種功能都會沿用來源影片的聲音。</li>
+          <li><strong>旁人遮臉：</strong>保留來源影片的原始比例與構圖，只遮住主角以外的人臉。</li>
+          <li><strong>原聲：</strong>所有 13 種功能都會沿用來源影片的聲音。</li>
         </ul>
         <ol>
           <li>一般分享請點「輸出相容 MP4」。</li>
@@ -231,7 +242,7 @@
         <ol>
           <li>在另一台 iPhone 使用 Safari 開啟 NiviTrack 網址。</li>
           <li>使用 Safari 的「加入主畫面」。</li>
-          <li>從主畫面啟動。若要使用主角鎖定或去背，第一次請保持連網讓 ViT、MediaPipe 與人物分割模型載入。</li>
+          <li>從主畫面啟動。若要使用主角鎖定、去背或旁人遮臉，第一次請保持連網讓 ViT、MediaPipe 與所需模型載入。</li>
         </ol>
         <p class="muted">每台手機的影片與輸出檔彼此獨立，不會自動互傳。成品可使用 AirDrop、訊息或共享相簿分享。</p>
       </section>

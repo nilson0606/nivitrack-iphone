@@ -12,7 +12,8 @@
     "lint": "eslint app lib scripts vite.config.ts next.config.ts",
     "test:vit": "node scripts/smoke-vit.mjs",
     "test:background-mask": "node --experimental-strip-types scripts/smoke-background-mask.mjs",
-    "test:selection-zoom": "node --experimental-strip-types scripts/smoke-selection-zoom.mjs"
+    "test:selection-zoom": "node --experimental-strip-types scripts/smoke-selection-zoom.mjs",
+    "test:face-obscuring": "node --experimental-strip-types scripts/smoke-face-obscuring.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "1.0.1",
