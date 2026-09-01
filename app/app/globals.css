@@ -72,6 +72,15 @@ button { color: inherit; }
   background: #20a866;
   box-shadow: 0 0 0 4px rgba(32,168,102,.12);
 }
+.local-pill b {
+  border-radius: 999px;
+  background: var(--ink);
+  padding: 4px 7px;
+  color: var(--lime);
+  font-size: 10px;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
 .hero {
   width: min(1120px, 100%);
   margin: 0 auto;
