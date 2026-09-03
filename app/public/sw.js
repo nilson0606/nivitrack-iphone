@@ -1,6 +1,6 @@
-const VERSION = 'nivitrack-13-tools-v32b-visible-version';
+const VERSION = 'nivitrack-13-tools-v33-matte-quality';
 const APP_CACHE = VERSION + '-app';
-// 第 13 功能只改裁切與座標流程；沿用 V30 模型快取，避免 iPhone 重新下載模型。
+// 本次只改功能 12 的遮罩演算法；沿用 V30 模型快取，避免 iPhone 重新下載模型。
 const MODEL_CACHE = 'nivitrack-13-tools-v30-body-identity-privacy-effects-models';
 
 const appAsset = (path) => new URL(path, self.registration.scope).href;

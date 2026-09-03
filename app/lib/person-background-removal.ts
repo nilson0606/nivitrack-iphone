@@ -206,8 +206,8 @@ export function selectTrackedSubjectAlpha(
   const [boxX, boxY, boxWidth, boxHeight] = box;
   const gateCenterX = ((boxX + boxWidth / 2) / sourceWidth) * maskWidth;
   const gateCenterY = ((boxY + boxHeight / 2) / sourceHeight) * maskHeight;
-  const gateRadiusX = Math.max(2, (boxWidth / sourceWidth) * maskWidth * 0.56);
-  const gateRadiusY = Math.max(2, (boxHeight / sourceHeight) * maskHeight * 0.56);
+  const gateRadiusX = Math.max(2, (boxWidth / sourceWidth) * maskWidth * 0.72);
+  const gateRadiusY = Math.max(2, (boxHeight / sourceHeight) * maskHeight * 0.68);
   const isInsideTrackedDancer = (index: number) => {
     const x = index % maskWidth;
     const y = Math.floor(index / maskWidth);
@@ -400,6 +400,47 @@ export function trackedPromptPoint(
   };
 }
 
+const PROMPT_CORE_CONFIDENCE = 0.32;
+const PROMPT_EDGE_CONFIDENCE = 0.08;
+const PROMPT_EDGE_GROWTH = 3;
+
+function findPromptSeed(
+  confidence: Float32Array,
+  inside: Uint8Array,
+  maskWidth: number,
+  maskHeight: number,
+  centerX: number,
+  centerY: number,
+  promptPoint?: { x: number; y: number },
+) {
+  const candidates: Array<[number, number]> = [];
+  if (promptPoint) {
+    candidates.push([promptPoint.x * (maskWidth - 1), promptPoint.y * (maskHeight - 1)]);
+  }
+  candidates.push([centerX, centerY]);
+  for (const candidate of candidates) {
+    const x = clamp(Math.round(candidate[0]), 0, maskWidth - 1);
+    const y = clamp(Math.round(candidate[1]), 0, maskHeight - 1);
+    const index = y * maskWidth + x;
+    if (inside[index] && confidence[index] >= PROMPT_CORE_CONFIDENCE) return index;
+  }
+  let best = -1;
+  let bestScore = 0;
+  for (let index = 0; index < confidence.length; index += 1) {
+    if (!inside[index] || confidence[index] < PROMPT_CORE_CONFIDENCE) continue;
+    const x = index % maskWidth;
+    const y = Math.floor(index / maskWidth);
+    const distanceX = (x - centerX) / Math.max(2, maskWidth);
+    const distanceY = (y - centerY) / Math.max(2, maskHeight);
+    const score = confidence[index] - (distanceX * distanceX + distanceY * distanceY) * 0.6;
+    if (score > bestScore) {
+      bestScore = score;
+      best = index;
+    }
+  }
+  return best;
+}
+
 export function trackedPromptAlpha(
   confidence: Float32Array,
   maskWidth: number,
@@ -407,6 +448,7 @@ export function trackedPromptAlpha(
   box: Box,
   sourceWidth: number,
   sourceHeight: number,
+  promptPoint?: { x: number; y: number },
 ) {
   const alpha = new Float32Array(maskWidth * maskHeight);
   if (confidence.length !== alpha.length) return alpha;
@@ -414,13 +456,86 @@ export function trackedPromptAlpha(
   const centerY = ((box[1] + box[3] / 2) / Math.max(1, sourceHeight)) * maskHeight;
   const radiusX = Math.max(3, (box[2] / Math.max(1, sourceWidth)) * maskWidth * 0.72);
   const radiusY = Math.max(3, (box[3] / Math.max(1, sourceHeight)) * maskHeight * 0.68);
+  const inside = new Uint8Array(confidence.length);
   for (let index = 0; index < confidence.length; index += 1) {
     const x = index % maskWidth;
     const y = Math.floor(index / maskWidth);
     const normalizedX = (x - centerX) / radiusX;
     const normalizedY = (y - centerY) / radiusY;
     if (Math.pow(Math.abs(normalizedX), 8) + Math.pow(Math.abs(normalizedY), 8) > 1) continue;
-    alpha[index] = smoothstep(0.08, 0.74, confidence[index]);
+    inside[index] = 1;
+  }
+
+  // Keep only the blob that actually holds the tracked dancer. Without this the
+  // prompt mask accepts every weakly confident background patch inside the gate,
+  // which is how background leaks into the cut-out.
+  const seed = findPromptSeed(confidence, inside, maskWidth, maskHeight, centerX, centerY, promptPoint);
+  if (seed < 0) {
+    for (let index = 0; index < confidence.length; index += 1) {
+      if (inside[index]) alpha[index] = smoothstep(PROMPT_EDGE_CONFIDENCE, 0.74, confidence[index]);
+    }
+    return alpha;
+  }
+
+  const selected = new Uint8Array(confidence.length);
+  const queue = new Int32Array(confidence.length);
+  let head = 0;
+  let tail = 0;
+  selected[seed] = 1;
+  queue[tail] = seed;
+  tail += 1;
+  while (head < tail) {
+    const current = queue[head];
+    head += 1;
+    const currentX = current % maskWidth;
+    const currentY = Math.floor(current / maskWidth);
+    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+      const nextY = currentY + offsetY;
+      if (nextY < 0 || nextY >= maskHeight) continue;
+      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+        if (offsetX === 0 && offsetY === 0) continue;
+        const nextX = currentX + offsetX;
+        if (nextX < 0 || nextX >= maskWidth) continue;
+        const next = nextY * maskWidth + nextX;
+        if (selected[next] || !inside[next] || confidence[next] < PROMPT_CORE_CONFIDENCE) continue;
+        selected[next] = 1;
+        queue[tail] = next;
+        tail += 1;
+      }
+    }
+  }
+
+  // Grow a few pixels into the soft edge so hair and clothing keep their
+  // feathering, without travelling far enough to reach a separate object.
+  let frontierStart = 0;
+  let frontierEnd = tail;
+  for (let step = 0; step < PROMPT_EDGE_GROWTH; step += 1) {
+    for (let offset = frontierStart; offset < frontierEnd; offset += 1) {
+      const current = queue[offset];
+      const currentX = current % maskWidth;
+      const currentY = Math.floor(current / maskWidth);
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        const nextY = currentY + offsetY;
+        if (nextY < 0 || nextY >= maskHeight) continue;
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          if (offsetX === 0 && offsetY === 0) continue;
+          const nextX = currentX + offsetX;
+          if (nextX < 0 || nextX >= maskWidth) continue;
+          const next = nextY * maskWidth + nextX;
+          if (selected[next] || !inside[next] || confidence[next] < PROMPT_EDGE_CONFIDENCE) continue;
+          selected[next] = 1;
+          queue[tail] = next;
+          tail += 1;
+        }
+      }
+    }
+    frontierStart = frontierEnd;
+    frontierEnd = tail;
+    if (frontierStart === frontierEnd) break;
+  }
+
+  for (let index = 0; index < confidence.length; index += 1) {
+    if (selected[index]) alpha[index] = smoothstep(PROMPT_EDGE_CONFIDENCE, 0.74, confidence[index]);
   }
   return alpha;
 }
@@ -1285,26 +1400,35 @@ export class PersonBackgroundRenderer {
     }
     const inferenceContext = this.inferenceCanvas.getContext('2d', { alpha: false });
     if (!inferenceContext) throw new Error('Safari 無法建立人物分割畫布');
+    // Letterbox instead of stretching. Squeezing a tall dancer into a square
+    // input distorts the body and is a direct cause of ragged mask edges.
+    const fitScale = Math.min(inferenceWidth / regionWidth, inferenceHeight / regionHeight);
+    const fittedWidth = Math.max(1, regionWidth * fitScale);
+    const fittedHeight = Math.max(1, regionHeight * fitScale);
+    const fittedOffsetX = (inferenceWidth - fittedWidth) / 2;
+    const fittedOffsetY = (inferenceHeight - fittedHeight) / 2;
+    inferenceContext.fillStyle = '#000000';
+    inferenceContext.fillRect(0, 0, inferenceWidth, inferenceHeight);
     inferenceContext.drawImage(
       video,
       regionX,
       regionY,
       regionWidth,
       regionHeight,
-      0,
-      0,
-      inferenceWidth,
-      inferenceHeight,
+      fittedOffsetX,
+      fittedOffsetY,
+      fittedWidth,
+      fittedHeight,
     );
     this.timestamp += 1;
     let currentAlpha: Float32Array | null = null;
     let maskWidth = this.previousMaskWidth;
     let maskHeight = this.previousMaskHeight;
     const relativeBox: Box = [
-      box[0] - regionX,
-      box[1] - regionY,
-      box[2],
-      box[3],
+      (box[0] - regionX) * fitScale + fittedOffsetX,
+      (box[1] - regionY) * fitScale + fittedOffsetY,
+      box[2] * fitScale,
+      box[3] * fitScale,
     ];
 
     let usedPromptIdentity = false;
@@ -1315,8 +1439,8 @@ export class PersonBackgroundRenderer {
           maskWidth,
           maskHeight,
           relativeBox,
-          regionWidth,
-          regionHeight,
+          inferenceWidth,
+          inferenceHeight,
         );
         this.interactiveSegmenter.segment(
           this.inferenceCanvas,
@@ -1330,8 +1454,9 @@ export class PersonBackgroundRenderer {
               mask.width,
               mask.height,
               relativeBox,
-              regionWidth,
-              regionHeight,
+              inferenceWidth,
+              inferenceHeight,
+              prompt,
             );
             if (countVisiblePixels(candidate) < 8) return;
             if (this.previousAlpha && trackedMaskOverlap(candidate, this.previousAlpha) < 0.12) return;
@@ -1357,8 +1482,8 @@ export class PersonBackgroundRenderer {
           maskWidth,
           maskHeight,
           relativeBox,
-          regionWidth,
-          regionHeight,
+          inferenceWidth,
+          inferenceHeight,
         );
       });
     }
@@ -1449,8 +1574,14 @@ export class PersonBackgroundRenderer {
       destinationHeight,
     );
     subjectContext.globalCompositeOperation = 'destination-in';
+    const maskScaleX = maskWidth / inferenceWidth;
+    const maskScaleY = maskHeight / inferenceHeight;
     subjectContext.drawImage(
       this.maskCanvas,
+      fittedOffsetX * maskScaleX,
+      fittedOffsetY * maskScaleY,
+      fittedWidth * maskScaleX,
+      fittedHeight * maskScaleY,
       destinationX,
       destinationY,
       destinationWidth,
