@@ -21,6 +21,8 @@ export type PersonBackgroundEffects = {
   cloneCount: number;
   cloneLayout: CloneLayout;
   cloneStyle: CloneStyle;
+  /** 0-100：主角與旁人的分離強度；0 等同 V33 行為。 */
+  separation?: number;
 };
 
 export const DEFAULT_PERSON_BACKGROUND_EFFECTS: PersonBackgroundEffects = {
@@ -32,6 +34,7 @@ export const DEFAULT_PERSON_BACKGROUND_EFFECTS: PersonBackgroundEffects = {
   cloneCount: 0,
   cloneLayout: 'trail',
   cloneStyle: 'subject',
+  separation: 40,
 };
 
 type TrailFrame = {
@@ -193,6 +196,7 @@ export function selectTrackedSubjectAlpha(
   box: Box,
   sourceWidth: number,
   sourceHeight: number,
+  separation?: number,
 ) {
   const pixelCount = maskWidth * maskHeight;
   if (confidence.length !== pixelCount) throw new Error('MediaPipe 人物遮罩尺寸不正確');
@@ -206,8 +210,8 @@ export function selectTrackedSubjectAlpha(
   const [boxX, boxY, boxWidth, boxHeight] = box;
   const gateCenterX = ((boxX + boxWidth / 2) / sourceWidth) * maskWidth;
   const gateCenterY = ((boxY + boxHeight / 2) / sourceHeight) * maskHeight;
-  const gateRadiusX = Math.max(2, (boxWidth / sourceWidth) * maskWidth * 0.72);
-  const gateRadiusY = Math.max(2, (boxHeight / sourceHeight) * maskHeight * 0.68);
+  const gateRadiusX = Math.max(2, (boxWidth / sourceWidth) * maskWidth * 0.72 * separationGateScale(separationRatio(separation)));
+  const gateRadiusY = Math.max(2, (boxHeight / sourceHeight) * maskHeight * 0.68 * separationGateScale(separationRatio(separation)));
   const isInsideTrackedDancer = (index: number) => {
     const x = index % maskWidth;
     const y = Math.floor(index / maskWidth);
@@ -401,33 +405,107 @@ export function trackedPromptPoint(
 }
 
 const PROMPT_CORE_CONFIDENCE = 0.32;
+const PROMPT_CORE_CONFIDENCE_MAX = 0.6;
 const PROMPT_EDGE_CONFIDENCE = 0.08;
 const PROMPT_EDGE_GROWTH = 3;
+const GATE_TIGHTEN_AT_MAX = 0.22;
+
+// 分離強度由使用者在介面上決定。0 等同 V33 行為；越高越只保留主角本人，
+// 代價是主角自己的細部（手指、髮絲、裙擺邊）也比較容易被斷開。
+export function separationRatio(separation?: number) {
+  return clamp((separation ?? 0) / 100, 0, 1);
+}
+
+function separationCoreConfidence(ratio: number) {
+  return PROMPT_CORE_CONFIDENCE + ratio * (PROMPT_CORE_CONFIDENCE_MAX - PROMPT_CORE_CONFIDENCE);
+}
+
+function separationErodeSteps(ratio: number) {
+  if (ratio < 0.34) return 0;
+  if (ratio < 0.67) return 1;
+  return 2;
+}
+
+// 分離強度越高，柔邊擴散越保守：否則羽化會直接穿過兩人之間的細橋，
+// 把剛剛才分離掉的旁人邊緣又長回來。
+function separationEdgeGrowth(ratio: number) {
+  return Math.max(1, Math.round(PROMPT_EDGE_GROWTH - ratio * 2));
+}
+
+function separationEdgeConfidence(ratio: number) {
+  return PROMPT_EDGE_CONFIDENCE + ratio * 0.12;
+}
+
+export function separationGateScale(ratio: number) {
+  return 1 - ratio * GATE_TIGHTEN_AT_MAX;
+}
+
+// 侵蝕會斷開兩個人之間那條窄橋。selfie 路徑本來就這樣做，prompt 路徑之前沒有，
+// 所以背後有人時整個人會跟著主角一起被連通擴散收進來。
+function erodeMask(mask: Uint8Array, width: number, height: number, steps: number) {
+  let current = mask;
+  for (let step = 0; step < steps; step += 1) {
+    const next = new Uint8Array(current.length);
+    for (let y = 1; y + 1 < height; y += 1) {
+      for (let x = 1; x + 1 < width; x += 1) {
+        const index = y * width + x;
+        if (!current[index]) continue;
+        if (!current[index - 1] || !current[index + 1]) continue;
+        if (!current[index - width] || !current[index + width]) continue;
+        next[index] = 1;
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+function dilateWithin(selected: Uint8Array, bounds: Uint8Array, width: number, height: number, steps: number) {
+  let current = selected;
+  for (let step = 0; step < steps; step += 1) {
+    const next = new Uint8Array(current.length);
+    next.set(current);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = y * width + x;
+        if (current[index] || !bounds[index]) continue;
+        if ((y > 0 && current[index - width])
+          || (y + 1 < height && current[index + width])
+          || (x > 0 && current[index - 1])
+          || (x + 1 < width && current[index + 1])) {
+          next[index] = 1;
+        }
+      }
+    }
+    current = next;
+  }
+  return current;
+}
 
 function findPromptSeed(
   confidence: Float32Array,
-  inside: Uint8Array,
+  candidateMask: Uint8Array,
   maskWidth: number,
   maskHeight: number,
   centerX: number,
   centerY: number,
   promptPoint?: { x: number; y: number },
 ) {
-  const candidates: Array<[number, number]> = [];
+  const points: Array<[number, number]> = [];
   if (promptPoint) {
-    candidates.push([promptPoint.x * (maskWidth - 1), promptPoint.y * (maskHeight - 1)]);
+    points.push([promptPoint.x * (maskWidth - 1), promptPoint.y * (maskHeight - 1)]);
   }
-  candidates.push([centerX, centerY]);
-  for (const candidate of candidates) {
-    const x = clamp(Math.round(candidate[0]), 0, maskWidth - 1);
-    const y = clamp(Math.round(candidate[1]), 0, maskHeight - 1);
+  points.push([centerX, centerY]);
+  for (const point of points) {
+    const x = clamp(Math.round(point[0]), 0, maskWidth - 1);
+    const y = clamp(Math.round(point[1]), 0, maskHeight - 1);
     const index = y * maskWidth + x;
-    if (inside[index] && confidence[index] >= PROMPT_CORE_CONFIDENCE) return index;
+    if (candidateMask[index]) return index;
   }
   let best = -1;
-  let bestScore = 0;
+  let bestScore = -Infinity;
   for (let index = 0; index < confidence.length; index += 1) {
-    if (!inside[index] || confidence[index] < PROMPT_CORE_CONFIDENCE) continue;
+    if (!candidateMask[index]) continue;
     const x = index % maskWidth;
     const y = Math.floor(index / maskWidth);
     const distanceX = (x - centerX) / Math.max(2, maskWidth);
@@ -449,13 +527,20 @@ export function trackedPromptAlpha(
   sourceWidth: number,
   sourceHeight: number,
   promptPoint?: { x: number; y: number },
+  separation?: number,
 ) {
   const alpha = new Float32Array(maskWidth * maskHeight);
   if (confidence.length !== alpha.length) return alpha;
+  const ratio = separationRatio(separation);
+  const gateScale = separationGateScale(ratio);
+  const coreConfidence = separationCoreConfidence(ratio);
+  const erodeSteps = separationErodeSteps(ratio);
+  const edgeGrowth = separationEdgeGrowth(ratio);
+  const edgeConfidence = separationEdgeConfidence(ratio);
   const centerX = ((box[0] + box[2] / 2) / Math.max(1, sourceWidth)) * maskWidth;
   const centerY = ((box[1] + box[3] / 2) / Math.max(1, sourceHeight)) * maskHeight;
-  const radiusX = Math.max(3, (box[2] / Math.max(1, sourceWidth)) * maskWidth * 0.72);
-  const radiusY = Math.max(3, (box[3] / Math.max(1, sourceHeight)) * maskHeight * 0.68);
+  const radiusX = Math.max(3, (box[2] / Math.max(1, sourceWidth)) * maskWidth * 0.72 * gateScale);
+  const radiusY = Math.max(3, (box[3] / Math.max(1, sourceHeight)) * maskHeight * 0.68 * gateScale);
   const inside = new Uint8Array(confidence.length);
   for (let index = 0; index < confidence.length; index += 1) {
     const x = index % maskWidth;
@@ -466,13 +551,22 @@ export function trackedPromptAlpha(
     inside[index] = 1;
   }
 
-  // Keep only the blob that actually holds the tracked dancer. Without this the
-  // prompt mask accepts every weakly confident background patch inside the gate,
-  // which is how background leaks into the cut-out.
-  const seed = findPromptSeed(confidence, inside, maskWidth, maskHeight, centerX, centerY, promptPoint);
+  // 只留下真正含有主角的那一塊。沒有這一步時，gate 範圍內每一塊信心不高的
+  // 背景都會被收進來，那正是背景漏進成品的原因。
+  const core = new Uint8Array(confidence.length);
+  for (let index = 0; index < confidence.length; index += 1) {
+    if (inside[index] && confidence[index] >= coreConfidence) core[index] = 1;
+  }
+  const eroded = erodeSteps > 0 ? erodeMask(core, maskWidth, maskHeight, erodeSteps) : core;
+  let searchMask = eroded;
+  let seed = findPromptSeed(confidence, searchMask, maskWidth, maskHeight, centerX, centerY, promptPoint);
+  if (seed < 0 && erodeSteps > 0) {
+    searchMask = core;
+    seed = findPromptSeed(confidence, searchMask, maskWidth, maskHeight, centerX, centerY, promptPoint);
+  }
   if (seed < 0) {
     for (let index = 0; index < confidence.length; index += 1) {
-      if (inside[index]) alpha[index] = smoothstep(PROMPT_EDGE_CONFIDENCE, 0.74, confidence[index]);
+      if (inside[index]) alpha[index] = smoothstep(edgeConfidence, 0.74, confidence[index]);
     }
     return alpha;
   }
@@ -497,7 +591,7 @@ export function trackedPromptAlpha(
         const nextX = currentX + offsetX;
         if (nextX < 0 || nextX >= maskWidth) continue;
         const next = nextY * maskWidth + nextX;
-        if (selected[next] || !inside[next] || confidence[next] < PROMPT_CORE_CONFIDENCE) continue;
+        if (selected[next] || !searchMask[next]) continue;
         selected[next] = 1;
         queue[tail] = next;
         tail += 1;
@@ -505,13 +599,25 @@ export function trackedPromptAlpha(
     }
   }
 
-  // Grow a few pixels into the soft edge so hair and clothing keep their
-  // feathering, without travelling far enough to reach a separate object.
+  // 侵蝕過就要還原回來，否則主角自己也會被削掉一圈。
+  if (erodeSteps > 0 && searchMask !== core) {
+    selected.set(dilateWithin(selected, core, maskWidth, maskHeight, erodeSteps));
+  }
+
+  // 再往柔邊長幾格，讓頭髮與衣角保留羽化，但不會遠到碰到另一個物件。
+  const frontier = new Int32Array(confidence.length);
+  let frontierTail = 0;
+  for (let index = 0; index < selected.length; index += 1) {
+    if (selected[index]) {
+      frontier[frontierTail] = index;
+      frontierTail += 1;
+    }
+  }
   let frontierStart = 0;
-  let frontierEnd = tail;
-  for (let step = 0; step < PROMPT_EDGE_GROWTH; step += 1) {
+  let frontierEnd = frontierTail;
+  for (let step = 0; step < edgeGrowth; step += 1) {
     for (let offset = frontierStart; offset < frontierEnd; offset += 1) {
-      const current = queue[offset];
+      const current = frontier[offset];
       const currentX = current % maskWidth;
       const currentY = Math.floor(current / maskWidth);
       for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
@@ -522,24 +628,23 @@ export function trackedPromptAlpha(
           const nextX = currentX + offsetX;
           if (nextX < 0 || nextX >= maskWidth) continue;
           const next = nextY * maskWidth + nextX;
-          if (selected[next] || !inside[next] || confidence[next] < PROMPT_EDGE_CONFIDENCE) continue;
+          if (selected[next] || !inside[next] || confidence[next] < edgeConfidence) continue;
           selected[next] = 1;
-          queue[tail] = next;
-          tail += 1;
+          frontier[frontierTail] = next;
+          frontierTail += 1;
         }
       }
     }
     frontierStart = frontierEnd;
-    frontierEnd = tail;
+    frontierEnd = frontierTail;
     if (frontierStart === frontierEnd) break;
   }
 
   for (let index = 0; index < confidence.length; index += 1) {
-    if (selected[index]) alpha[index] = smoothstep(PROMPT_EDGE_CONFIDENCE, 0.74, confidence[index]);
+    if (selected[index]) alpha[index] = smoothstep(edgeConfidence, 0.74, confidence[index]);
   }
   return alpha;
 }
-
 export function trackedMaskOverlap(currentAlpha: Float32Array, previousAlpha: Float32Array | null) {
   if (previousAlpha?.length !== currentAlpha.length) return 1;
   let overlap = 0;
@@ -1457,6 +1562,7 @@ export class PersonBackgroundRenderer {
               inferenceWidth,
               inferenceHeight,
               prompt,
+              effects.separation,
             );
             if (countVisiblePixels(candidate) < 8) return;
             if (this.previousAlpha && trackedMaskOverlap(candidate, this.previousAlpha) < 0.12) return;
@@ -1484,6 +1590,7 @@ export class PersonBackgroundRenderer {
           relativeBox,
           inferenceWidth,
           inferenceHeight,
+          effects.separation,
         );
       });
     }

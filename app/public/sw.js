@@ -1,4 +1,4 @@
-const VERSION = 'nivitrack-13-tools-v33-matte-quality';
+const VERSION = 'nivitrack-13-tools-v34-matte-separation';
 const APP_CACHE = VERSION + '-app';
 // 本次只改功能 12 的遮罩演算法；沿用 V30 模型快取，避免 iPhone 重新下載模型。
 const MODEL_CACHE = 'nivitrack-13-tools-v30-body-identity-privacy-effects-models';

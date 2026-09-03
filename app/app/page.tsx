@@ -270,6 +270,7 @@ export default function Home() {
   const [cloneCount, setCloneCount] = useState(0);
   const [cloneLayout, setCloneLayout] = useState<CloneLayout>('trail');
   const [cloneStyle, setCloneStyle] = useState<CloneStyle>('subject');
+  const [matteSeparation, setMatteSeparation] = useState(40);
   const [faceMaskStyle, setFaceMaskStyle] = useState<FaceMaskStyle>('strong-blur');
   const [faceMaskStrength, setFaceMaskStrength] = useState(0.72);
   const [faceMaskScale, setFaceMaskScale] = useState(1.38);
@@ -399,6 +400,7 @@ export default function Home() {
       cloneCount,
       cloneLayout,
       cloneStyle,
+      separation: matteSeparation,
     };
   }
 
@@ -2262,7 +2264,7 @@ export default function Home() {
         <a className="brand" href="#" aria-label="NiviTrack 首頁">
           <span className="brand-mark">N</span><span>NiviTrack</span>
         </a>
-        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 <b>V33 · 0903</b></span>
+        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 <b>V34 · 0903</b></span>
       </header>
 
       <section className="hero">
@@ -2410,6 +2412,22 @@ export default function Home() {
                     onClick={() => changeSelectionZoom(1)}
                   >＋</button>
                   <small>先粗略框選，再放大重新畫框</small>
+                </div>
+              )}
+              {selectedTool === 'remove-background' && (phase === 'select' || phase === 'complete') && (
+                <div className="matte-separation">
+                  <label className="range-control compact">
+                    <span><b>主角分離強度</b><em>{matteSeparation}</em></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={matteSeparation}
+                      onChange={(event) => setMatteSeparation(Number(event.target.value))}
+                    />
+                  </label>
+                  <small>預設 40。背後有人時往右調，只保留主角；調太高連主角的手指與髮絲也可能被斷開。0 等於 V33 行為。改完要重跑 3 秒預覽才看得到差別。</small>
                 </div>
               )}
               <div className="video-actions">
