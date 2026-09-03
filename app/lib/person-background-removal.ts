@@ -34,7 +34,7 @@ export const DEFAULT_PERSON_BACKGROUND_EFFECTS: PersonBackgroundEffects = {
   cloneCount: 0,
   cloneLayout: 'trail',
   cloneStyle: 'subject',
-  separation: 40,
+  separation: 50,
 };
 
 type TrailFrame = {
