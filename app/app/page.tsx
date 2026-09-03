@@ -35,6 +35,7 @@ import {
   headBoxFromTrackingContext,
   headBoxesAt,
   plausibleDetectedHeadBoxes,
+  headDetectionMinScore,
   selectMainFaceIndex,
   stabilizeHeadDetectionFrames,
   type FaceHeadDetector,
@@ -272,6 +273,9 @@ export default function Home() {
   const [cloneStyle, setCloneStyle] = useState<CloneStyle>('subject');
   const [matteSeparation, setMatteSeparation] = useState(50);
   const [faceMaskStyle, setFaceMaskStyle] = useState<FaceMaskStyle>('strong-blur');
+  const [faceDetectSensitivity, setFaceDetectSensitivity] = useState(50);
+  const [faceSubjectProtection, setFaceSubjectProtection] = useState(50);
+  const [faceMaskPersistence, setFaceMaskPersistence] = useState(50);
   const [faceMaskStrength, setFaceMaskStrength] = useState(0.72);
   const [faceMaskScale, setFaceMaskScale] = useState(1.38);
   const [faceMaskEmoji, setFaceMaskEmoji] = useState('😎');
@@ -412,6 +416,9 @@ export default function Home() {
       emoji: faceMaskEmoji,
       stickerUrl: faceStickerUrl || undefined,
       privacyFirst: faceMaskPrivacyFirst,
+      detectSensitivity: faceDetectSensitivity,
+      subjectProtection: faceSubjectProtection,
+      maskPersistence: faceMaskPersistence,
     };
   }
 
@@ -1019,7 +1026,7 @@ export default function Home() {
     sourceCrop?: Box,
   ): Promise<HeadDetectionFrame> {
     const detector = await ensureFaceHeadDetector();
-    const heads = (await detector.detect(video, sourceCrop)).map((detection) => detection.box);
+    const heads = (await detector.detect(video, sourceCrop, headDetectionMinScore(faceDetectSensitivity))).map((detection) => detection.box);
     return {
       time,
       heads: plausibleDetectedHeadBoxes(heads, subjectBox, video.videoWidth, video.videoHeight),
@@ -1033,7 +1040,7 @@ export default function Home() {
     sourceCrop?: Box,
   ) {
     const detector = await ensureFaceHeadDetector();
-    const scene = await detector.detectScene(video, sourceCrop);
+    const scene = await detector.detectScene(video, sourceCrop, headDetectionMinScore(faceDetectSensitivity));
     const heads = scene.heads.map((detection) => detection.box);
     return {
       context: createMainHeadTrackingContext(
@@ -2193,6 +2200,49 @@ export default function Home() {
         />
       </label>
 
+      <label className="range-control compact">
+        <span><b>旁人偵測靈敏度</b><em>{faceDetectSensitivity}</em></span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="5"
+          value={faceDetectSensitivity}
+          disabled={effectsBusy}
+          onChange={(event) => setFaceDetectSensitivity(Number(event.target.value))}
+        />
+      </label>
+      <p className="effect-note">越高越抓得到遠處小人與側臉，少漏遮；太高可能把不是人的東西也遮住。<b>改這個要重跑追蹤</b>才生效。</p>
+
+      <label className="range-control compact">
+        <span><b>主角保護範圍</b><em>{faceSubjectProtection}</em></span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="5"
+          value={faceSubjectProtection}
+          disabled={effectsBusy}
+          onChange={(event) => setFaceSubjectProtection(Number(event.target.value))}
+        />
+      </label>
+      <p className="effect-note">越高主角越不會被自己的遮罩蓋到；太高會讓靠主角很近的旁人一起被放過。重播預覽就看得到差別。</p>
+
+      <label className="range-control compact">
+        <span><b>遮罩保留時間</b><em>{faceMaskPersistence}</em></span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="5"
+          value={faceMaskPersistence}
+          disabled={effectsBusy}
+          onChange={(event) => setFaceMaskPersistence(Number(event.target.value))}
+        />
+      </label>
+      <p className="effect-note">越高遮罩越不會因為偵測斷掉而閃爍露臉；太高會讓人離場後遮罩拖尾。重播預覽就看得到差別。</p>
+      <p className="effect-note">三根滑桿都在 50 時，行為完全等於前一版。</p>
+
       {faceMaskStyle === 'emoji' && (
         <div className="effect-block">
           <div className="effect-label"><b>Emoji</b><em>{faceMaskEmoji}</em></div>
@@ -2264,7 +2314,7 @@ export default function Home() {
         <a className="brand" href="#" aria-label="NiviTrack 首頁">
           <span className="brand-mark">N</span><span>NiviTrack</span>
         </a>
-        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 <b>V35 · 0903</b></span>
+        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 <b>V36 · 0903</b></span>
       </header>
 
       <section className="hero">

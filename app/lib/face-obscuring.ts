@@ -17,6 +17,12 @@ export type FaceMaskEffects = {
   emoji: string;
   stickerUrl?: string;
   privacyFirst: boolean;
+  /** 0-100，50 等於 V35 行為。越高越靈敏，抓到更多人頭。追蹤階段生效，改了要重跑追蹤。 */
+  detectSensitivity?: number;
+  /** 0-100，50 等於 V35 行為。越高主角頭部周圍的保護範圍越大。繪製階段生效。 */
+  subjectProtection?: number;
+  /** 0-100，50 等於 V35 行為。越高遮罩在偵測中斷後撐越久。繪製階段生效。 */
+  maskPersistence?: number;
 };
 
 export type HeadDetectionFrame = {
@@ -45,6 +51,9 @@ export const DEFAULT_FACE_MASK_EFFECTS: FaceMaskEffects = {
   scale: 1.38,
   emoji: '😎',
   privacyFirst: true,
+  detectSensitivity: 50,
+  subjectProtection: 50,
+  maskPersistence: 50,
 };
 
 type FaceTrack = {
@@ -78,6 +87,24 @@ const BODY_CLASS_ID = 0;
 const HEAD_CLASS_ID = 1;
 const HEAD_MIN_SCORE = 0.2;
 const BODY_MIN_SCORE = 0.2;
+
+// 三個取捨參數由使用者在介面上決定，50 一律等於改動前的寫死值。
+export function headDetectionMinScore(sensitivity?: number) {
+  const ratio = clamp((sensitivity ?? 50) / 100, 0, 1);
+  return 0.3 - ratio * 0.2;
+}
+
+export function subjectProtectionScale(protection?: number) {
+  const ratio = clamp((protection ?? 50) / 100, 0, 1);
+  return 0.6 + ratio * 0.8;
+}
+
+export function maskPersistenceFrames(persistence?: number) {
+  const ratio = clamp((persistence ?? 50) / 100, 0, 1);
+  const minimum = Math.max(1, MASK_TRACK_MISSED_FRAMES - 3);
+  const maximum = MASK_TRACK_MISSED_FRAMES + 3;
+  return Math.round(minimum + ratio * (maximum - minimum));
+}
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -324,10 +351,11 @@ export function subjectHeadProtectionBox(
   subject: Box,
   sourceWidth: number,
   sourceHeight: number,
+  protectionScale = 1,
 ): Box {
   const inferredHead = referenceHeadForSubject(subject, sourceWidth, sourceHeight);
-  const protectionWidth = Math.min(sourceWidth, Math.max(inferredHead[2] * 1.5, subject[2] * 0.62));
-  const protectionHeight = Math.min(sourceHeight, Math.max(inferredHead[3] * 1.72, subject[3] * 0.25));
+  const protectionWidth = Math.min(sourceWidth, Math.max(inferredHead[2] * 1.5, subject[2] * 0.62) * protectionScale);
+  const protectionHeight = Math.min(sourceHeight, Math.max(inferredHead[3] * 1.72, subject[3] * 0.25) * protectionScale);
   const centerX = inferredHead[0] + inferredHead[2] / 2;
   return [
     clamp(centerX - protectionWidth / 2, 0, Math.max(0, sourceWidth - protectionWidth)),
@@ -342,13 +370,14 @@ export function bystanderDetectedHeadBoxes(
   subjectHead: Box,
   sourceWidth: number,
   sourceHeight: number,
+  protectionScale = 1,
 ) {
   const mainIndex = selectMainFaceIndex(heads, subjectHead, null, false);
   const referenceHead = referenceHeadForSubject(subjectHead, sourceWidth, sourceHeight);
   return heads
     .filter((_, index) => index !== mainIndex)
     .filter((head) => isPlausibleHeadBox(head, sourceWidth, sourceHeight, referenceHead, 3.2))
-    .filter((head) => !isProtectedMainHead(head, subjectHead, sourceWidth, sourceHeight));
+    .filter((head) => !isProtectedMainHead(head, subjectHead, sourceWidth, sourceHeight, protectionScale));
 }
 
 // Kept for older smoke tests and restore points. New code uses the precise name.
@@ -371,8 +400,9 @@ export function isProtectedMainHead(
   subject: Box,
   sourceWidth: number,
   sourceHeight: number,
+  protectionScale = 1,
 ) {
-  const protection = subjectHeadProtectionBox(subject, sourceWidth, sourceHeight);
+  const protection = subjectHeadProtectionBox(subject, sourceWidth, sourceHeight, protectionScale);
   const [centerX, centerY] = boxCenter(head);
   const centerInside = centerX >= protection[0]
     && centerX <= protection[0] + protection[2]
@@ -787,6 +817,7 @@ export class FaceHeadDetector {
   async detectScene(
     video: HTMLVideoElement,
     sourceCrop?: Box,
+    minScore?: number,
   ): Promise<FaceHeadDetectionScene> {
     if (!video.videoWidth || !video.videoHeight) return { heads: [], bodies: [] };
     const crop = normalizedFaceMaskCrop(sourceCrop, video.videoWidth, video.videoHeight);
@@ -829,7 +860,7 @@ export class FaceHeadDetector {
       const score = output[offset + 2];
       if (
         (classId !== HEAD_CLASS_ID && classId !== BODY_CLASS_ID)
-        || (classId === HEAD_CLASS_ID && score < HEAD_MIN_SCORE)
+        || (classId === HEAD_CLASS_ID && score < (minScore ?? HEAD_MIN_SCORE))
         || (classId === BODY_CLASS_ID && score < BODY_MIN_SCORE)
       ) continue;
       const x1 = crop[0] + clamp(output[offset + 3], 0, HEAD_MODEL_WIDTH) * scaleX;
@@ -844,8 +875,8 @@ export class FaceHeadDetector {
     return { heads, bodies };
   }
 
-  async detect(video: HTMLVideoElement, sourceCrop?: Box): Promise<FaceHeadDetection[]> {
-    return (await this.detectScene(video, sourceCrop)).heads;
+  async detect(video: HTMLVideoElement, sourceCrop?: Box, minScore?: number): Promise<FaceHeadDetection[]> {
+    return (await this.detectScene(video, sourceCrop, minScore)).heads;
   }
 
   close() {
@@ -1042,6 +1073,8 @@ export class FaceObscuringRenderer {
     if (!video.videoWidth || !video.videoHeight) return;
     const context = outputCanvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('Safari 無法建立旁人人臉遮罩畫布');
+    const protectionScale = subjectProtectionScale(effects.subjectProtection);
+    const persistenceFrames = maskPersistenceFrames(effects.maskPersistence);
     context.globalCompositeOperation = 'source-over';
     context.globalAlpha = 1;
     context.filter = 'none';
@@ -1077,10 +1110,11 @@ export class FaceObscuringRenderer {
         subjectBox,
         video.videoWidth,
         video.videoHeight,
+        protectionScale,
       ),
     );
     this.maskTracks = this.updateTracks(this.maskTracks, maskCandidates, {
-      maximumMissedFrames: MASK_TRACK_MISSED_FRAMES,
+      maximumMissedFrames: persistenceFrames,
       maximumDistance: 0.64,
       minimumOverlap: 0.08,
       maximumAreaRatio: 2.5,
@@ -1090,6 +1124,7 @@ export class FaceObscuringRenderer {
       subjectBox,
       video.videoWidth,
       video.videoHeight,
+      protectionScale,
     ));
 
     for (const track of this.maskTracks) {
@@ -1107,7 +1142,7 @@ export class FaceObscuringRenderer {
       );
       const opacity = effects.privacyFirst
         ? 1
-        : clamp(1 - track.missedFrames / (MASK_TRACK_MISSED_FRAMES + 1), 0, 1);
+        : clamp(1 - track.missedFrames / (persistenceFrames + 1), 0, 1);
       if (effects.style === 'soft-blur' || effects.style === 'strong-blur') {
         this.drawBlur(
           video,
