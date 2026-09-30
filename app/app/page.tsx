@@ -18,6 +18,8 @@ import {
   getRecorderSupport,
   OutputQuality,
   RealtimeVideoExporter,
+  DEFAULT_AUDIO_LEAD_MS,
+  MAX_AUDIO_LEAD_MS,
   RecorderSupport,
   TrackPoint,
   trackedFrameCrop,
@@ -261,6 +263,8 @@ export default function Home() {
   const [cropZoom, setCropZoom] = useState(1);
   const [aspect, setAspect] = useState<AspectPreset>('9:16');
   const [outputQuality, setOutputQuality] = useState<OutputQuality>('clear');
+  const [audioLeadMs, setAudioLeadMs] = useState(DEFAULT_AUDIO_LEAD_MS);
+  const [audioLeadText, setAudioLeadText] = useState(String(DEFAULT_AUDIO_LEAD_MS));
   const [subjectScale, setSubjectScale] = useState(0.55);
   const [smoothness, setSmoothness] = useState(0.72);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundFillMode>('color');
@@ -406,6 +410,56 @@ export default function Home() {
       cloneStyle,
       separation: matteSeparation,
     };
+  }
+
+  function changeAudioLead(value: number) {
+    const next = Math.max(0, Math.min(MAX_AUDIO_LEAD_MS, Math.round(value)));
+    setAudioLeadMs(next);
+    setAudioLeadText(String(next));
+  }
+
+  function renderAudioLeadControl() {
+    return (
+      <div className="audio-lead-control">
+        <span><b>聲音提前</b><em>+{audioLeadMs} ms</em></span>
+        <div className="audio-lead-inputs">
+          <input
+            type="range"
+            min="0"
+            max={MAX_AUDIO_LEAD_MS}
+            step="10"
+            value={audioLeadMs}
+            disabled={phase === 'exporting'}
+            aria-label="聲音提前毫秒數（拖曳）"
+            onChange={(event) => changeAudioLead(Number(event.target.value))}
+          />
+          <label>
+            <span>+</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min="0"
+              max={MAX_AUDIO_LEAD_MS}
+              step="1"
+              value={audioLeadText}
+              disabled={phase === 'exporting'}
+              aria-label="聲音提前毫秒數（直接輸入）"
+              onChange={(event) => {
+                const text = event.target.value;
+                setAudioLeadText(text);
+                const parsed = Number(text);
+                if (text.trim() !== '' && Number.isFinite(parsed)) {
+                  setAudioLeadMs(Math.max(0, Math.min(MAX_AUDIO_LEAD_MS, Math.round(parsed))));
+                }
+              }}
+              onBlur={() => setAudioLeadText(String(audioLeadMs))}
+            />
+            <span>ms</span>
+          </label>
+        </div>
+        <small>+ 表示聲音比畫面早。iPhone 輸出的聲音會比畫面慢一點，這裡把聲音往前對齊。聲音還是慢就調大，聲音比動作早就調小；0 = 不調整，範圍 0–{MAX_AUDIO_LEAD_MS} ms。</small>
+      </div>
+    );
   }
 
   function getFaceMaskEffects(): FaceMaskEffects {
@@ -1795,6 +1849,7 @@ export default function Home() {
       const result = await exporterRef.current.export(trackPath, renderCanvas, {
         operation,
         quality: outputQuality,
+        audioLeadMs,
         codec,
         onProgress: (next) => {
           setProgress(next);
@@ -2314,7 +2369,7 @@ export default function Home() {
         <a className="brand" href="#" aria-label="NiviTrack 首頁">
           <span className="brand-mark">N</span><span>NiviTrack</span>
         </a>
-        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 <b>V36 · 0903</b></span>
+        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 <b>V37 · 0930</b></span>
       </header>
 
       <section className="hero">
@@ -2642,6 +2697,8 @@ export default function Home() {
                     </div>
                   </div>
 
+                  {renderAudioLeadControl()}
+
                   <div className="export-buttons">
                     <button className="primary" type="button" disabled={phase === 'exporting' || !recorderSupport.h264} onClick={() => void exportVideo('h264')}>
                       輸出相容 MP4
@@ -2802,6 +2859,8 @@ export default function Home() {
                       </button>
                     </div>
                   </div>
+
+                  {renderAudioLeadControl()}
 
                   <div className="export-buttons">
                     <button

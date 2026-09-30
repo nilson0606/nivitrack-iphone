@@ -60,6 +60,8 @@ export type ExportOptions = {
   codec: 'h264' | 'hevc';
   onProgress: (progress: number) => void;
   isCancelled: () => boolean;
+  /** 聲音提前毫秒數，正值 = 聲音比畫面早。實作上是把畫面延後送出。預設 0。 */
+  audioLeadMs?: number;
 };
 
 export type ExportResult = {
@@ -81,6 +83,10 @@ const HEVC_TYPES = [
   'video/mp4;codecs=hvc1,mp4a.40.2',
   'video/mp4;codecs=hev1,mp4a.40.2',
 ];
+
+export const DEFAULT_AUDIO_LEAD_MS = 100;
+export const MAX_AUDIO_LEAD_MS = 300;
+const RELAY_MIN_INTERVAL_MS = 1000 / 30 - 8;
 
 const OUTPUT_SIZES: Record<OutputQuality, Record<AspectPreset, [number, number]>> = {
   standard: {
@@ -582,6 +588,87 @@ async function seek(video: HTMLVideoElement, time: number) {
   });
 }
 
+// iPhone Safari 錄出來的聲音會固定比畫面晚一截。錄影是即時進行的，聲音沒辦法比它實際播出
+// 更早被錄進去，所以反過來把畫面暫存 leadMs 之後才交給錄影畫布，效果等同「聲音提前 leadMs」。
+class DelayedFrameRelay {
+  private readonly target: HTMLCanvasElement;
+  private readonly leadMs: number;
+  private readonly pool: HTMLCanvasElement[] = [];
+  private readonly queue: { due: number; canvas: HTMLCanvasElement }[] = [];
+  private lastQueued = Number.NEGATIVE_INFINITY;
+  private pumpFrame = 0;
+
+  constructor(target: HTMLCanvasElement, leadMs: number) {
+    this.target = target;
+    this.leadMs = leadMs;
+  }
+
+  start() {
+    const loop = () => {
+      this.pump();
+      this.pumpFrame = requestAnimationFrame(loop);
+    };
+    this.pumpFrame = requestAnimationFrame(loop);
+  }
+
+  push(source: HTMLCanvasElement) {
+    const now = performance.now();
+    // 錄影畫布每秒最多取 30 格；60fps 來源不必每格都暫存，記憶體可以省一半。
+    if (now - this.lastQueued >= RELAY_MIN_INTERVAL_MS) {
+      this.lastQueued = now;
+      const slot = this.pool.pop() ?? document.createElement('canvas');
+      if (slot.width !== source.width || slot.height !== source.height) {
+        slot.width = source.width;
+        slot.height = source.height;
+      }
+      slot.getContext('2d', { alpha: false })?.drawImage(source, 0, 0);
+      this.queue.push({ due: now + this.leadMs, canvas: slot });
+    }
+    this.pump();
+  }
+
+  private pump(force = false) {
+    const now = performance.now();
+    let ready: HTMLCanvasElement | null = null;
+    while (this.queue.length > 0 && (force || this.queue[0].due <= now)) {
+      if (ready) this.pool.push(ready);
+      ready = this.queue.shift()!.canvas;
+    }
+    if (!ready) return;
+    this.target.getContext('2d', { alpha: false })?.drawImage(ready, 0, 0, this.target.width, this.target.height);
+    this.pool.push(ready);
+  }
+
+  drain(timeoutMs: number) {
+    const deadline = performance.now() + timeoutMs;
+    return new Promise<void>((resolve) => {
+      const check = () => {
+        this.pump();
+        if (this.queue.length === 0 || performance.now() >= deadline) {
+          this.pump(true);
+          // 多等兩格，讓錄影畫布確實取走最後一格再停止錄影。
+          window.setTimeout(resolve, (1000 / 30) * 2);
+          return;
+        }
+        window.setTimeout(check, 10);
+      };
+      check();
+    });
+  }
+
+  dispose() {
+    cancelAnimationFrame(this.pumpFrame);
+    for (const item of this.queue) this.pool.push(item.canvas);
+    this.queue.length = 0;
+    // Safari 要把畫布尺寸歸零才會馬上釋放記憶體。
+    for (const slot of this.pool) {
+      slot.width = 0;
+      slot.height = 0;
+    }
+    this.pool.length = 0;
+  }
+}
+
 export class RealtimeVideoExporter {
   private readonly video: HTMLVideoElement;
   private audioContext: AudioContext | null = null;
@@ -634,6 +721,14 @@ export class RealtimeVideoExporter {
     const originalTime = this.video.currentTime;
     const originalRate = this.video.playbackRate;
     const audioTracks = await this.prepareAudio();
+    const audioLeadMs = clamp(Math.round(options.audioLeadMs ?? 0), 0, MAX_AUDIO_LEAD_MS);
+    const workCanvas = audioLeadMs > 0 ? document.createElement('canvas') : null;
+    if (workCanvas) {
+      workCanvas.width = width;
+      workCanvas.height = height;
+    }
+    const drawTarget = workCanvas ?? canvas;
+    const relay = workCanvas ? new DelayedFrameRelay(canvas, audioLeadMs) : null;
     const canvasStream = canvas.captureStream(30);
     const stream = new MediaStream([
       ...canvasStream.getVideoTracks(),
@@ -673,9 +768,11 @@ export class RealtimeVideoExporter {
       this.video.pause();
       await seek(this.video, 0);
       this.video.playbackRate = 1;
-      drawOutputFrame(this.video, canvas, smoothedPath, 0, options.operation, filterRenderer, backgroundRenderer, faceRenderer);
+      drawOutputFrame(this.video, drawTarget, smoothedPath, 0, options.operation, filterRenderer, backgroundRenderer, faceRenderer);
+      if (workCanvas) canvas.getContext('2d', { alpha: false })?.drawImage(workCanvas, 0, 0);
       recorder.start(1000);
       recorderStarted = true;
+      relay?.start();
 
       await new Promise<void>((resolve, reject) => {
         let finished = false;
@@ -701,7 +798,8 @@ export class RealtimeVideoExporter {
             return false;
           }
           try {
-            drawOutputFrame(this.video, canvas, smoothedPath, mediaTime, options.operation, filterRenderer, backgroundRenderer, faceRenderer);
+            drawOutputFrame(this.video, drawTarget, smoothedPath, mediaTime, options.operation, filterRenderer, backgroundRenderer, faceRenderer);
+            relay?.push(drawTarget);
             options.onProgress(clamp(mediaTime / Math.max(0.001, this.video.duration), 0, 1));
             return true;
           } catch (error) {
@@ -720,7 +818,12 @@ export class RealtimeVideoExporter {
         };
         const ended = () => {
           render(this.video.duration);
-          settle();
+          if (!relay) {
+            settle();
+            return;
+          }
+          // 畫面是延後送出的，影片播完後還要把最後 audioLeadMs 的畫面送完才能停止錄影。
+          void relay.drain(audioLeadMs + 500).then(() => settle());
         };
         const failed = () => settle(new Error('輸出播放來源影片時發生錯誤'));
         this.video.addEventListener('ended', ended);
@@ -743,6 +846,11 @@ export class RealtimeVideoExporter {
         });
       }
       canvasStream.getTracks().forEach((track) => track.stop());
+      relay?.dispose();
+      if (workCanvas) {
+        workCanvas.width = 0;
+        workCanvas.height = 0;
+      }
       this.monitor!.gain.value = 1;
       this.video.playbackRate = originalRate;
       await seek(this.video, Math.min(originalTime, this.video.duration)).catch(() => undefined);
