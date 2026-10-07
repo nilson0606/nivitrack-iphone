@@ -2369,7 +2369,7 @@ export default function Home() {
         <a className="brand" href="#" aria-label="NiviTrack 首頁">
           <span className="brand-mark">N</span><span>NiviTrack</span>
         </a>
-        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 <b>V37 · 0930</b></span>
+        <span className="local-pill"><i aria-hidden="true" />iPhone 本機處理 <b>V38 · 1007</b></span>
       </header>
 
       <section className="hero">

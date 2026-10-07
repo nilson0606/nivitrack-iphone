@@ -84,7 +84,7 @@ const HEVC_TYPES = [
   'video/mp4;codecs=hev1,mp4a.40.2',
 ];
 
-export const DEFAULT_AUDIO_LEAD_MS = 100;
+export const DEFAULT_AUDIO_LEAD_MS = 70;
 export const MAX_AUDIO_LEAD_MS = 300;
 const RELAY_MIN_INTERVAL_MS = 1000 / 30 - 8;
 
